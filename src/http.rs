@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{Error, Error::*, RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Certificate, Client, Response};
@@ -20,6 +18,7 @@ pub enum ReadMethod {
 pub enum CreateMethod {
     #[default]
     Post,
+    Put,
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
@@ -28,6 +27,7 @@ pub enum UpdateMethod {
     Patch,
     Put,
     Post,
+    None,
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
@@ -240,7 +240,7 @@ impl RestClient {
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
-                        let headers: HashMap<_, _> = result
+                        let headers = result
                             .headers()
                             .into_iter()
                             .map(|(key, val)| {
@@ -249,13 +249,13 @@ impl RestClient {
                                     val.to_str().unwrap_or_default().to_string(),
                                 )
                             })
-                            .collect();
+                            .collect::<Vec<(String, String)>>();
                         let text = result.text().await.unwrap();
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                         );
-                        ret.insert("headers".to_string().into(), headers.into());
+                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
                         ret.insert("body".to_string().into(), Dynamic::from(text));
                         Ok(ret)
                     })
@@ -599,6 +599,62 @@ impl RestClient {
         }
     }
 
+    pub fn http_post_form(&mut self, path: &str, params: &[(String, String)]) -> crate::Result<Response> {
+        debug!("http_post_form '{}' ", format!("{}/{}", self.baseurl, path));
+        match self.get_client() {
+            Ok(client) => {
+                let mut req = client.post(format!("{}/{}", self.baseurl, path)).form(params);
+                for (key, val) in self.headers.clone() {
+                    if key.as_str() != "Content-Type" {
+                        req = req.header(key.to_string(), val.to_string());
+                    }
+                }
+                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
+                    .map_err(Error::ReqwestError)
+            }
+            Err(e) => Err(Error::ReqwestError(e)),
+        }
+    }
+
+    pub fn rhai_post_form(&mut self, path: String, val: Map) -> RhaiRes<Map> {
+        let params: Vec<(String, String)> = val
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut ret = Map::new();
+        match self.http_post_form(path.as_str(), &params) {
+            Ok(result) => {
+                ret.insert(
+                    "code".to_string().into(),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                );
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let headers = result
+                            .headers()
+                            .into_iter()
+                            .map(|(key, val)| {
+                                (
+                                    key.as_str().to_string(),
+                                    val.to_str().unwrap_or_default().to_string(),
+                                )
+                            })
+                            .collect::<Vec<(String, String)>>();
+                        let text = result.text().await.unwrap();
+                        ret.insert(
+                            "json".to_string().into(),
+                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        );
+                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                        ret.insert("body".to_string().into(), Dynamic::from(text));
+                        Ok(ret)
+                    })
+                })
+            }
+            Err(e) => Err(format!("{e}").into()),
+        }
+    }
+
     pub fn http_delete(&mut self, path: &str) -> crate::Result<Response> {
         debug!("http_delete '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -616,7 +672,7 @@ impl RestClient {
 
     pub fn body_delete(&mut self, path: &str) -> crate::Result<String> {
         let response = self.http_delete(path)?;
-        if !response.status().is_success() {
+        if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
             let status = response.status();
             let text = tokio::task::block_in_place(|| {
                 Handle::current().block_on(async move { response.text().await })
@@ -696,6 +752,8 @@ impl RestClient {
     pub fn obj_create(&mut self, method: CreateMethod, path: &str, input: &Value) -> crate::Result<Value> {
         if method == CreateMethod::Post {
             self.json_post(path, input)
+        } else if method == CreateMethod::Put {
+            self.json_put(path, input)
         } else {
             Err(UnsupportedMethod)
         }
@@ -722,6 +780,8 @@ impl RestClient {
             self.json_put(&full_path, input)
         } else if method == UpdateMethod::Post {
             self.json_post(&full_path, input)
+        } else if method == UpdateMethod::None {
+            Ok(input.clone())
         } else {
             Err(UnsupportedMethod)
         }
@@ -735,6 +795,111 @@ impl RestClient {
         };
         if method == DeleteMethod::Delete {
             self.json_delete(&full_path)
+        } else {
+            Err(UnsupportedMethod)
+        }
+    }
+
+    pub fn http_delete_with_body(&mut self, path: &str, body: &str) -> crate::Result<Response> {
+        debug!(
+            "http_delete_with_body '{}' ",
+            format!("{}/{}", self.baseurl, path)
+        );
+        match self.get_client() {
+            Ok(client) => {
+                let mut req = client
+                    .delete(format!("{}/{}", self.baseurl, path))
+                    .body(body.to_string());
+                for (key, val) in self.headers.clone() {
+                    req = req.header(key.to_string(), val.to_string());
+                }
+                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
+                    .map_err(Error::ReqwestError)
+            }
+            Err(e) => Err(Error::ReqwestError(e)),
+        }
+    }
+
+    pub fn body_delete_with_body(&mut self, path: &str, body: &str) -> crate::Result<String> {
+        let response = self.http_delete_with_body(path, body)?;
+        if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
+            let status = response.status();
+            let text = tokio::task::block_in_place(|| {
+                Handle::current().block_on(async move { response.text().await })
+            })
+            .map_err(Error::ReqwestError)?;
+            return Err(Error::MethodFailed(
+                "Delete".to_string(),
+                status.as_u16(),
+                format!(
+                    "The server returned the error: {} {} | {text}",
+                    status.as_str(),
+                    status.canonical_reason().unwrap_or("unknown")
+                ),
+            ));
+        }
+        let text =
+            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
+                .map_err(Error::ReqwestError)?;
+        Ok(text)
+    }
+
+    pub fn json_delete_with_body(&mut self, path: &str, input: &Value) -> crate::Result<Value> {
+        let body = serde_json::to_string(input).map_err(Error::JsonError)?;
+        let text = self.body_delete_with_body(path, body.as_str())?;
+        let json =
+            serde_json::from_str(&text).or_else(|_| Ok::<serde_json::Value, Error>(json!({"body": text})))?;
+        Ok(json)
+    }
+
+    pub fn rhai_delete_with_body(&mut self, path: String, val: Dynamic) -> RhaiRes<Map> {
+        let body = if val.is_string() {
+            val.to_string()
+        } else {
+            serde_json::to_string(&val).unwrap()
+        };
+        let mut ret = Map::new();
+        match self.http_delete_with_body(path.as_str(), &body) {
+            Ok(result) => {
+                ret.insert(
+                    "code".to_string().into(),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                );
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let headers = result
+                            .headers()
+                            .into_iter()
+                            .map(|(key, val)| {
+                                (
+                                    key.as_str().to_string(),
+                                    val.to_str().unwrap_or_default().to_string(),
+                                )
+                            })
+                            .collect::<Vec<(String, String)>>();
+                        let text = result.text().await.unwrap();
+                        ret.insert(
+                            "json".to_string().into(),
+                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        );
+                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                        ret.insert("body".to_string().into(), Dynamic::from(text));
+                        Ok(ret)
+                    })
+                })
+            }
+            Err(e) => Err(format!("{e}").into()),
+        }
+    }
+
+    pub fn obj_delete_with_body(
+        &mut self,
+        method: DeleteMethod,
+        path: &str,
+        input: &Value,
+    ) -> crate::Result<Value> {
+        if method == DeleteMethod::Delete {
+            self.json_delete_with_body(path, input)
         } else {
             Err(UnsupportedMethod)
         }
@@ -788,6 +953,7 @@ pub fn http_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<RestClient>("RestClient")
         .register_fn("new_http_client", RestClient::new)
+        .register_fn("new_client", RestClient::new)
         .register_fn("headers_reset", RestClient::headers_reset_rhai)
         .register_fn("set_baseurl", RestClient::baseurl_rhai)
         .register_fn("set_server_ca", RestClient::set_server_ca)
@@ -798,10 +964,19 @@ pub fn http_rhai_register(engine: &mut Engine) {
         .register_fn("add_header_basic", RestClient::add_header_basic)
         .register_fn("head", RestClient::rhai_head)
         .register_fn("get", RestClient::rhai_get)
+        .register_fn("http_get", RestClient::rhai_get)
         .register_fn("delete", RestClient::rhai_delete)
+        .register_fn("http_delete", RestClient::rhai_delete)
+        .register_fn("delete_with_body", RestClient::rhai_delete_with_body)
+        .register_fn("http_delete_with_body", RestClient::rhai_delete_with_body)
         .register_fn("patch", RestClient::rhai_patch)
+        .register_fn("http_patch", RestClient::rhai_patch)
         .register_fn("post", RestClient::rhai_post)
+        .register_fn("http_post", RestClient::rhai_post)
         .register_fn("put", RestClient::rhai_put)
+        .register_fn("http_put", RestClient::rhai_put)
+        .register_fn("post_form", RestClient::rhai_post_form)
+        .register_fn("http_post_form", RestClient::rhai_post_form)
         .register_fn("http_get_yaml", http_get_yaml);
 }
 

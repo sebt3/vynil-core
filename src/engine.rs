@@ -334,6 +334,14 @@ impl Script {
         tracing::debug!("END: eval_map_string({})", script);
         serde_json::to_string(&m).map_err(Error::SerializationError)
     }
+
+    pub fn eval_map_json(&mut self, script: &str) -> Result<serde_json::Value, Error> {
+        let m = self
+            .engine
+            .eval_with_scope::<Map>(&mut self.ctx, script)
+            .map_err(RhaiError)?;
+        serde_json::to_value(&m).map_err(Error::SerializationError)
+    }
 }
 
 #[cfg(test)]
