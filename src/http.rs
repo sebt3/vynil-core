@@ -236,7 +236,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -250,7 +250,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
@@ -316,7 +327,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 let headers = result
                     .headers()
@@ -387,14 +398,17 @@ impl RestClient {
         let body = if val.is_string() {
             val.to_string()
         } else {
-            serde_json::to_string(&val).unwrap()
+            match serde_json::to_string(&val) {
+                Ok(s) => s,
+                Err(e) => return Err(format!("Failed to serialize body: {e}").into()),
+            }
         };
         let mut ret = Map::new();
         match self.http_patch(path.as_str(), &body) {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -408,7 +422,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
@@ -475,14 +500,17 @@ impl RestClient {
         let body = if val.is_string() {
             val.to_string()
         } else {
-            serde_json::to_string(&val).unwrap()
+            match serde_json::to_string(&val) {
+                Ok(s) => s,
+                Err(e) => return Err(format!("Failed to serialize body: {e}").into()),
+            }
         };
         let mut ret = Map::new();
         match self.http_put(path.as_str(), &body) {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -496,7 +524,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
@@ -563,14 +602,17 @@ impl RestClient {
         let body = if val.is_string() {
             val.to_string()
         } else {
-            serde_json::to_string(&val).unwrap()
+            match serde_json::to_string(&val) {
+                Ok(s) => s,
+                Err(e) => return Err(format!("Failed to serialize body: {e}").into()),
+            }
         };
         let mut ret = Map::new();
         match self.http_post(path.as_str(), &body) {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -584,7 +626,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
@@ -626,7 +679,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -640,7 +693,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
@@ -707,7 +771,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -721,7 +785,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
@@ -856,14 +931,17 @@ impl RestClient {
         let body = if val.is_string() {
             val.to_string()
         } else {
-            serde_json::to_string(&val).unwrap()
+            match serde_json::to_string(&val) {
+                Ok(s) => s,
+                Err(e) => return Err(format!("Failed to serialize body: {e}").into()),
+            }
         };
         let mut ret = Map::new();
         match self.http_delete_with_body(path.as_str(), &body) {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap()),
+                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
@@ -877,7 +955,18 @@ impl RestClient {
                                 )
                             })
                             .collect::<Vec<(String, String)>>();
-                        let text = result.text().await.unwrap();
+                        let text = match result.text().await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                ret.insert(
+                                    "body".to_string().into(),
+                                    Dynamic::from(format!("Error reading response body: {e}")),
+                                );
+                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                                return Err(format!("Error reading response body: {e}").into());
+                            }
+                        };
                         ret.insert(
                             "json".to_string().into(),
                             serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
