@@ -115,7 +115,6 @@ pub mod http_mock;
 pub mod key;
 pub mod password;
 pub mod semver;
-pub mod shell;
 pub mod yaml;
 
 #[cfg(feature = "oci")] pub mod oci;
@@ -125,6 +124,8 @@ pub mod yaml;
 
 #[cfg(feature = "k8s")] pub mod k8s;
 #[cfg(feature = "k8s")] pub mod k8s_mock;
+
+#[cfg(feature = "shell")] pub mod shell;
 
 pub use client_name::{client_name_is_set, get_client_name, set_client_name};
 pub use semver::Semver;

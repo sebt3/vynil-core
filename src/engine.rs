@@ -1,3 +1,5 @@
+#[cfg(feature = "password")] use crate::password::password_rhai_register;
+#[cfg(feature = "shell")] use crate::shell::shell_rhai_register;
 use crate::{
     Error::{self, *},
     Result, RhaiRes,
@@ -5,10 +7,8 @@ use crate::{
     glob::glob_rhai_register,
     hashes::hashes_rhai_register,
     key::key_rhai_register,
-    password::password_rhai_register,
     rhai_err,
     semver::semver_rhai_register,
-    shell::shell_rhai_register,
     yaml::yaml_rhai_register,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -66,6 +66,30 @@ fn core_common_rhai_register(engine: &mut Engine) {
             serde_json::from_str(val.as_ref()).map_err(|e| rhai_err(Error::SerializationError(e)))
         });
     engine
+        .register_fn("basename", |name: String| -> ImmutableString {
+            Path::new(&name)
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .into()
+        })
+        .register_fn("dirname", |name: String| -> ImmutableString {
+            Path::new(&name)
+                .parent()
+                .unwrap()
+                .to_str()
+                .unwrap_or_default()
+                .into()
+        });
+}
+
+/// Filesystem access exposed to Rhai scripts: read/write/copy files, create and list
+/// directories. Gated behind the `fs` feature since consumers embedding untrusted or
+/// multi-tenant scripts may not want to grant filesystem access on the host running them.
+#[cfg(feature = "fs")]
+fn fs_rhai_register(engine: &mut Engine) {
+    engine
         .register_fn("file_read", |name: String| -> RhaiRes<ImmutableString> {
             std::fs::read_to_string(name)
                 .map_err(|e| rhai_err(Error::Stdio(e)))
@@ -91,23 +115,7 @@ fn core_common_rhai_register(engine: &mut Engine) {
             Ok(res)
         })
         .register_fn("is_file", |name: String| -> bool { Path::new(&name).is_file() })
-        .register_fn("is_dir", |name: String| -> bool { Path::new(&name).is_dir() })
-        .register_fn("basename", |name: String| -> ImmutableString {
-            Path::new(&name)
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default()
-                .into()
-        })
-        .register_fn("dirname", |name: String| -> ImmutableString {
-            Path::new(&name)
-                .parent()
-                .unwrap()
-                .to_str()
-                .unwrap_or_default()
-                .into()
-        });
+        .register_fn("is_dir", |name: String| -> bool { Path::new(&name).is_dir() });
 }
 
 #[derive(Debug)]
@@ -130,8 +138,11 @@ impl Script {
         script.engine.set_max_expr_depths(256, 128);
         script.engine.set_max_call_levels(512);
         core_common_rhai_register(&mut script.engine);
+        #[cfg(feature = "fs")]
+        fs_rhai_register(&mut script.engine);
         chrono_rhai_register(&mut script.engine);
         hashes_rhai_register(&mut script.engine);
+        #[cfg(feature = "password")]
         password_rhai_register(&mut script.engine);
         key_rhai_register(&mut script.engine);
         semver_rhai_register(&mut script.engine);
@@ -139,6 +150,7 @@ impl Script {
         glob_rhai_register(&mut script.engine);
         #[cfg(feature = "oci")]
         crate::oci::oci_rhai_register(&mut script.engine);
+        #[cfg(feature = "shell")]
         shell_rhai_register(&mut script.engine);
         script.add_common();
         script

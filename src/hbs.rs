@@ -137,10 +137,12 @@ handlebars_helper!(crc32_hash: |password:Value| crate::hashes::crc32_hash(passwo
     warn!("handlebars::crc32_hash received a non-string password: {:?}",password);
     ""
 }).to_string()));
+#[cfg(feature = "password")]
 handlebars_helper!(gen_password: |len:u32, {lower:u32=1, upper:u32=1, digits:u32=1, symbols:u32=1}| crate::password::generate(len as usize, lower as usize, upper as usize, digits as usize, symbols as usize).unwrap_or_else(|e| {
     warn!("handlebars::gen_password failed with: {e:?}");
     String::new()
 }));
+#[cfg(feature = "password")]
 handlebars_helper!(gen_password_alphanum: |len:u32| crate::password::generate(len as usize, 1, 1, 1, 0).unwrap_or_else(|e| {
     warn!("handlebars::gen_password_alphanum failed with: {e:?}");
     String::new()
@@ -173,7 +175,9 @@ impl<'a> HandleBars<'a> {
         engine.register_helper("argon_hash", Box::new(argon_hash));
         engine.register_helper("bcrypt_hash", Box::new(bcrypt_hash));
         engine.register_helper("url_encode", Box::new(url_encode));
+        #[cfg(feature = "password")]
         engine.register_helper("gen_password", Box::new(gen_password));
+        #[cfg(feature = "password")]
         engine.register_helper("gen_password_alphanum", Box::new(gen_password_alphanum));
         engine.register_helper("gen_private_key", Box::new(gen_private_key));
         engine.register_helper("crc32_hash", Box::new(crc32_hash));
