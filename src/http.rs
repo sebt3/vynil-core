@@ -995,6 +995,22 @@ impl RestClient {
     }
 }
 
+/// Case-insensitive lookup of a single response header by name. `headers` is the opaque
+/// `Vec<(String, String)>` returned as the `headers` field of `get`/`post`/... results — it
+/// carries no rhai-visible indexing or iteration of its own, so this is the only way to read
+/// a specific header from a script. Returns `()` when the header is absent.
+pub fn headers_get(headers: Vec<(String, String)>, name: String) -> Dynamic {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(&name))
+        .map_or(Dynamic::UNIT, |(_, v)| Dynamic::from(v.clone()))
+}
+
+/// Case-insensitive presence check for a response header by name. See [`headers_get`].
+pub fn headers_has(headers: Vec<(String, String)>, name: String) -> bool {
+    headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(&name))
+}
+
 pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> RhaiRes<Dynamic> {
     tokio::task::block_in_place(|| {
         Handle::current().block_on(async move {
@@ -1066,7 +1082,9 @@ pub fn http_rhai_register(engine: &mut Engine) {
         .register_fn("http_put", RestClient::rhai_put)
         .register_fn("post_form", RestClient::rhai_post_form)
         .register_fn("http_post_form", RestClient::rhai_post_form)
-        .register_fn("http_get_yaml", http_get_yaml);
+        .register_fn("http_get_yaml", http_get_yaml)
+        .register_fn("headers_get", headers_get)
+        .register_fn("headers_has", headers_has);
 }
 
 #[cfg(test)]
@@ -1152,5 +1170,29 @@ mod tests {
             "user:pass".to_string(),
         );
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    }
+
+    #[test]
+    fn test_headers_get_finds_value_case_insensitively() {
+        let headers = vec![("X-Total-Pages".to_string(), "3".to_string())];
+        let found = headers_get(headers, "x-total-pages".to_string());
+        assert_eq!(found.into_string().unwrap(), "3");
+    }
+
+    #[test]
+    fn test_headers_get_missing_returns_unit() {
+        let headers = vec![("content-type".to_string(), "application/json".to_string())];
+        let found = headers_get(headers, "x-total-pages".to_string());
+        assert!(
+            found.is_unit(),
+            "expected unit for a missing header, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn test_headers_has_case_insensitive() {
+        let headers = vec![("X-Total-Pages".to_string(), "3".to_string())];
+        assert!(headers_has(headers.clone(), "x-total-pages".to_string()));
+        assert!(!headers_has(headers, "x-total-count".to_string()));
     }
 }
