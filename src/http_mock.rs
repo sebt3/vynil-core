@@ -122,7 +122,35 @@ impl RestClientMock {
         }
     }
 
+    pub fn post_form(&mut self, path: String, _val: Map) -> RhaiRes<Map> {
+        let found: Vec<HttpMockItem> = self
+            .mocks
+            .clone()
+            .into_iter()
+            .filter(|m| m.method == HttpMethod::Post && m.path == path)
+            .collect();
+        if !found.is_empty() {
+            Ok(found[0].clone().return_obj)
+        } else {
+            Err(format!("Failed to find POST {path} in the Mock database").into())
+        }
+    }
+
     pub fn delete(&mut self, path: String) -> RhaiRes<Map> {
+        let found: Vec<HttpMockItem> = self
+            .mocks
+            .clone()
+            .into_iter()
+            .filter(|m| m.method == HttpMethod::Delete && m.path == path)
+            .collect();
+        if !found.is_empty() {
+            Ok(found[0].clone().return_obj)
+        } else {
+            Err(format!("Failed to find DELETE {path} in the Mock database").into())
+        }
+    }
+
+    pub fn delete_with_body(&mut self, path: String, _val: Dynamic) -> RhaiRes<Map> {
         let found: Vec<HttpMockItem> = self
             .mocks
             .clone()
@@ -153,8 +181,19 @@ pub fn httpmock_rhai_register(engine: &mut Engine, mocks: Vec<HttpMockItem>) {
         .register_fn("add_header_basic", RestClientMock::add_header_basic)
         .register_fn("head", RestClientMock::head)
         .register_fn("get", RestClientMock::get)
+        .register_fn("http_get", RestClientMock::get)
         .register_fn("delete", RestClientMock::delete)
+        .register_fn("http_delete", RestClientMock::delete)
+        .register_fn("delete_with_body", RestClientMock::delete_with_body)
+        .register_fn("http_delete_with_body", RestClientMock::delete_with_body)
         .register_fn("patch", RestClientMock::patch)
+        .register_fn("http_patch", RestClientMock::patch)
         .register_fn("post", RestClientMock::post)
-        .register_fn("put", RestClientMock::put);
+        .register_fn("http_post", RestClientMock::post)
+        .register_fn("put", RestClientMock::put)
+        .register_fn("http_put", RestClientMock::put)
+        .register_fn("post_form", RestClientMock::post_form)
+        .register_fn("http_post_form", RestClientMock::post_form)
+        .register_fn("headers_get", crate::http::headers_get)
+        .register_fn("headers_has", crate::http::headers_has);
 }

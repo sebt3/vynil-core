@@ -1,6 +1,6 @@
 [package]
 name = "vynil-core"
-version = "0.7.1"
+version = "0.7.2"
 authors = [
     "Sébastien Huss <sebastien.huss@gmail.com>",
     "Xavier Mortelette <reivaxm@gmail.com>"
