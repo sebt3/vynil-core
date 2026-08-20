@@ -70,3 +70,14 @@ tower-test = "0.4.0"
 [lib]
 name = "vynil_core"
 path = "src/lib.rs"
+
+# use "cargo install cargo-commander", then "cargo cmd generate"
+[package.metadata.commands]
+fmt = { cmd=[
+    "cargo +nightly fmt"
+]}
+precommit = { cmd=[
+    "cargo update",
+    "cargo clippy --fix --allow-dirty --allow-staged",
+    "cargo +nightly fmt"
+]}
