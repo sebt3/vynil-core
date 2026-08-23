@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 use openssl::{pkey::PKey, rsa::Rsa};
-use rhai::Engine;
+#[cfg(feature = "rhai")] use rhai::Engine;
 
 pub const DEFAULT_RSA_BITS: u32 = 4096;
 
@@ -13,6 +13,7 @@ pub fn gen_private_key(algo: &str, bits: u32) -> Result<String> {
     String::from_utf8(pem).map_err(Error::UTF8)
 }
 
+#[cfg(feature = "rhai")]
 pub fn key_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("gen_private_key", |algo: &str| -> crate::RhaiRes<String> {

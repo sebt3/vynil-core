@@ -1,5 +1,6 @@
-use crate::{Error, Result, RhaiRes, rhai_err};
-use rhai::Engine;
+use crate::{Error, Result};
+#[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
+#[cfg(feature = "rhai")] use rhai::Engine;
 use std::process::{Command, Output, Stdio};
 
 pub fn run(command: String) -> Result<Output> {
@@ -12,6 +13,7 @@ pub fn run(command: String) -> Result<Output> {
         .map_err(Error::Stdio)
 }
 
+#[cfg(feature = "rhai")]
 pub fn rhai_run(command: String) -> RhaiRes<i64> {
     let out = run(command).map_err(rhai_err)?;
     Ok(i64::from(out.status.code().unwrap_or(0)))
@@ -27,6 +29,7 @@ pub fn get_out(command: String) -> Result<Output> {
         .map_err(Error::Stdio)
 }
 
+#[cfg(feature = "rhai")]
 pub fn rhai_get_stdout(command: String) -> RhaiRes<String> {
     let out = get_out(command).map_err(rhai_err)?;
     if !out.status.success() {
@@ -44,6 +47,7 @@ pub fn rhai_get_stdout(command: String) -> RhaiRes<String> {
     }
 }
 
+#[cfg(feature = "rhai")]
 pub fn shell_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("shell_run", rhai_run)

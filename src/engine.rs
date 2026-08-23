@@ -6,11 +6,12 @@ use crate::{
     chrono::chrono_rhai_register,
     glob::glob_rhai_register,
     hashes::hashes_rhai_register,
-    key::key_rhai_register,
     rhai_err,
     semver::semver_rhai_register,
     yaml::yaml_rhai_register,
 };
+#[cfg(feature = "crypto")]
+use crate::{hashes::crypto_hashes_rhai_register, key::key_rhai_register};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 pub use rhai::{
     AST, ASTNode, Array, Dynamic, Engine, Expr, ImmutableString, Map, Module, ParseError, Scope, Stmt,
@@ -142,9 +143,13 @@ impl Script {
         fs_rhai_register(&mut script.engine);
         chrono_rhai_register(&mut script.engine);
         hashes_rhai_register(&mut script.engine);
+        #[cfg(feature = "crypto")]
+        {
+            crypto_hashes_rhai_register(&mut script.engine);
+            key_rhai_register(&mut script.engine);
+        }
         #[cfg(feature = "password")]
         password_rhai_register(&mut script.engine);
-        key_rhai_register(&mut script.engine);
         semver_rhai_register(&mut script.engine);
         yaml_rhai_register(&mut script.engine);
         glob_rhai_register(&mut script.engine);

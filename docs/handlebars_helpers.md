@@ -3,13 +3,21 @@
 Reference for every Handlebars helper available through `vynil_core::hbs::HandleBars`. For the
 Rhai side see [rhai_helpers.md](rhai_helpers.md); for test doubles see [mocking.md](mocking.md).
 
+## Cargo feature required
+
+`vynil_core::hbs::HandleBars` and everything in this document live behind the `hbs` Cargo
+feature. It's on by default, so nothing below changes for an existing `vynil-core = "x"`
+dependency; it only matters if a consumer opts out with `default-features = false` to get a
+Handlebars-only build (no Rhai engine at all — see [rhai_helpers.md](rhai_helpers.md)) or a
+Rhai-only one (no Handlebars).
+
 ## How registration works
 
 `HandleBars::new()` builds on `handlebars_misc_helpers::new_hbs()` — strict mode on, HTML
 auto-escaping disabled (`no_escape`, since output is usually YAML/JSON, not HTML) — then layers
 `vynil-core`'s own helpers on top. Everything in this document is available on every
-`HandleBars` instance out of the box; there is no manual registration step (unlike the Rhai
-`http`/`k8s`/`s3` modules).
+`HandleBars` instance out of the box (modulo the Cargo features noted below); there is no manual
+registration step (unlike the Rhai `http`/`k8s`/`s3` modules).
 
 Two more entry points let a consumer extend a `HandleBars` instance at runtime rather than at
 compile time:
@@ -21,15 +29,27 @@ compile time:
 
 ## Feature tags
 
-Only one helper pair is gated by a `vynil-core` Cargo feature — `gen_password` /
-`gen_password_alphanum`, behind feature **`password`** (same reasoning as the Rhai side: off by
-default so a consumer with its own password semantics doesn't get a name collision).
+Two helper groups are gated by a `vynil-core` Cargo feature beyond `hbs` itself:
+
+- `gen_password` / `gen_password_alphanum`, behind feature **`password`** (off by default, unlike
+  the other two below — same reasoning as the Rhai side: a consumer with its own password
+  semantics doesn't get a name collision).
+- `argon_hash` / `bcrypt_hash` / `gen_private_key`, behind feature **`crypto`** (on by default,
+  like `hbs` — see section 12 below). `crc32_hash` in that same section needs only `hbs`.
 
 Everything else in this document — including every `handlebars_misc_helpers` sub-group below
-(string / json / jsonnet / regex / uuid) — is compiled in unconditionally. Those sub-groups are
+(string / jsonnet / regex / uuid) — is compiled in unconditionally. Those sub-groups are
 themselves Cargo features, but of the `handlebars_misc_helpers` *dependency*, fixed once in
 `vynil-core`'s own `Cargo.toml`; a consumer of `vynil-core` cannot toggle them independently. They
 are grouped below by origin for orientation, not because you can turn them off.
+
+The json group (section 8 below) is the one exception to "grouped by `handlebars_misc_helpers`
+origin": it's vendored directly in `vynil-core` (`src/hbs_json.rs`), not pulled from that crate.
+`handlebars_misc_helpers` 0.17.0 still pins `jmespath 0.3.0`, whose `Function` trait lacks a
+`Send` bound — a hard compile failure for any consumer whose dependency graph also unifies in
+`lazy_static`'s `spin_no_std` feature (seen via `rsa`/`num-bigint-dig`, e.g. behind an OIDC
+stack). `vynil-core` depends on `jmespath 0.5.0` directly instead, which fixed that bound
+upstream, and reimplements the six helpers against it.
 
 > **Note on `CORE_HBS_HELPERS`:** `vynil_core::hbs::CORE_HBS_HELPERS` is a curated `&[&str]`
 > constant listing helper names, meant for consumers that need to introspect "what's available"
@@ -161,7 +181,11 @@ Plus, with no `is_*` counterpart:
 | `to_plural` | `bar` → `bars` |
 | `to_singular` | `bars` → `bar` |
 
-## 8. `handlebars_misc_helpers` — json feature
+## 8. json (vendored in `vynil-core`, always)
+
+Vendored from `handlebars_misc_helpers` 0.17.0's json feature (CC0-1.0) into `src/hbs_json.rs`,
+against `jmespath 0.5.0` directly rather than the crate's own pinned `jmespath 0.3.0` — see
+"Feature tags" above for why.
 
 All accept an optional `format=` hash argument: `"json"` (default), `"json_pretty"`, `"yaml"`,
 `"toml"`, or `"toml_pretty"`.
@@ -199,7 +223,7 @@ Empty or `null` input to any of these returns an empty string rather than an err
 
 ---
 
-## 12. `vynil-core`'s own helpers (always)
+## 12. `vynil-core`'s own helpers (always given `hbs`, three need `crypto` too)
 
 | Helper | Signature | Returns |
 |---|---|---|
@@ -209,10 +233,10 @@ Empty or `null` input to any of these returns an empty string rather than an err
 | `base64_decode` | `(s)` | `""` and a warning on invalid input, rather than erroring the render |
 | `url_encode` | `(s)` | Percent-encoding |
 | `header_basic` | `(username, password)` | `"Basic <base64(user:pass)>"` — a ready-to-use `Authorization` header value |
-| `argon_hash` | `(password)` | Argon2 hash (fresh random salt each call) |
-| `bcrypt_hash` | `(password)` | bcrypt hash, `DEFAULT_COST` |
+| `argon_hash` | `(password)` | Argon2 hash (fresh random salt each call) — needs `crypto` |
+| `bcrypt_hash` | `(password)` | bcrypt hash, `DEFAULT_COST` — needs `crypto` |
 | `crc32_hash` | `(text)` | CRC-32, as a number |
-| `gen_private_key` | `(algo, {bits=4096})` | PKCS8 PEM. `algo`: `"rsa"` or `"ed25519"` (bits ignored for ed25519) |
+| `gen_private_key` | `(algo, {bits=4096})` | PKCS8 PEM. `algo`: `"rsa"` or `"ed25519"` (bits ignored for ed25519) — needs `crypto` |
 
 All of the string-typed arguments above tolerate non-string JSON input by falling back to `""`
 (with a `tracing::warn!`) rather than failing the render.

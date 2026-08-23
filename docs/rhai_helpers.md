@@ -4,6 +4,14 @@ Reference for every Rhai function, type, and method `vynil-core` registers into 
 [`rhai::Engine`](https://rhai.rs). For the Handlebars side see [handlebars_helpers.md](handlebars_helpers.md);
 for the test doubles that mirror the network/cluster-facing APIs below, see [mocking.md](mocking.md).
 
+## Cargo feature required
+
+Everything in this document — the Rhai engine itself (`Script`, `engine.rs`) included — lives
+behind the `rhai` Cargo feature. It's on by default, so nothing below changes for an existing
+`vynil-core = "x"` dependency; it only matters if a consumer opts out with
+`default-features = false` to get a Rhai-free build (e.g. Handlebars-only — see
+[handlebars_helpers.md](handlebars_helpers.md)).
+
 ## How registration works
 
 `vynil_core::engine::Script::new_bare(resolver_paths)` builds an `Engine` and auto-registers a
@@ -11,13 +19,16 @@ fixed set of modules. Not everything below is wired in automatically — three d
 
 | Tier | Modules | Wired in by `Script::new_bare` |
 |---|---|---|
-| Always | core utilities, `chrono`, `hashes`, `key`, `semver`, `yaml`, `glob` | Yes, unconditionally |
-| Cargo-feature-gated, auto-wired | `fs`, `password`, `oci`, `shell` | Yes, when the matching Cargo feature is enabled |
+| Always (given `rhai`) | core utilities, `chrono`, `hashes` (crc32 only), `semver`, `yaml`, `glob` | Yes, unconditionally |
+| Cargo-feature-gated, auto-wired | `fs`, `password`, `crypto` (`hashes`'s bcrypt/argon + `key`), `oci`, `shell` | Yes, when the matching Cargo feature is enabled |
 | Never auto-wired | `http`, `k8s` (all three sub-modules), `s3` | **No** — call the `*_rhai_register` function yourself on `script.engine` |
 
-The third tier exists regardless of Cargo features (`http` has no feature gate at all; `k8s`/`s3`
-do). This crate never assumes a consumer wants live network or cluster access baked into every
-script engine, so those are opt-in calls:
+The third tier is opt-in regardless of Cargo features — `http`/`k8s`/`s3` each pull in `rhai`
+themselves (their core types are built as Rhai-facing APIs, not a plain-Rust API with a Rhai
+wrapper on top), so enabling one of those three features is enough to make the type available;
+it's registration into a *given* `Engine` that stays a manual call. This crate never assumes a
+consumer wants live network or cluster access baked into every script engine, so those are opt-in
+calls:
 
 ```rust
 let mut script = vynil_core::Script::new_bare(vec!["scripts/".into()]);
@@ -53,20 +64,21 @@ threading a runtime flag through `Script::new_bare` itself.
 
 | Feature | Unlocks | Auto-wired into `new_bare`? |
 |---|---|---|
-| *(default)* | core utilities, chrono, hashes, key, semver, yaml, glob | always |
+| `rhai` *(default)* | this entire document — core utilities, chrono, hashes' `crc32_hash`, semver, yaml, glob | always |
 | `fs` | filesystem access (`file_read`, …) | yes |
 | `password` | `gen_password`, `gen_password_alphanum` | yes |
+| `crypto` *(default)* | hashes' `bcrypt_hash`/`Argon`, `key`'s `gen_private_key` | yes |
 | `shell` | `shell_run`, `shell_output` | yes |
-| `oci` | `Registry` OCI client | yes |
-| `k8s` | `DynamicObject`, `K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`, `K8sJob` | **no** — manual |
-| *(none — always compiled)* | `RestClient` (HTTP) | **no** — manual |
-| `s3` | `s3_get_yaml`, `s3_list_keys` | **no** — manual |
+| `oci` *(implies `rhai`)* | `Registry` OCI client | yes |
+| `k8s` *(implies `rhai`)* | `DynamicObject`, `K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`, `K8sJob` | **no** — manual |
+| `http` *(default, implies `rhai`)* | `RestClient` (HTTP) | **no** — manual |
+| `s3` *(implies `rhai`)* | `s3_get_yaml`, `s3_list_keys` | **no** — manual |
 
 ---
 
 ## 1. Core utilities (always available)
 
-Registered by `core_common_rhai_register`, no feature required.
+Registered by `core_common_rhai_register`, no feature beyond `rhai` itself required.
 
 | Signature | Returns | Notes |
 |---|---|---|
@@ -104,14 +116,18 @@ Also always present — these are Rhai source injected via `add_code`, not nativ
 
 ## 3. `hashes`
 
+`crc32_hash` needs only `rhai`. The other three need `crypto` too (default on, like `rhai`).
+
 | Signature | Returns | Notes |
 |---|---|---|
 | `crc32_hash(text: string)` | `int` | CRC-32 |
-| `bcrypt_hash(text: string)` | `string` | bcrypt, `DEFAULT_COST` |
-| `new_argon()` | `Argon` | Generates a fresh random salt for this instance |
-| `<Argon>.hash(password: string)` | `string` | Argon2 PHC string (salt + hash), using the salt captured at `new_argon()` time |
+| `bcrypt_hash(text: string)` | `string` | bcrypt, `DEFAULT_COST` — needs `crypto` |
+| `new_argon()` | `Argon` | Generates a fresh random salt for this instance — needs `crypto` |
+| `<Argon>.hash(password: string)` | `string` | Argon2 PHC string (salt + hash), using the salt captured at `new_argon()` time — needs `crypto` |
 
 ## 4. `key`
+
+Needs `crypto` (default on, like `rhai`) in addition to `rhai` — the whole module is gated by it.
 
 | Signature | Returns | Notes |
 |---|---|---|

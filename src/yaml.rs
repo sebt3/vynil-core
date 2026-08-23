@@ -1,5 +1,6 @@
-use crate::{Error, Result, RhaiRes, rhai_err};
-use rhai::{Dynamic, Engine, ImmutableString, Map};
+use crate::{Error, Result};
+#[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
+#[cfg(feature = "rhai")] use rhai::{Dynamic, Engine, ImmutableString, Map};
 
 /// Parses a YAML string to a `serde_json::Value`.
 pub fn yaml_str_to_json(s: &str) -> Result<serde_json::Value> {
@@ -21,6 +22,7 @@ pub fn yaml_all_serialize_to_string<T: serde::Serialize>(vals: &[T]) -> Result<S
     Ok(out)
 }
 
+#[cfg(feature = "rhai")]
 pub fn yaml_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("yaml_encode", |val: Dynamic| -> RhaiRes<ImmutableString> {

@@ -1,4 +1,6 @@
-use crate::{Error, Result, RhaiRes, hashes::Argon, rhai_err};
+#[cfg(feature = "crypto")] use crate::hashes::Argon;
+use crate::{Error, Result, hbs_json};
+#[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use handlebars::{Handlebars, handlebars_helper};
 use handlebars_misc_helpers::new_hbs;
@@ -57,7 +59,7 @@ pub const CORE_HBS_HELPERS: &[&str] = &[
     "quote",
     "unquote",
     "first_non_empty",
-    // handlebars_misc_helpers — json feature
+    // vynil-core (vendored from handlebars_misc_helpers's json feature — see hbs_json.rs)
     "json_to_str",
     "str_to_json",
     "from_json",
@@ -78,11 +80,16 @@ pub const CORE_HBS_HELPERS: &[&str] = &[
     "url_encode",
     "to_decimal",
     "header_basic",
+    #[cfg(feature = "crypto")]
     "argon_hash",
+    #[cfg(feature = "crypto")]
     "bcrypt_hash",
     "crc32_hash",
+    #[cfg(feature = "password")]
     "gen_password",
+    #[cfg(feature = "password")]
     "gen_password_alphanum",
+    #[cfg(feature = "crypto")]
     "gen_private_key",
     "concat",
 ];
@@ -119,6 +126,7 @@ handlebars_helper!(header_basic: |username:Value, password:Value| format!("Basic
     warn!("handlebars::header_basic received a non-string password: {:?}",password);
     ""
 })))));
+#[cfg(feature = "crypto")]
 handlebars_helper!(argon_hash: |password:Value| Argon::new().hash(password.as_str().unwrap_or_else(|| {
     warn!("handlebars::argon_hash received a non-string password: {:?}",password);
     ""
@@ -126,6 +134,7 @@ handlebars_helper!(argon_hash: |password:Value| Argon::new().hash(password.as_st
     warn!("handlebars::argon_hash failed to convert to string with: {e:?}");
     String::new()
 }));
+#[cfg(feature = "crypto")]
 handlebars_helper!(bcrypt_hash: |password:Value| crate::hashes::bcrypt_hash(password.as_str().unwrap_or_else(|| {
     warn!("handlebars::bcrypt_hash received a non-string password: {:?}",password);
     ""
@@ -147,6 +156,7 @@ handlebars_helper!(gen_password_alphanum: |len:u32| crate::password::generate(le
     warn!("handlebars::gen_password_alphanum failed with: {e:?}");
     String::new()
 }));
+#[cfg(feature = "crypto")]
 handlebars_helper!(gen_private_key: |algo:str, {bits:u32=4096}| crate::key::gen_private_key(algo, bits).unwrap_or_else(|e| {
     warn!("handlebars::gen_private_key failed with: {e:?}");
     String::new()
@@ -167,19 +177,23 @@ impl<'a> HandleBars<'a> {
     #[must_use]
     pub fn new() -> HandleBars<'static> {
         let mut engine = new_hbs();
+        hbs_json::register(&mut engine);
         engine.register_helper("concat", Box::new(concat));
         engine.register_helper("to_decimal", Box::new(to_decimal));
         engine.register_helper("base64_decode", Box::new(base64_decode));
         engine.register_helper("base64_encode", Box::new(base64_encode));
         engine.register_helper("header_basic", Box::new(header_basic));
-        engine.register_helper("argon_hash", Box::new(argon_hash));
-        engine.register_helper("bcrypt_hash", Box::new(bcrypt_hash));
+        #[cfg(feature = "crypto")]
+        {
+            engine.register_helper("argon_hash", Box::new(argon_hash));
+            engine.register_helper("bcrypt_hash", Box::new(bcrypt_hash));
+            engine.register_helper("gen_private_key", Box::new(gen_private_key));
+        }
         engine.register_helper("url_encode", Box::new(url_encode));
         #[cfg(feature = "password")]
         engine.register_helper("gen_password", Box::new(gen_password));
         #[cfg(feature = "password")]
         engine.register_helper("gen_password_alphanum", Box::new(gen_password_alphanum));
-        engine.register_helper("gen_private_key", Box::new(gen_private_key));
         engine.register_helper("crc32_hash", Box::new(crc32_hash));
         HandleBars { engine }
     }
@@ -195,6 +209,7 @@ impl<'a> HandleBars<'a> {
             .map_err(Error::HbsTemplateError)
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_register_template(&mut self, name: String, template: String) -> RhaiRes<()> {
         self.register_template(name.as_str(), template.as_str())
             .map_err(|e| format!("{e}").into())
@@ -219,6 +234,7 @@ impl<'a> HandleBars<'a> {
         }
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_register_helper_dir(&mut self, directory: String) -> RhaiRes<()> {
         self.register_helper_dir(PathBuf::from(directory))
             .map_err(rhai_err)
@@ -243,6 +259,7 @@ impl<'a> HandleBars<'a> {
         }
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_register_partial_dir(&mut self, directory: String) -> RhaiRes<()> {
         self.register_partial_dir(PathBuf::from(directory))
             .map_err(rhai_err)
@@ -254,6 +271,7 @@ impl<'a> HandleBars<'a> {
             .map_err(Error::HbsRenderError)
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_render(&mut self, template: String, data: rhai::Map) -> RhaiRes<String> {
         let json_data: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&data).map_err(|e| format!("{e}"))?)
@@ -270,6 +288,7 @@ impl<'a> HandleBars<'a> {
         self.engine.render(name, data).map_err(Error::HbsRenderError)
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_render_named(&mut self, name: String, template: String, data: rhai::Map) -> RhaiRes<String> {
         let json_data: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&data).map_err(|e| format!("{e}"))?)

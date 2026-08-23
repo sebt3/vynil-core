@@ -17,6 +17,7 @@ functions, but passing fixture data instead of (or in addition to) an `Engine`:
 ```rust
 let mut script = vynil_core::Script::new_bare(vec![]);
 
+#[cfg(feature = "http")]
 vynil_core::http_mock::httpmock_rhai_register(&mut script.engine, my_http_fixtures);
 
 #[cfg(feature = "k8s")]
@@ -32,7 +33,7 @@ shadow the first.
 
 ---
 
-## 1. `http_mock` — always compiled, no Cargo feature
+## 1. `http_mock` — feature `http` (implies `rhai`)
 
 Mirrors `RestClient` (see the "HTTP client" section of [rhai_helpers.md](rhai_helpers.md)) under
 the **exact same Rhai type name**, `RestClient` — a script that only talks to `RestClient` is

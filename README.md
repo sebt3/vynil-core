@@ -12,29 +12,39 @@ abstractions (CRDs, package model, instance controllers).
 
 ## What it provides
 
-Always present (no feature needed):
-
 - **Rhai engine** — `Script::new_bare(resolver_paths)` with the generic helpers (datetime, hashes,
   password, ed25519 keys, semver, glob, shell, serde-YAML, base64/json, file I/O).
 - **Handlebars engine** — `HandleBars::new()` with the generic helpers (base64, bcrypt, argon,
   password, encoding, concat, plus the `handlebars_misc_helpers` set) and `engine_mut()` to extend it.
 - **HTTP** — `RestClient` (reqwest) and its mock `RestClientMock`.
 
+A plain `vynil-core = "x"` dependency (default features) gets all three, unchanged from previous
+releases. Each is independently optional for a consumer that only needs one — see below.
+
 ## Features
 
-| Feature | Adds | Pulls in |
-|---------|------|----------|
-| *(default)* | Rhai + Handlebars + HTTP + generic helpers | rhai, handlebars, reqwest, … |
-| `k8s` | generic K8s handlers + their mocks | `kube`, `k8s-openapi`, `futures` |
-| `oci` | `Registry` + OCI mock | `oci-client` |
-| `s3` | `S3` client | `object_store` |
+| Feature | Default | Adds | Pulls in |
+|---------|---------|------|----------|
+| `rhai` | on | The Rhai scripting engine (`Script`) and every other module's Rhai bindings | `rhai` |
+| `hbs` | on | The Handlebars templating engine (`HandleBars`) | `handlebars`, `handlebars_misc_helpers`, `jmespath`, `toml` |
+| `http` | on | `RestClient` (reqwest) + its mock. Implies `rhai` — `RestClient` stores its headers as a Rhai `Map` internally | `reqwest`, `schemars`, `tokio`, `rhai` |
+| `crypto` | on | `argon_hash`/`bcrypt_hash`/`gen_private_key` (Handlebars "always" helpers) and the matching Rhai bindings | `openssl`, `argon2`, `bcrypt` |
+| `k8s` | off | generic K8s handlers + their mocks. Implies `rhai` — `K8sGeneric` is a Rhai-facing API throughout | `kube`, `k8s-openapi`, `futures`, `tokio`, `rhai` |
+| `oci` | off | `Registry` + OCI mock. Implies `rhai`, same reasoning as `k8s` | `oci-client`, `tokio`, `rhai` |
+| `s3` | off | `S3` client. Implies `rhai`, same reasoning as `k8s` | `object_store`, `futures`, `tokio`, `rhai` |
+| `fs` | off | Filesystem access from Rhai scripts | — |
+| `shell` | off | Shell command execution | — |
+| `password` | off | `gen_password`/`gen_password_alphanum` (off by default to avoid a name collision with a consumer's own password semantics) | `rand` |
 
 ```toml
-# minimal (templates + scripts, no specialised network)
-vynil-core = "0.5"
+# default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases
+vynil-core = "0.7"
 
 # Kubernetes project
-vynil-core = { version = "0.5", features = ["k8s"] }
+vynil-core = { version = "0.7", features = ["k8s"] }
+
+# Handlebars only (e.g. rendering MCP tool output), no Rhai engine at all
+vynil-core = { version = "0.7", default-features = false, features = ["hbs", "crypto"] }
 ```
 
 ## Client identity

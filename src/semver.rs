@@ -1,5 +1,6 @@
-use crate::{Error, Result, RhaiRes, rhai_err};
-use rhai::Engine;
+use crate::{Error, Result};
+#[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
+#[cfg(feature = "rhai")] use rhai::Engine;
 use semver::{Prerelease, Version};
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -25,6 +26,7 @@ impl Semver {
         Self::parse(str).ok()
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_parse(str: &str) -> RhaiRes<Self> {
         Self::parse(str).map_err(rhai_err)
     }
@@ -62,6 +64,7 @@ impl Semver {
         Ok(())
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_inc_beta(&mut self) -> RhaiRes<()> {
         self.inc_beta().map_err(rhai_err)
     }
@@ -78,6 +81,7 @@ impl Semver {
         Ok(())
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_inc_alpha(&mut self) -> RhaiRes<()> {
         self.inc_alpha().map_err(rhai_err)
     }
@@ -93,6 +97,7 @@ impl std::fmt::Display for Semver {
     }
 }
 
+#[cfg(feature = "rhai")]
 pub fn semver_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<Semver>("Semver")

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local};
-use rhai::{Engine, ImmutableString};
+#[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString};
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct DateTimeHandler {
@@ -15,11 +15,13 @@ impl DateTimeHandler {
         format!("{}", self.date.format(fmt))
     }
 
+    #[cfg(feature = "rhai")]
     pub fn rhai_format(&mut self, fmt: String) -> ImmutableString {
         self.format(&fmt).into()
     }
 }
 
+#[cfg(feature = "rhai")]
 pub fn chrono_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<DateTimeHandler>("DateTimeHandler")

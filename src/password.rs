@@ -3,7 +3,7 @@ use rand::{
     rng,
     seq::{IndexedRandom, SliceRandom},
 };
-use rhai::{Engine, Map};
+#[cfg(feature = "rhai")] use rhai::{Engine, Map};
 
 const LOWER: &[char] = &[
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u',
@@ -53,6 +53,7 @@ pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbol
     Ok(chars.into_iter().collect())
 }
 
+#[cfg(feature = "rhai")]
 fn class_min(spec: &Map, key: &str) -> usize {
     spec.get(key)
         .and_then(|v| v.as_int().ok())
@@ -60,6 +61,7 @@ fn class_min(spec: &Map, key: &str) -> usize {
         .unwrap_or(1)
 }
 
+#[cfg(feature = "rhai")]
 pub fn password_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("gen_password", |len: i64| -> crate::RhaiRes<String> {

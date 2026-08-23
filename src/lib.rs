@@ -8,15 +8,19 @@ pub enum Error {
     #[error("YamlError: {0}")]
     YamlError(String),
 
+    #[cfg(feature = "hbs")]
     #[error("Registering template failed with error: {0}")]
     HbsTemplateError(#[from] handlebars::TemplateError),
 
+    #[cfg(feature = "hbs")]
     #[error("Renderer error: {0}")]
     HbsRenderError(#[from] handlebars::RenderError),
 
+    #[cfg(feature = "rhai")]
     #[error("Rhai script error: {0}")]
     RhaiError(#[from] Box<rhai::EvalAltResult>),
 
+    #[cfg(feature = "http")]
     #[error("Reqwest error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 
@@ -38,9 +42,11 @@ pub enum Error {
     #[error("Semver error {0}")]
     Semver(#[from] ::semver::Error),
 
+    #[cfg(feature = "crypto")]
     #[error("Argon2 password_hash error {0}")]
     Argon2hash(#[from] argon2::password_hash::Error),
 
+    #[cfg(feature = "crypto")]
     #[error("Bcrypt hash error {0}")]
     BcryptError(#[from] bcrypt::BcryptError),
 
@@ -56,6 +62,7 @@ pub enum Error {
     #[error("ParseIntError {0}")]
     ParseInt(#[from] std::num::ParseIntError),
 
+    #[cfg(feature = "crypto")]
     #[error("KEY-OPENSSL-001 OpenSSL error {0}")]
     OpenSSL(#[from] openssl::error::ErrorStack),
 
@@ -94,28 +101,37 @@ pub enum Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(feature = "rhai")]
 pub type RhaiRes<T> = std::result::Result<T, Box<rhai::EvalAltResult>>;
 
+#[cfg(feature = "rhai")]
 pub fn rhai_err(e: Error) -> Box<rhai::EvalAltResult> {
     e.to_string().into()
 }
 
+#[cfg(feature = "rhai")]
 pub fn rhai_err_str(e: String) -> Box<rhai::EvalAltResult> {
     e.into()
 }
 
 pub mod chrono;
 pub mod client_name;
-pub mod engine;
-pub mod glob;
 pub mod hashes;
-pub mod hbs;
-pub mod http;
-pub mod http_mock;
-pub mod key;
 pub mod password;
 pub mod semver;
 pub mod yaml;
+
+#[cfg(feature = "crypto")] pub mod key;
+
+#[cfg(feature = "rhai")] pub mod engine;
+#[cfg(feature = "rhai")] pub mod glob;
+
+#[cfg(feature = "hbs")] pub mod hbs;
+#[cfg(feature = "hbs")] mod hbs_json;
+
+#[cfg(feature = "http")] pub mod http;
+#[cfg(feature = "http")] pub mod http_mock;
 
 #[cfg(feature = "oci")] pub mod oci;
 #[cfg(feature = "oci")] pub mod oci_mock;
