@@ -27,6 +27,7 @@ releases. Each is independently optional for a consumer that only needs one — 
 |---------|---------|------|----------|
 | `rhai` | on | The Rhai scripting engine (`Script`) and every other module's Rhai bindings | `rhai` |
 | `hbs` | on | The Handlebars templating engine (`HandleBars`) | `handlebars`, `handlebars_misc_helpers`, `jmespath`, `toml` |
+| `hbs-scripting` | on | `register_helper_dir`/`rhai_register_helper_dir` (loading `*.rhai` files as Handlebars script helpers). Implies `hbs` and `rhai`. Split out because Handlebars's `script_helper` feature drags in its own `rhai` -> `smartstring`, whose orphan trait impl breaks `String + &String` resolution anywhere else in the build graph (e.g. `async-graphql`'s `export_sdl.rs`, see [bodil/smartstring#7](https://github.com/bodil/smartstring/issues/7)) — disable it to keep `hbs` free of `rhai`/`smartstring` entirely | `handlebars/script_helper` |
 | `http` | on | `RestClient` (reqwest) + its mock. Implies `rhai` — `RestClient` stores its headers as a Rhai `Map` internally | `reqwest`, `schemars`, `tokio`, `rhai` |
 | `crypto` | on | `argon_hash`/`bcrypt_hash`/`gen_private_key` (Handlebars "always" helpers) and the matching Rhai bindings | `openssl`, `argon2`, `bcrypt` |
 | `k8s` | off | generic K8s handlers + their mocks. Implies `rhai` — `K8sGeneric` is a Rhai-facing API throughout | `kube`, `k8s-openapi`, `futures`, `tokio`, `rhai` |
@@ -43,7 +44,9 @@ vynil-core = "0.7"
 # Kubernetes project
 vynil-core = { version = "0.7", features = ["k8s"] }
 
-# Handlebars only (e.g. rendering MCP tool output), no Rhai engine at all
+# Handlebars only (e.g. rendering MCP tool output), no Rhai engine at all — and no rhai/smartstring
+# in the graph either, since "hbs" alone doesn't pull in "hbs-scripting" (e.g. safe to combine
+# with async-graphql, see the `hbs-scripting` row above)
 vynil-core = { version = "0.7", default-features = false, features = ["hbs", "crypto"] }
 ```
 

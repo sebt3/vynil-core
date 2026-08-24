@@ -11,6 +11,16 @@ dependency; it only matters if a consumer opts out with `default-features = fals
 Handlebars-only build (no Rhai engine at all — see [rhai_helpers.md](rhai_helpers.md)) or a
 Rhai-only one (no Handlebars).
 
+`register_helper_dir`/`rhai_register_helper_dir` (see below) additionally need the
+`hbs-scripting` sub-feature, on by default alongside `hbs`. It's kept separate because it turns
+on Handlebars's own `script_helper` feature, which pulls in Handlebars's own `rhai` ->
+`smartstring`; `smartstring`'s orphan `impl Add<SmartString> for String` breaks `String +
+&String` resolution anywhere else in the same build graph
+([bodil/smartstring#7](https://github.com/bodil/smartstring/issues/7)) — notably
+`async-graphql`'s `export_sdl.rs`. A consumer combining `hbs` with `async-graphql` (or anything
+else hitting that pattern) should disable `hbs-scripting` (`default-features = false, features =
+["hbs", ...]`) to keep `rhai`/`smartstring` out of their graph entirely.
+
 ## How registration works
 
 `HandleBars::new()` builds on `handlebars_misc_helpers::new_hbs()` — strict mode on, HTML
@@ -24,7 +34,7 @@ compile time:
 
 | Method | Loads |
 |---|---|
-| `register_helper_dir(dir)` | Every `*.rhai` file in `dir` as a Handlebars **script helper** (Handlebars' `script_helper` feature — the helper body is Rhai code) |
+| `register_helper_dir(dir)` | Every `*.rhai` file in `dir` as a Handlebars **script helper** (Handlebars' `script_helper` feature — the helper body is Rhai code; needs the `hbs-scripting` feature, see above) |
 | `register_partial_dir(dir)` | Every `*.hbs` file in `dir` as a named template/partial |
 
 ## Feature tags

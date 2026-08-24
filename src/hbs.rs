@@ -215,6 +215,7 @@ impl<'a> HandleBars<'a> {
             .map_err(|e| format!("{e}").into())
     }
 
+    #[cfg(feature = "hbs-scripting")]
     pub fn register_helper_dir(&mut self, directory: PathBuf) -> Result<()> {
         if std::path::Path::new(&directory).is_dir() {
             let re_rhai = Regex::new(r"\.rhai$").unwrap();
@@ -234,7 +235,7 @@ impl<'a> HandleBars<'a> {
         }
     }
 
-    #[cfg(feature = "rhai")]
+    #[cfg(feature = "hbs-scripting")]
     pub fn rhai_register_helper_dir(&mut self, directory: String) -> RhaiRes<()> {
         self.register_helper_dir(PathBuf::from(directory))
             .map_err(rhai_err)

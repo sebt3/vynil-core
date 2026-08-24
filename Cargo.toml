@@ -1,6 +1,6 @@
 [package]
 name = "vynil-core"
-version = "0.7.3"
+version = "0.7.4"
 authors = [
     "Sébastien Huss <sebastien.huss@gmail.com>",
     "Xavier Mortelette <reivaxm@gmail.com>"
@@ -17,7 +17,7 @@ categories = ["template-engine", "config"]
 # http/crypto/rhai/hbs default on so a plain `vynil-core = "x"` dependency (no features picked)
 # keeps compiling everything it always has — opting out of one of them is an explicit choice by
 # a consumer that only wants a subset (e.g. just the Handlebars engine, or just Rhai).
-default = ["http", "crypto", "rhai", "hbs"]
+default = ["http", "crypto", "rhai", "hbs", "hbs-scripting"]
 # K8sGeneric (src/k8s.rs) is built as a Rhai-facing API throughout (most of its methods return
 # RhaiRes), not a plain Rust API with a Rhai wrapper on top like the other modules below — so
 # unlike them it isn't independently rhai-optional, at least until a consumer actually needs
@@ -51,10 +51,19 @@ crypto = ["dep:openssl", "dep:argon2", "dep:bcrypt"]
 rhai = ["dep:rhai"]
 # The Handlebars templating engine (src/hbs.rs, src/hbs_json.rs).
 hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:toml"]
+# HandleBars::register_helper_dir/rhai_register_helper_dir, i.e. Handlebars's own `script_helper`
+# feature (registering *.rhai files as Handlebars helpers). Kept separate from "hbs" because
+# `script_helper` pulls in handlebars's own rhai -> smartstring, and smartstring's orphan
+# `impl Add<SmartString> for String` breaks `String + &String` resolution anywhere else in the
+# same build graph (https://github.com/bodil/smartstring/issues/7) -- e.g. async-graphql's
+# export_sdl.rs. A consumer who wants "hbs" for plain template rendering without dragging rhai
+# into their graph (e.g. combined with async-graphql) can now disable this sub-feature; a plain
+# `vynil-core = "x"` dependency is unaffected since this stays on by default alongside "rhai".
+hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]
 
 [dependencies]
 rhai = { version = "1.20.0", features = ["sync", "serde", "internals"], optional = true }
-handlebars = { version = "6.2.0", features = ["script_helper", "string_helpers"], optional = true }
+handlebars = { version = "6.2.0", features = ["string_helpers"], optional = true }
 handlebars_misc_helpers = { version = "0.17.0", default-features = false, features = ["string", "jsonnet", "regex", "uuid"], optional = true }
 # Direct dep (not via handlebars_misc_helpers's "json" feature, still pinned to jmespath 0.3.0
 # whose Function trait lacks a Send bound — see src/hbs_json.rs).
