@@ -1,3 +1,9 @@
+//! YAML ↔ JSON / Rhai helpers.
+//!
+//! The Rust helpers (`yaml_str_to_json`, `yaml_serialize_to_string`) are always available;
+//! the Rhai helpers (`yaml_encode`, `yaml_decode`, `yaml_decode_multi`) are registered by
+//! `yaml_rhai_register` when the `rhai` feature is enabled.
+
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "rhai")] use rhai::{Dynamic, Engine, ImmutableString, Map};

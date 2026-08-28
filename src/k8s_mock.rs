@@ -1,3 +1,8 @@
+//! Mock Kubernetes handlers for tests.
+//!
+//! Drop-in, in-memory replacements for [`crate::k8s`] types that satisfy the same Rhai bindings
+//! without a live cluster. See `k8s_mock_rhai_register`.
+
 use crate::{RhaiRes, register_k8s_generic, register_k8s_object, register_k8s_raw};
 use kube::api::DynamicObject;
 use rhai::{Dynamic, Engine, Map, serde::to_dynamic};

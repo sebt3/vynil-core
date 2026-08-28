@@ -1,3 +1,5 @@
+//! Mock OCI registry for tests. See [`crate::oci::Registry`] for the real client.
+
 use crate::RhaiRes;
 use rhai::{Dynamic, Engine};
 

@@ -1,3 +1,8 @@
+//! HTTP client (`RestClient`) and free helpers (`http_get_yaml`, `headers_get`).
+//!
+//! Requires the `http` feature (which implies `rhai`). All requests use the global
+//! client identity from [`crate::set_client_name`] as `User-Agent`.
+
 use crate::{Error, Error::*, RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Certificate, Client, Response};
@@ -36,6 +41,15 @@ pub enum DeleteMethod {
     Delete,
 }
 
+/// Reqwest-based HTTP client with builder-style header / TLS configuration.
+///
+///
+/// ```rust,no_run
+/// # vynil_core::set_client_name(|| "my-app.example.com".into());
+/// let mut c = vynil_core::http::RestClient::new("https://example.com");
+/// c.add_header_bearer("token");
+/// // let resp: serde_json::Value = c.json_get("api/v1/foo").unwrap();
+/// ```
 #[derive(Clone, Debug)]
 pub struct RestClient {
     baseurl: String,

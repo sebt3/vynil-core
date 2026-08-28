@@ -1,6 +1,11 @@
+//! Date/time helper for Rhai.
+//!
+//! Provides `DateTimeHandler` (`date_now` + `format`) via `chrono_rhai_register`.
+
 use chrono::{DateTime, Local};
 #[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString};
 
+/// Local date-time handle. Create with [`DateTimeHandler::now`] then [`DateTimeHandler::format`].
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct DateTimeHandler {
     pub date: DateTime<Local>,

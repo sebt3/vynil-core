@@ -1,9 +1,16 @@
+//! Private key generation (RSA / ed25519 via OpenSSL).
+//!
+//! Feature `crypto` only. Rhai bindings are registered by `key_rhai_register`.
+
 use crate::{Error, Result};
 use openssl::{pkey::PKey, rsa::Rsa};
 #[cfg(feature = "rhai")] use rhai::Engine;
 
+/// Default RSA key size when `bits` is not specified.
 pub const DEFAULT_RSA_BITS: u32 = 4096;
 
+/// Generate a PEM-encoded private key. `algo` is `rsa` or `ed25519` (case-insensitive).
+/// `bits` is only used for RSA. Returns `Error::UnsupportedKeyAlgorithm` for unknown algos.
 pub fn gen_private_key(algo: &str, bits: u32) -> Result<String> {
     let pem = match algo.to_ascii_lowercase().as_str() {
         "ed25519" => PKey::generate_ed25519()?.private_key_to_pem_pkcs8()?,

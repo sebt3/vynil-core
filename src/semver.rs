@@ -1,8 +1,18 @@
+//! Semver parsing and bumping.
+//!
+//! `Semver` wraps `semver::Version` and preserves an optional leading `v`.
+//! Rhai helpers (`semver_from`, `inc_major`/`inc_minor`/… + comparison ops) are registered by
+//! `semver_rhai_register`.
+
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "rhai")] use rhai::Engine;
 use semver::{Prerelease, Version};
 
+/// Semver wrapper that remembers whether the original string had a leading `v`.
+///
+/// Implements `Display` so `to_string()` round-trips the `v` prefix. Ordering is delegated to
+/// the inner `semver::Version`.
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct Semver {
     pub version: Version,

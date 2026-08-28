@@ -1,3 +1,8 @@
+//! Password generation with per-class minimums.
+//!
+//! `generate` is the core Rust API; Rhai bindings (`gen_password`, `gen_password_alphanum`)
+//! are gated behind the `password` feature.
+
 use crate::{Error, Result};
 use rand::{
     rng,
@@ -16,6 +21,10 @@ const UPPER: &[char] = &[
 const DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 const SYMBOLS: &[char] = &['!', '#', '%', '*', '+', '-', '.', ':', '=', '?', '@', '_'];
 
+/// Generate a random password of `length` chars with at least `lower`/`upper`/`digits`/`symbols`
+/// characters from each class. Symbols are `!#%*+-.:=?@_` (config-safe).
+///
+/// Returns `Error::PasswordSpec` if minimums exceed `length` or no class is enabled.
 pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbols: usize) -> Result<String> {
     let classes: [(&[char], usize); 4] = [
         (LOWER, lower),

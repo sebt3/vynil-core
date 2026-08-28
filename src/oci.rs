@@ -1,3 +1,7 @@
+//! OCI registry helpers (`Registry`) and auth utilities.
+//!
+//! Feature `oci` only (implies `rhai`). Wraps `oci-client`.
+
 use crate::{Error, Result, RhaiRes, rhai_err};
 use base64::Engine as _;
 use chrono::Utc;
@@ -11,6 +15,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use tar::{Archive, Builder};
 use tokio::{runtime::Handle, task::block_in_place};
 
+/// OCI registry client. Create with [`Registry::new`] and push/pull images.
 #[derive(Clone, Debug)]
 pub struct Registry {
     auth: RegistryAuth,

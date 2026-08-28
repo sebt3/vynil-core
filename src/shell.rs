@@ -1,8 +1,14 @@
+//! Shell execution helpers.
+//!
+//! `run` / `get_out` are the Rust APIs; `shell_run` / `shell_output` are the Rhai
+//! bindings gated behind the `shell` feature (plus `rhai` for the bindings).
+
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "rhai")] use rhai::Engine;
 use std::process::{Command, Output, Stdio};
 
+/// Run `sh -c <command>` inheriting stdout/stderr. Returns the raw [`Output`].
 pub fn run(command: String) -> Result<Output> {
     Command::new("sh")
         .arg("-c")
@@ -19,6 +25,7 @@ pub fn rhai_run(command: String) -> RhaiRes<i64> {
     Ok(i64::from(out.status.code().unwrap_or(0)))
 }
 
+/// Run `sh -c <command>` capturing stdout/stderr. Returns the raw [`Output`].
 pub fn get_out(command: String) -> Result<Output> {
     Command::new("sh")
         .arg("-c")

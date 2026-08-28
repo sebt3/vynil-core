@@ -12,6 +12,12 @@ repository = "https://github.com/sebt3/vynil-core"
 readme = "README.md"
 keywords = ["rhai", "handlebars", "kubernetes", "templating", "scripting"]
 categories = ["template-engine", "config"]
+documentation = "https://docs.rs/vynil-core"
+homepage = "https://github.com/sebt3/vynil-core"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # http/crypto/rhai/hbs default on so a plain `vynil-core = "x"` dependency (no features picked)

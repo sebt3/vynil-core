@@ -1,3 +1,12 @@
+//! Handlebars templating engine.
+//!
+//! `HandleBars` wraps [`handlebars::Handlebars`] pre-registered with a set of generic helpers
+//! (base64/url/crc32, plus the `handlebars_misc_helpers` collection and the vendored JSON/JMESPath
+//! helpers). Feature-gated helpers (`argon_hash`, `gen_password`, …) are
+//! only available when the corresponding Cargo feature is enabled.
+//!
+//! Use [`HandleBars::new`] then [`HandleBars::engine_mut`] to add application-specific helpers.
+
 #[cfg(feature = "crypto")] use crate::hashes::Argon;
 use crate::{Error, Result, hbs_json};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
@@ -169,11 +178,15 @@ handlebars_helper!(concat: |a: Value, b: Value| format!("{}{}", a.as_str().unwra
     ""
 })));
 
+/// Handlebars wrapper with generic helpers pre-registered.
+///
+/// See [`CORE_HBS_HELPERS`] for the included helper names.
 #[derive(Clone, Debug)]
 pub struct HandleBars<'a> {
     engine: Handlebars<'a>,
 }
 impl<'a> HandleBars<'a> {
+    /// Create a new engine with generic helpers registered.
     #[must_use]
     pub fn new() -> HandleBars<'static> {
         let mut engine = new_hbs();
@@ -198,11 +211,13 @@ impl<'a> HandleBars<'a> {
         HandleBars { engine }
     }
 
+    /// Expose the inner [`Handlebars`] to register custom helpers or configuration.
     #[must_use]
     pub fn engine_mut(&mut self) -> &mut Handlebars<'a> {
         &mut self.engine
     }
 
+    /// Register a template string under `name`.
     pub fn register_template(&mut self, name: &str, template: &str) -> Result<()> {
         self.engine
             .register_template_string(name, template)
@@ -215,6 +230,8 @@ impl<'a> HandleBars<'a> {
             .map_err(|e| format!("{e}").into())
     }
 
+    /// Register every `*.rhai` file in `directory` as a Handlebars script helper
+    /// (requires `hbs-scripting` feature).
     #[cfg(feature = "hbs-scripting")]
     pub fn register_helper_dir(&mut self, directory: PathBuf) -> Result<()> {
         if std::path::Path::new(&directory).is_dir() {
@@ -235,12 +252,14 @@ impl<'a> HandleBars<'a> {
         }
     }
 
+    /// Rhai-facing wrapper for [`HandleBars::register_helper_dir`].
     #[cfg(feature = "hbs-scripting")]
     pub fn rhai_register_helper_dir(&mut self, directory: String) -> RhaiRes<()> {
         self.register_helper_dir(PathBuf::from(directory))
             .map_err(rhai_err)
     }
 
+    /// Register every `*.hbs` file in `directory` as a partial/template.
     pub fn register_partial_dir(&mut self, directory: PathBuf) -> Result<()> {
         if std::path::Path::new(&directory).is_dir() {
             let re_rhai = Regex::new(r"\.hbs$").unwrap();
@@ -266,6 +285,7 @@ impl<'a> HandleBars<'a> {
             .map_err(rhai_err)
     }
 
+    /// Render an inline `template` string with `data`.
     pub fn render(&mut self, template: &str, data: &serde_json::Value) -> Result<String> {
         self.engine
             .render_template(template, data)
@@ -282,6 +302,7 @@ impl<'a> HandleBars<'a> {
             .map_err(|e| format!("{e}").into())
     }
 
+    /// Register `template` as `name` then render it with `data`.
     pub fn render_named(&mut self, name: &str, template: &str, data: &serde_json::Value) -> Result<String> {
         self.engine
             .register_template_string(name, template)

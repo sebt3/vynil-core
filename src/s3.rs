@@ -1,3 +1,7 @@
+//! S3 helpers (`s3_get_yaml`, `s3_list_keys`) exposed to Rhai.
+//!
+//! Feature `s3` only (implies `rhai`). Uses `object_store` with S3 (and HTTP endpoint for mocks).
+
 use crate::{Error, RhaiRes, rhai_err};
 use futures::StreamExt;
 use object_store::{ObjectStore, path::Path};
@@ -27,6 +31,8 @@ fn build_store(
     Ok(Box::new(store))
 }
 
+/// Fetch `key` (prefixed by `prefix`) from `bucket`/`region`/`endpoint` and parse it as YAML
+/// into a Rhai [`Dynamic`] map. Rhai signature: `s3_get_yaml(bucket, region, prefix, endpoint, access_key, secret_key, key)`.
 pub fn s3_get_yaml(
     bucket: String,
     region: String,
@@ -53,6 +59,7 @@ pub fn s3_get_yaml(
     .map_err(rhai_err)
 }
 
+/// List keys under `prefix` in `bucket`/`region`/`endpoint`. Rhai: `s3_list_keys(...) -> [String]`.
 pub fn s3_list_keys(
     bucket: String,
     region: String,

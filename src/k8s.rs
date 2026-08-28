@@ -1,3 +1,12 @@
+//! Kubernetes handlers.
+//!
+//! Feature `k8s` only (implies `rhai`). Provides `K8sGeneric` (CRUD via SSA + discovery cache),
+//! `K8sObject` (per-object helpers), `K8sRaw` (raw API discovery) and typed workload helpers
+//! (`K8sDeploy`, `K8sJob`, …). The API is Rhai-facing throughout (methods return [`crate::RhaiRes`]).
+//!
+//! The discovery cache is wired via `OnceLock` function pointers injected by the consumer (see
+//! `context_is_wired` / `set_get_client` …) — the crate itself does not assume a kubeconfig.
+
 use std::sync::OnceLock;
 
 use crate::{Error, Result, RhaiRes, rhai_err, rhai_err_str};

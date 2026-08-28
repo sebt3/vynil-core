@@ -2,7 +2,7 @@
 //! helpers.
 //!
 //! Vendored (not depended on) from `handlebars_misc_helpers` 0.17.0's `json_helpers.rs`
-//! (CC0-1.0, https://github.com/davidB/handlebars_misc_helpers) rather than pulled in as a
+//! (CC0-1.0, <https://github.com/davidB/handlebars_misc_helpers>) rather than pulled in as a
 //! dependency: that crate pins `jmespath 0.3.0`, whose `Function` trait lacks a `Send` bound —
 //! harmless on its own, but a hard compile failure for any consumer whose dependency graph also
 //! unifies in `lazy_static`'s `spin_no_std` feature (e.g. via `rsa`/`num-bigint-dig`, itself

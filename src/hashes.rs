@@ -1,3 +1,7 @@
+//! Hash helpers: `crc32_hash` (always), `bcrypt_hash` / `Argon` (feature `crypto`).
+//!
+//! Rhai bindings are registered by `hashes_rhai_register` / `crypto_hashes_rhai_register`.
+
 #[cfg(feature = "crypto")] use crate::{Error, Result};
 #[cfg(all(feature = "rhai", feature = "crypto"))]
 use crate::{RhaiRes, rhai_err};
@@ -9,6 +13,9 @@ use argon2::{
 #[cfg(feature = "crypto")] use bcrypt::{DEFAULT_COST, hash};
 #[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString};
 
+/// Argon2 hasher with a random per-instance salt.
+///
+/// Feature `crypto` only.
 #[cfg(feature = "crypto")]
 #[derive(Clone, Debug)]
 pub struct Argon {
@@ -46,10 +53,12 @@ impl Argon {
     }
 }
 
+/// Hash `password` with bcrypt (cost [`bcrypt::DEFAULT_COST`]). Feature `crypto` only.
 #[cfg(feature = "crypto")]
 pub fn bcrypt_hash(password: String) -> Result<String> {
     hash(&password, DEFAULT_COST).map_err(Error::BcryptError)
 }
+/// CRC32 (IEEE) hash of `text`.
 pub fn crc32_hash(text: String) -> u32 {
     crc32fast::hash(text.as_bytes())
 }

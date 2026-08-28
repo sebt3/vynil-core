@@ -1,3 +1,12 @@
+//! Rhai scripting engine.
+//!
+//! `Script` is the entry point. [`Script::new_bare`] builds a [`rhai::Engine`] preloaded with
+//! generic helpers (base64/json, sha256, url/basenames, yaml, semver, chrono, …) and optional
+//! feature-gated ones (`fs`, `shell`, `password`, `crypto`, `k8s`, `oci`, `s3`, `http`).
+//!
+//! The engine also injects `assert` and `import_run` / `import_template` shims so scripts can
+//! optionally import other modules without failing when they are absent.
+
 #[cfg(feature = "password")] use crate::password::password_rhai_register;
 #[cfg(feature = "shell")] use crate::shell::shell_rhai_register;
 use crate::{
@@ -119,12 +128,26 @@ fn fs_rhai_register(engine: &mut Engine) {
         .register_fn("is_dir", |name: String| -> bool { Path::new(&name).is_dir() });
 }
 
+/// Rhai engine + evaluation scope.
+///
+/// Create with [`Script::new_bare`], register extra functions on `engine` if needed,
+/// then evaluate files or snippets. See crate docs for the list of built-in helpers.
 #[derive(Debug)]
 pub struct Script {
+    /// The Rhai engine (register extra `fn`s here before evaluating).
     pub engine: Engine,
+    /// Persistent scope (variables set via [`Script::set_dynamic`]).
     pub ctx: Scope<'static>,
 }
 impl Script {
+    /// Create a new engine with generic helpers registered and `resolver_path` added to the
+    /// module resolver. `resolver_path` is a list of directories searched by `import` statements.
+    ///
+    /// ```rust
+    /// let mut s = vynil_core::engine::Script::new_bare(vec![]);
+    /// assert_eq!(s.eval("sha256(\"hello\")").unwrap().into_string().unwrap(),
+    ///     "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    /// ```
     pub fn new_bare(resolver_path: Vec<String>) -> Script {
         let mut script = Script {
             engine: Engine::new(),
@@ -161,6 +184,7 @@ impl Script {
         script
     }
 
+    /// Inject `assert` and `import_run`/`import_template` shims (called by `new_bare`).
     pub fn add_common(&mut self) {
         self.add_code("fn assert(cond, mess) {if (!cond){throw mess}}");
         self.add_code(
@@ -288,6 +312,8 @@ impl Script {
         );
     }
 
+    /// Compile `code` and register its public functions as global Rhai modules.
+    /// Errors are logged via `tracing::error!` and otherwise ignored.
     pub fn add_code(&mut self, code: &str) {
         match self.engine.compile(code) {
             Ok(ast) => {
@@ -306,11 +332,13 @@ impl Script {
         };
     }
 
+    /// Push a JSON value into the persistent Rhai scope under `name`.
     pub fn set_dynamic(&mut self, name: &str, val: &serde_json::Value) {
         let value: Dynamic = serde_json::from_str(&serde_json::to_string(&val).unwrap()).unwrap();
         self.ctx.set_or_push(name, value);
     }
 
+    /// Evaluate the Rhai file at `file` inside the persistent scope.
     pub fn run_file(&mut self, file: &PathBuf) -> Result<Dynamic, Error> {
         if Path::new(&file).is_file() {
             let str = file.as_os_str().to_str().unwrap();
@@ -326,12 +354,14 @@ impl Script {
         }
     }
 
+    /// Evaluate a Rhai snippet and return its [`Dynamic`] result.
     pub fn eval(&mut self, script: &str) -> Result<Dynamic, Error> {
         self.engine
             .eval_with_scope::<Dynamic>(&mut self.ctx, script)
             .map_err(RhaiError)
     }
 
+    /// Evaluate a Rhai snippet expected to return `bool`.
     pub fn eval_truth(&mut self, script: &str) -> Result<bool, Error> {
         tracing::debug!("START: eval_truth({})", script);
         let r = self
@@ -342,6 +372,7 @@ impl Script {
         r
     }
 
+    /// Evaluate a Rhai snippet expected to return a `Map`, serialised to a JSON string.
     pub fn eval_map_string(&mut self, script: &str) -> Result<String, Error> {
         tracing::debug!("START: eval_map_string({})", script);
         let m = self
@@ -352,6 +383,7 @@ impl Script {
         serde_json::to_string(&m).map_err(Error::SerializationError)
     }
 
+    /// Evaluate a Rhai snippet expected to return a `Map`, as `serde_json::Value`.
     pub fn eval_map_json(&mut self, script: &str) -> Result<serde_json::Value, Error> {
         let m = self
             .engine

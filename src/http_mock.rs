@@ -1,3 +1,8 @@
+//! Mock HTTP client for tests — Rhai-compatible drop-in for [`crate::http::RestClient`].
+//!
+//! Configure expected `path`/`method` → `return_obj` mappings and register via
+//! `httpmock_rhai_register` instead of `crate::http::http_rhai_register`.
+
 use crate::RhaiRes;
 use rhai::{Dynamic, Engine, Map};
 use serde::{Deserialize, Serialize};
@@ -20,6 +25,7 @@ pub struct HttpMockItem {
     pub return_obj: Map,
 }
 
+/// In-memory mock that answers `get`/`post`/… from a pre-configured list. See module docs.
 #[derive(Clone, Debug)]
 pub struct RestClientMock {
     baseurl: String,
