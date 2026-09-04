@@ -286,7 +286,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -356,7 +356,7 @@ impl RestClient {
                 ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
                 Ok(ret)
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -458,7 +458,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -560,7 +560,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -662,7 +662,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -729,7 +729,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -821,7 +821,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -991,7 +991,7 @@ impl RestClient {
                     })
                 })
             }
-            Err(e) => Err(format!("{e}").into()),
+            Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
@@ -1108,6 +1108,30 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
     };
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rhai_get_on_connection_failure_surfaces_real_cause() {
+        // Regression test for a JukeBox `Gitlab` source whose scan silently failed with the
+        // opaque `error sending request for url (...)` message and nothing else: connection-level
+        // reqwest errors (DNS, TLS, refused, timeout) only expose their real cause via `source()`,
+        // not `Display`. `rhai_get`'s error branch must walk that chain instead of `format!("{e}")`,
+        // or an operator has no way to tell a network/proxy problem from a GitLab API rejection.
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        let err = client
+            .rhai_get("api/v4/projects?search=box&per_page=20".to_string())
+            .expect_err("port 1 should refuse the connection");
+        let message = err.to_string();
+        assert!(
+            message.contains("error sending request for url (http://127.0.0.1:1/api/v4/projects"),
+            "message should still carry reqwest's own text: {message}"
+        );
+        assert!(
+            message.contains("Connection refused") || message.contains("refused"),
+            "message must carry the real transport-level cause, not just the opaque reqwest \
+             wrapper, or the bug is back: {message}"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_http_get_yaml_ok() {

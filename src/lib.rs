@@ -230,10 +230,37 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
 pub type RhaiRes<T> = std::result::Result<T, Box<rhai::EvalAltResult>>;
 
-/// Convert a [`enum@Error`] into a Rhai `EvalAltResult` (stringified).
+/// Render an error together with its full `source()` chain, e.g.
+/// `error sending request for url (...): dns error: failed to lookup address information: ...`.
+///
+/// Several error types this crate surfaces to Rhai — most notably `reqwest::Error` for a
+/// connection-level failure (DNS, TLS, timeout, connection refused) — implement [`std::fmt::Display`]
+/// on the outer error only, leaving the actual cause reachable solely through `Error::source()`
+/// (i.e. visible in `{:?}` but not `{}`). Without walking the chain, a script (and whatever surfaces
+/// its error, e.g. a JukeBox `Updated` condition) only ever sees an opaque
+/// "error sending request for url (...)" with no indication of *why* the request failed.
+/// A source already restating an ancestor's message verbatim (e.g. `Error::ReqwestError`'s
+/// `#[error("Reqwest error: {0}")]` Display, which embeds its wrapped `reqwest::Error`'s own
+/// Display) is skipped rather than appended again.
+pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut acc = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        let msg = e.to_string();
+        if !acc.contains(&msg) {
+            acc.push_str(": ");
+            acc.push_str(&msg);
+        }
+        source = e.source();
+    }
+    acc
+}
+
+/// Convert a [`enum@Error`] into a Rhai `EvalAltResult`, including its full `source()` chain
+/// (see [`error_chain`]) so the real cause of a connection-level failure isn't swallowed.
 #[cfg(feature = "rhai")]
 pub fn rhai_err(e: Error) -> Box<rhai::EvalAltResult> {
-    e.to_string().into()
+    error_chain(&e).into()
 }
 
 /// Convert a string into a Rhai `EvalAltResult`.
@@ -325,3 +352,79 @@ pub use hbs::HandleBars;
 #[cfg(feature = "k8s")]
 #[cfg_attr(docsrs, doc(cfg(feature = "k8s")))]
 pub use k8s::update_cache;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct Layered {
+        msg: &'static str,
+        source: Option<Box<Layered>>,
+    }
+    impl fmt::Display for Layered {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.msg)
+        }
+    }
+    impl std::error::Error for Layered {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn error_chain_walks_every_source() {
+        let err = Layered {
+            msg: "error sending request for url (https://gitlab.com/api/v4/projects)",
+            source: Some(Box::new(Layered {
+                msg: "dns error: failed to lookup address information",
+                source: Some(Box::new(Layered {
+                    msg: "Temporary failure in name resolution",
+                    source: None,
+                })),
+            })),
+        };
+        assert_eq!(
+            error_chain(&err),
+            "error sending request for url (https://gitlab.com/api/v4/projects): \
+             dns error: failed to lookup address information: \
+             Temporary failure in name resolution"
+        );
+    }
+
+    #[test]
+    fn error_chain_collapses_a_duplicate_leading_source() {
+        // Mirrors `Error::ReqwestError`, whose `#[error("Reqwest error: {0}")]` Display already
+        // embeds its wrapped source's own message verbatim.
+        let inner = Layered {
+            msg: "error sending request for url (https://gitlab.com/api/v4/projects)",
+            source: None,
+        };
+        let outer = Layered {
+            msg: "Reqwest error: error sending request for url (https://gitlab.com/api/v4/projects)",
+            source: Some(Box::new(Layered {
+                msg: "error sending request for url (https://gitlab.com/api/v4/projects)",
+                source: None,
+            })),
+        };
+        assert_eq!(error_chain(&inner), inner.msg);
+        assert_eq!(
+            error_chain(&outer),
+            outer.msg,
+            "duplicate source line must be collapsed"
+        );
+    }
+
+    #[test]
+    fn error_chain_single_error_has_no_source() {
+        let err = Layered {
+            msg: "boom",
+            source: None,
+        };
+        assert_eq!(error_chain(&err), "boom");
+    }
+}
