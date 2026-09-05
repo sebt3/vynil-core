@@ -1,6 +1,6 @@
 [package]
 name = "vynil-core"
-version = "0.7.5"
+version = "0.7.6"
 authors = [
     "Sébastien Huss <sebastien.huss@gmail.com>",
     "Xavier Mortelette <reivaxm@gmail.com>"
@@ -54,7 +54,7 @@ http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai"]
 # when "hbs" is on. The Rhai bindings in both modules additionally need "rhai".
 crypto = ["dep:openssl", "dep:argon2", "dep:bcrypt"]
 # The Rhai scripting engine (src/engine.rs) plus every other module's *_rhai_register glue.
-rhai = ["dep:rhai"]
+rhai = ["dep:rhai", "dep:smartstring"]
 # The Handlebars templating engine (src/hbs.rs, src/hbs_json.rs).
 hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:toml"]
 # HandleBars::register_helper_dir/rhai_register_helper_dir, i.e. Handlebars's own `script_helper`
@@ -69,6 +69,14 @@ hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]
 
 [dependencies]
 rhai = { version = "1.20.0", features = ["sync", "serde", "internals"], optional = true }
+# rhai::Map is a BTreeMap keyed by rhai's `Identifier` alias, which is `smartstring::SmartString`
+# directly (not the `ImmutableString` newtype rhai implements Serialize for by hand) -- so any
+# serde_json/serde_yaml call or #[derive(Serialize/Deserialize)] on a rhai::Map (yaml.rs, engine.rs,
+# http_mock.rs) needs smartstring's own "serde" feature. rhai's "serde" feature does NOT forward to
+# it (see rhai's Cargo.toml), so without this explicit dependency the build only works if some
+# unrelated crate elsewhere in the graph happens to enable it too -- which is exactly what broke
+# after a plain `cargo update` reshuffled the dependency graph.
+smartstring = { version = "1.0.1", features = ["serde"], optional = true }
 handlebars = { version = "6.2.0", features = ["string_helpers"], optional = true }
 handlebars_misc_helpers = { version = "0.17.0", default-features = false, features = ["string", "jsonnet", "regex", "uuid"], optional = true }
 # Direct dep (not via handlebars_misc_helpers's "json" feature, still pinned to jmespath 0.3.0

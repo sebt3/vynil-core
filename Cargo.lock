@@ -3340,7 +3340,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vynil-core"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -3369,6 +3369,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha256",
+ "smartstring",
  "tar",
  "tempfile",
  "thiserror 2.0.20",
