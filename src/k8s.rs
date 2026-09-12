@@ -153,8 +153,6 @@ pub fn update_cache() {
     })
 }
 
-type DynObjCondition = Box<dyn Fn(&DynamicObject) -> Result<bool, Box<rhai::EvalAltResult>>>;
-
 #[derive(Clone, Debug)]
 pub struct K8sObject {
     pub api: Api<DynamicObject>,
@@ -323,33 +321,60 @@ impl K8sObject {
         Ok(())
     }
 
-    pub fn is_for(cond: DynObjCondition) -> impl Condition<DynamicObject> {
-        move |obj: Option<&DynamicObject>| {
-            if let Some(dynobj) = &obj
-                && dynobj.data.is_object()
-            {
-                return cond(dynobj).unwrap_or_else(|e| {
-                    tracing::warn!("wait_for closure error: {:?}", e);
+    /// Wait until a caller-supplied Rhai predicate returns `true` for this object.
+    ///
+    /// The predicate is called with the object rendered as a map (`metadata` / `spec` /
+    /// `status` / …, exactly the shape `<K8sGeneric>.get(name)` returns) and must return a
+    /// boolean. It is re-evaluated on every watch event until it returns `true` or `timeout`
+    /// seconds elapse. Unlike `wait_status*`, the predicate can inspect arbitrarily nested
+    /// fields (`obj.status.ceph.versions.overall.len() == 1`, …). A predicate that raises an
+    /// error aborts the wait with that error rather than silently counting as `false`.
+    pub fn wait_for(
+        ctx: rhai::NativeCallContext,
+        obj: &mut K8sObject,
+        predicate: rhai::FnPtr,
+        timeout: i64,
+    ) -> RhaiRes<()> {
+        let name = obj.obj.name_any();
+        let api = obj.api.clone();
+        tracing::debug!("wait_for({}) for {} {}", predicate.fn_name(), obj.kind, name);
+        // `await_condition` only lets the closure return `bool`; stash the first predicate
+        // error here so we can surface it instead of a misleading timeout.
+        let pred_err: std::cell::RefCell<Option<Box<rhai::EvalAltResult>>> = std::cell::RefCell::new(None);
+        let cond = |o: Option<&DynamicObject>| -> bool {
+            let Some(dynobj) = o else { return false };
+            let value = match to_dynamic(dynobj) {
+                Ok(v) => v,
+                Err(e) => {
+                    pred_err.borrow_mut().get_or_insert(e);
+                    return false;
+                }
+            };
+            match predicate.call_within_context::<Dynamic>(&ctx, (value,)) {
+                Ok(r) => r.as_bool().unwrap_or(false),
+                Err(e) => {
+                    pred_err.borrow_mut().get_or_insert(e);
                     false
-                });
+                }
             }
-            false
-        }
-    }
-
-    pub fn wait_for(&mut self, condition: DynObjCondition, timeout: i64) -> RhaiRes<()> {
-        let name = self.obj.name_any();
-        let cond = await_condition(self.api.clone(), &name, Self::is_for(condition));
-        tokio::task::block_in_place(|| {
+        };
+        let outcome = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
-                    .await
-                    .map_err(Error::Elapsed)
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout as u64),
+                    await_condition(api, &name, cond),
+                )
+                .await
+                .map_err(Error::Elapsed)
             })
-        })
-        .map_err(rhai_err)?
-        .map_err(Error::KubeWaitError)
-        .map_err(rhai_err)?;
+        });
+        if let Some(e) = pred_err.into_inner() {
+            return Err(e);
+        }
+        outcome
+            .map_err(rhai_err)?
+            .map_err(Error::KubeWaitError)
+            .map_err(rhai_err)?;
         Ok(())
     }
 }
@@ -1280,6 +1305,7 @@ macro_rules! register_k8s_object {
             .register_fn("wait_status", _wait_status)
             .register_fn("wait_status_prop", _wait_status_prop)
             .register_fn("wait_status_string", _wait_status_string)
+            .register_fn("wait_for", <$type>::wait_for)
             .register_fn("wait_deleted", _wait_deleted)
     }};
 }

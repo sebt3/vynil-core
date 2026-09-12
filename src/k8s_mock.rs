@@ -5,10 +5,8 @@
 
 use crate::{RhaiRes, register_k8s_generic, register_k8s_object, register_k8s_raw};
 use kube::api::DynamicObject;
-use rhai::{Dynamic, Engine, Map, serde::to_dynamic};
+use rhai::{Dynamic, Engine, FnPtr, Map, NativeCallContext, serde::to_dynamic};
 use std::sync::{Arc, Mutex};
-
-type DynObjCondition = Box<dyn Fn(&DynamicObject) -> Result<bool, Box<rhai::EvalAltResult>>>;
 
 #[derive(Clone, Debug)]
 pub struct K8sObjectMock {
@@ -74,12 +72,29 @@ impl K8sObjectMock {
         Ok(())
     }
 
-    pub fn is_for(_cond: DynObjCondition) -> impl kube::runtime::wait::Condition<DynamicObject> {
-        move |_obj: Option<&DynamicObject>| true
-    }
-
-    pub fn wait_for(&mut self, _condition: DynObjCondition, _timeout: i64) -> RhaiRes<()> {
-        Ok(())
+    /// Mock counterpart of [`crate::k8s::K8sObject::wait_for`].
+    ///
+    /// There is no cluster to watch and no time to advance, so the mock evaluates the
+    /// predicate exactly once against the seeded object: it returns `Ok(())` if the
+    /// predicate holds and an error otherwise. This lets package tests assert both that a
+    /// converged object passes the gate and that a mid-upgrade one does not.
+    pub fn wait_for(
+        ctx: NativeCallContext,
+        obj: &mut K8sObjectMock,
+        predicate: FnPtr,
+        _timeout: i64,
+    ) -> RhaiRes<()> {
+        let matched = predicate.call_within_context::<Dynamic>(&ctx, (obj.obj.clone(),))?;
+        if matched.as_bool().unwrap_or(false) {
+            Ok(())
+        } else {
+            Err(format!(
+                "wait_for: predicate returned false for mocked {} (the mock evaluates the \
+                 predicate once against the seeded object and never polls)",
+                obj.kind
+            )
+            .into())
+        }
     }
 
     pub fn original_kind(&mut self) -> String {
@@ -707,6 +722,63 @@ mod tests {
     fn register_k8s_object_mock_compiles() {
         let mut engine = rhai::Engine::new();
         register_k8s_object!(engine, K8sObjectMock);
+    }
+
+    fn mock_engine_with(obj: serde_json::Value) -> Engine {
+        let mocks: Arc<Mutex<Vec<Dynamic>>> = Arc::new(Mutex::new(vec![to_dynamic(obj).unwrap()]));
+        let created: Arc<Mutex<Vec<Dynamic>>> = Arc::new(Mutex::new(vec![]));
+        let mut engine = rhai::Engine::new();
+        k8s_mock_rhai_register(&mut engine, mocks, created);
+        engine
+    }
+
+    const CEPH_WAIT_FOR: &str = r#"
+        let cc = k8s_resource("CephCluster", "rook-ceph").get_obj("rook-ceph");
+        cc.wait_for(|o| {
+            o.status.ceph.versions.overall.len() == 1 && o.status.ceph.health != "HEALTH_ERR"
+        }, 60);
+    "#;
+
+    #[test]
+    fn wait_for_mock_passes_when_predicate_holds() {
+        // Converged: a single entry under versions.overall, health merely WARN.
+        let engine = mock_engine_with(serde_json::json!({
+            "kind": "CephCluster",
+            "metadata": { "name": "rook-ceph", "namespace": "rook-ceph" },
+            "status": { "ceph": {
+                "health": "HEALTH_WARN",
+                "versions": { "overall": { "ceph version 18.2.8 reef (stable)": 7 } }
+            } }
+        }));
+        engine.eval::<()>(CEPH_WAIT_FOR).unwrap();
+    }
+
+    #[test]
+    fn wait_for_mock_errors_when_predicate_fails() {
+        // Mid-upgrade: two versions still reported under versions.overall.
+        let engine = mock_engine_with(serde_json::json!({
+            "kind": "CephCluster",
+            "metadata": { "name": "rook-ceph", "namespace": "rook-ceph" },
+            "status": { "ceph": {
+                "health": "HEALTH_WARN",
+                "versions": { "overall": {
+                    "ceph version 18.2.4 reef (stable)": 3,
+                    "ceph version 18.2.8 reef (stable)": 4
+                } }
+            } }
+        }));
+        assert!(engine.eval::<()>(CEPH_WAIT_FOR).is_err());
+    }
+
+    #[test]
+    fn wait_for_mock_propagates_predicate_error() {
+        // `.status` has no `ceph` key -> navigating `.ceph.versions` throws in the predicate.
+        let engine = mock_engine_with(serde_json::json!({
+            "kind": "CephCluster",
+            "metadata": { "name": "rook-ceph", "namespace": "rook-ceph" },
+            "status": {}
+        }));
+        assert!(engine.eval::<()>(CEPH_WAIT_FOR).is_err());
     }
 
     #[test]

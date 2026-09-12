@@ -85,6 +85,7 @@ Registered by `core_common_rhai_register`, no feature beyond `rhai` itself requi
 | `sha256(text: string)` | `string` | Hex digest |
 | `log_debug(text: string)` / `log_info` / `log_warn` / `log_error` | `()` | Forwards to `tracing` |
 | `url_encode(text: string)` | `string` | Percent-encodes for use in a query string |
+| `sleep(seconds: int)` | `()` | Blocks the current thread for `seconds`; a non-positive value returns immediately. For hand-rolled poll loops (`get` + check + `sleep`) when `<K8sObject>.wait_for` doesn't fit |
 | `get_env(name: string)` | `string` | Empty string if unset |
 | `to_decimal(octal: string)` | `int` | Parses the string as base-8; `0` (and a warning) if it isn't valid octal |
 | `base64_encode(text: string)` | `string` | Standard base64 |
@@ -346,6 +347,9 @@ group/version/kind and scope.
 | `<K8sObject>.wait_status(prop: string, timeout: int)` | `()` | Waits until `status.<prop>` is boolean `true` |
 | `<K8sObject>.wait_status_prop(prop: string, timeout: int)` | `()` | Waits until `status.<prop>` merely exists (non-null) |
 | `<K8sObject>.wait_status_string(prop: string, value: string, timeout: int)` | `()` | Waits until `status.<prop> == value` |
+| `<K8sObject>.wait_for(predicate: Fn, timeout: int)` | `()` | Re-evaluates `predicate` on every watch event until it returns `true` or `timeout` seconds pass. `predicate` gets the object as a map (`o.metadata` / `o.spec` / `o.status` / …, same shape as `<K8sGeneric>.get`) so it can test arbitrarily nested fields — e.g. `\|o\| o.status.ceph.versions.overall.len() == 1 && o.status.ceph.health != "HEALTH_ERR"`. An error raised inside `predicate` aborts the wait with that error |
+
+`wait_for` under the mock (tests / `agent package test`) does not poll: it evaluates `predicate` once against the seeded object and errors if it returns `false` — seed the object in its converged state, or assert the failure explicitly.
 
 ### `K8sRaw` — unstructured client for cluster-level endpoints
 

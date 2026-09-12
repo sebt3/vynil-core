@@ -119,8 +119,9 @@ namespace).
 | `k8s_resource(...)`, `get_deployment`/`get_deamonset`/`get_statefulset`/`get_job` | Constructs the mock handle immediately (no discovery round-trip); doesn't fail if nothing matches yet — failure happens on the subsequent `get`/lookup |
 | `.get(name)` / `.get_meta(name)` / `.list()` / `.list_labels(...)` / `.list_meta()` | Searches `mocks` by kind (+ name/namespace where relevant) |
 | `.create(data)` / `.replace(name, data)` / `.patch(name, data)` / `.apply(name, data)` | Deep-merges `data` onto any existing matching entry (by kind + name + namespace) and appends the merged result to `created` — inspect `created` after running a script to assert what would have been sent to the cluster |
-| `.delete(name)`, `.wait_*(...)` | No-ops that always succeed |
-| `<K8sObject>.wait_condition`/`wait_status`/`wait_status_prop`/`wait_status_string`/`wait_for` | Always immediately satisfied |
+| `.delete(name)`, `.wait_deleted(...)` | No-ops that always succeed |
+| `<K8sObject>.wait_condition`/`wait_status`/`wait_status_prop`/`wait_status_string` | Always immediately satisfied |
+| `<K8sObject>.wait_for(predicate, timeout)` | Evaluates `predicate` **once** against the seeded object (no polling, `timeout` ignored): `Ok` if it returns `true`, error otherwise. Seed the object converged, or assert the error |
 | `<K8sGeneric>.exist` | Always `true` |
 | `update_k8s_crd_cache()` | Overridden to a no-op — the real macro-registered version would try to reach a live cluster to refresh discovery, which would panic without a wired client |
 | `<K8sRaw>.get_url`/`get_cluster_version`/`get_api_resources` | Always return `{}` |

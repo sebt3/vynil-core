@@ -45,6 +45,11 @@ fn core_common_rhai_register(engine: &mut Engine) {
         .register_fn("log_warn", |s: ImmutableString| tracing::warn!("{s}"))
         .register_fn("log_error", |s: ImmutableString| tracing::error!("{s}"))
         .register_fn("url_encode", url_encode)
+        .register_fn("sleep", |seconds: i64| {
+            if seconds > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(seconds as u64));
+            }
+        })
         .register_fn("get_env", |var: ImmutableString| -> String {
             std::env::var(var.to_string()).unwrap_or("".into())
         })
@@ -621,5 +626,21 @@ mod tests {
         let mut s = make_script();
         let result = s.eval(r#"url_encode("hello world")"#).unwrap();
         assert_eq!(result.to_string(), "hello+world");
+    }
+
+    #[test]
+    fn test_sleep_non_positive_returns_immediately() {
+        let mut s = make_script();
+        let start = std::time::Instant::now();
+        assert!(s.eval("sleep(0); sleep(-3)").is_ok());
+        assert!(start.elapsed() < std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    fn test_sleep_positive_blocks_for_the_requested_duration() {
+        let mut s = make_script();
+        let start = std::time::Instant::now();
+        assert!(s.eval("sleep(1)").is_ok());
+        assert!(start.elapsed() >= std::time::Duration::from_millis(900));
     }
 }
