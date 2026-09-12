@@ -36,7 +36,7 @@
 //!
 //! # Quick start
 //!
-//! ```rust,no_run
+//! ```rust,no_run,cfg(all(feature = "rhai", feature = "hbs"))
 //! vynil_core::set_client_name(|| "my-app.example.com".to_string());
 //!
 //! // Rhai
@@ -87,6 +87,24 @@
 //! [Rhai]: https://rhai.rs
 //! [Handlebars]: https://handlebarsjs.com
 
+// La famille panic/unwrap est interdite en code de production mais tolérée partout sous
+// `cfg(test)` (règle du harnais clippy, voir `tooling.sdd`) : les tests factorisés dans
+// les fichiers source héritent de cette exemption depuis la racine du crate.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::dbg_macro,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::arithmetic_side_effects
+    )
+)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use thiserror::Error;

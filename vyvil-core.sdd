@@ -1,0 +1,69 @@
+Spec: vyvil-core
+
+Platform: Rust edition 2024, toolchain stable 1.92.0, rustfmt nightly
+
+Purpose:
+  Boîte à outils Rust générique combinant un moteur de scripts Rhai et un moteur de templates
+  Handlebars, avec handlers Kubernetes / OCI / S3 / HTTP optionnels, réutilisable par les
+  projets consommateurs (vynil, kuberest, kydah) sans embarquer les abstractions métier de
+  vynil. Publiée sur crates.io, API instable avant `1.0`.
+
+Owns:
+  ./Cargo.toml
+
+Can read:
+  ./AGENTS.md
+  ./.specdd/bootstrap.project.md
+
+References:
+  ./tooling.sdd
+  ./.github/workflows/workflows.sdd
+
+Must:
+  Rester une crate générique sans logique métier d'un consommateur particulier.
+  Exiger la configuration explicite de l'identité client par le consommateur via
+  @set_client_name, sans aucun fallback embarqué.
+  Garder les features `k8s`, `oci`, `s3`, `http` impliquant `rhai` : leurs types cœur sont des
+  API Rhai directes, pas une API Rust séparée avec wrapper.
+  Garder `hbs-scripting` isolable de `hbs` : `hbs` seul ne doit jamais réintroduire
+  `handlebars/script_helper` (donc `rhai` ni `smartstring`) dans le graphe de dépendances
+  (https://github.com/sebt3/vynil-core/issues/9).
+  Exiger qu'aucune ligne de code source ne soit écrite sans spec `.sdd` cible approuvée par
+  Sébastien et sans tests dérivés de ses `Scenario` écrits et exécutés d'abord (flux
+  spec → test → implémentation, `.specdd/bootstrap.project.md`).
+  Exiger la batterie complète de vérification (voir ./tooling.sdd) avant qu'une `Tasks` passe
+  à `[x]`.
+
+Must not:
+  Dépendre de vynil, kuberest, kydah ou d'un autre consommateur de cette crate.
+  Introduire un client name par défaut implicite (genre `vynil.solidite.fr`) contournant
+  @set_client_name.
+  Embarquer des CRDs, un contexte applicatif ou des helpers Handlebars métier propres à un
+  consommateur : cela reste dans le consommateur.
+
+Depends on:
+  ./tooling.sdd
+
+Tasks:
+  [ ] Spec `src/chrono.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/client_name.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/engine.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/glob.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/hashes.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/hbs.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/hbs_json.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec groupée `src/http.sdd` owns `src/http.rs` + `src/http_mock.rs`, produite puis revue.
+  [ ] Spec groupée `src/k8s.sdd` owns `src/k8s.rs` + `src/k8s_mock.rs`, produite puis revue.
+  [ ] Spec `src/key.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/lib.sdd` produite (spec-reverse) puis revue (racine crate, @Error, @set_client_name).
+  [ ] Spec groupée `src/oci.sdd` owns `src/oci.rs` + `src/oci_mock.rs`, produite puis revue.
+  [ ] Spec `src/password.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/s3.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/semver.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/shell.sdd` produite (spec-reverse) puis revue.
+  [ ] Spec `src/yaml.sdd` produite (spec-reverse) puis revue.
+  [ ] Purger la dette harnais stricte module par module, en coordination avec `./tooling.sdd`.
+
+Done when:
+  Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),
+  et la batterie harnais passe avec `-- -D warnings`.

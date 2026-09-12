@@ -15,6 +15,27 @@ categories = ["template-engine", "config"]
 documentation = "https://docs.rs/vynil-core"
 homepage = "https://github.com/sebt3/vynil-core"
 
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+# Guidage pour tout code nouveau ou modifié : 0 warning pedantic/cargo sur les fichiers touchés.
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Harnais strict : warn pour l'instant (dette existante, voir tooling.sdd) — flip en deny
+# quand la dette purgée, à chaque fin de migration d'un fichier.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+unreachable = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+arithmetic_side_effects = "warn"
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

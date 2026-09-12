@@ -63,5 +63,8 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo clippy --all-features
-        run: cargo clippy --all-features -- -D warnings
+      # Harnais clippy porté par Cargo.toml [lints] (strict family + pedantic + missing_docs).
+      # Dette existante purgée par la migration SpecDD (voir tooling.sdd) : quand les Tasks
+      # de purge sont faites, remettre `-- -D warnings` et passer la famille stricte en deny.
+      - name: cargo clippy --all-features --all-targets
+        run: cargo clippy --all-features --all-targets

@@ -1,0 +1,52 @@
+Spec: Harnais qualité (clippy, fmt, lints)
+
+Platform: clippy (stable 1.92.0), rustfmt nightly, table Cargo.toml [lints]
+
+Purpose:
+  Définir le harnais qui guide les agents d'implémentation : formatage rustfmt, lints stricts
+  clippy/rustc, et le suivi de la dette existante jusqu'à l'objectif zéro warning qui permet
+  le passage en `deny` et le `-D warnings` en CI.
+
+Owns:
+  ./rustfmt.toml
+
+Can modify:
+  ./Cargo.toml
+
+Must:
+  Contenir dans `[lints.clippy]` la famille stricte : `unwrap_used`, `expect_used`, `panic`,
+  `unreachable`, `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
+  `arithmetic_side_effects`, plus les groupes `pedantic` et `cargo`.
+  Contenir dans `[lints.rust]` `unsafe_code = forbid` et `missing_docs = warn` sur toute la crate.
+  Garder la famille stricte et `pedantic`/`cargo` au niveau `warn` tant que la dette des
+  modules n'est pas purgée, module par module au fil de la migration des specs.
+  Passer la famille stricte en `deny` dès que la dette d'un module est purgée, et l'ensemble
+  en `deny` quand toute la crate est propre.
+  Tolérer la famille panic/unwrap uniquement sous `cfg(test)` via l'exemption portée par
+  `src/lib.rs` à la racine du crate.
+
+Must not:
+  Accepter un `#[allow(...)]` de lint du harnais dans du code de production sans commentaire
+  de justification d'une ligne citant la spec concernée.
+  Réduire le niveau d'un lint existant du harnais sans décision explicite de Sébastien.
+
+Scenario: unwrap ajouté dans du code touché
+  Given une tâche d'implémentation ajoute un `.unwrap()` sur un Resultat dans du code de production
+  When le validateur lance `cargo clippy --all-features --all-targets`
+  Then la tâche est rejetée et remonte dans la synthèse du validateur
+
+Scenario: exemption en test
+  Given un module de test `cfg(test)` utilise `.expect()` abondamment
+  When le harnais clippy tourne
+  Then aucun warning de la famille stricte n'est émis pour ce module
+
+Tasks:
+  [ ] Basculer la famille strict `deny` module par module à mesure que la dette est purgée.
+  [ ] Basculer `pedantic`/`cargo` en `deny` quand la crate est à zéro warning.
+  [ ] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand
+    `/.github/workflows/test.yml` le prévoit (voir sa spec).
+  [ ] Purger les warnings `missing_docs` (177 pub items non documentés au point de départ).
+
+Done when:
+  `cargo clippy --all-features --all-targets -- -D warnings` sort sans warning, et
+  `cargo +nightly fmt -- --check` passe.
