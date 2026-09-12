@@ -26,10 +26,11 @@ Détail complet dans `.specdd/bootstrap.project.md`. Règles clés :
 ## Harnais clippy
 
 `Cargo.toml` `[lints]` porte le harnais (contractualisé par `tooling.sdd`) : `unsafe_code`
-interdit, `missing_docs` warn, `pedantic` + `cargo` warn en guidage, famille stricte
+interdit, `missing_docs` warn, `pedantic` + `cargo` et la famille stricte
 (`unwrap_used`, `expect_used`, `panic`, `unreachable`, `dbg_macro`, `todo`, `unimplemented`,
-`print_stdout`, `print_stderr`, `arithmetic_side_effects`) — flip `deny` au fil de la purge
-de dette. Dans tout fichier touché : zéro warning. En production : aucun
+`print_stdout`, `print_stderr`, `arithmetic_side_effects`) en `deny` depuis la purge de dette.
+Seul `multiple_crate_versions` (doublons de versions des dépendances amont) est `allow`.
+En production : aucun
 `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!`/`println!`.
 
 ## Agents (`.opencode/agents/`)
@@ -52,7 +53,7 @@ cargo test --no-default-features --features k8s       # matrice de features
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
-cargo clippy --all-features --all-targets             # harnais (dette hors fichiers touchés only)
+cargo clippy --all-features --all-targets -- -D warnings   # harnais (zéro warning toléré)
 cargo +nightly fmt -- --check                         # voir rustfmt.toml
 ```
 

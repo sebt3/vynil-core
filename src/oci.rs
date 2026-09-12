@@ -22,6 +22,7 @@ pub struct Registry {
     registry: String,
 }
 impl Registry {
+    /// Creates a registry client for `registry`, anonymous when `username` or `password` is empty.
     #[must_use]
     pub fn new(registry: String, username: String, password: String) -> Self {
         Self {
@@ -34,6 +35,13 @@ impl Registry {
         }
     }
 
+    /// Tars and gzips `source_dir` into a single-layer image, pushes it to
+    /// `registry/repository:tag` with `annotations`, and returns the manifest digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::Stdio`] on tar/gzip I/O failures or
+    /// [`Error::OCIDistrib`] when the manifest build or the push fails.
     pub fn push_image(
         &mut self,
         source_dir: String,
@@ -104,6 +112,15 @@ impl Registry {
         Ok(digest)
     }
 
+    /// Signs `registry/repository:tag@digest` via the external `cosign` binary; a no-op when
+    /// `key_path` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::Stdio`] when `cosign` cannot be spawned, or
+    /// [`Error::Other`] when it exits with a non-zero status.
+    // signature imposée par l'API Rhai (vyvil-core.sdd)
+    #[allow(clippy::needless_pass_by_value)]
     pub fn sign_image(
         &mut self,
         repository: String,
@@ -128,6 +145,12 @@ impl Registry {
         }
     }
 
+    /// Pulls `registry/repository:tag` and unpacks every gzip layer into `dest_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OCIDistrib`] when the pull fails, [`Error::Stdio`] when a layer cannot be
+    /// unpacked.
     pub fn pull_image(&mut self, dest_dir: &PathBuf, repository: String, tag: String) -> Result<()> {
         let client = Client::new(client::ClientConfig::default());
         let reference = Reference::with_tag(self.registry.clone(), repository, tag);
@@ -149,6 +172,12 @@ impl Registry {
         Ok(())
     }
 
+    /// Lists tags (up to 100) of `repository` on this registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OCIParseError`] if the reference is malformed, [`Error::OCIDistrib`] if
+    /// the tag listing fails.
     pub async fn list_tags(&mut self, repository: String) -> Result<Vec<String>> {
         let client = Client::new(client::ClientConfig::default());
         let image: Reference = format!("{}/{}", self.registry.clone(), repository)
@@ -161,12 +190,24 @@ impl Registry {
         Ok(ret.tags)
     }
 
+    /// Rhai binding of [`Self::list_tags`], returning the tags as a Rhai array.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::OCIParseError`] or [`Error::OCIDistrib`], as per
+    /// [`Self::list_tags`].
     pub fn rhai_list_tags(&mut self, repository: String) -> RhaiRes<Dynamic> {
         block_in_place(|| Handle::current().block_on(async move { self.list_tags(repository).await }))
             .map_err(rhai_err)
             .map(|lst| lst.into_iter().collect())
     }
 
+    /// Fetches the manifest of `registry/repository:tag` as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::OCIDistrib`] when the pull fails, or
+    /// [`Error::SerializationError`] when the manifest cannot be converted to a Rhai value.
     pub fn get_manifest(&mut self, repository: String, tag: String) -> RhaiRes<Dynamic> {
         let client = Client::new(client::ClientConfig::default());
         let image = Reference::with_tag(self.registry.clone(), repository, tag);
@@ -179,6 +220,14 @@ impl Registry {
     }
 }
 
+/// Resolves [`RegistryAuth`] for `registry` from a `kubernetes.io/dockerconfigjson` secret
+/// `secret_name` in namespace `ns`; falls back to anonymous at any missing step.
+///
+/// # Errors
+///
+/// Returns [`Error::KubeError`] when the secret fetch fails, [`Error::SerializationError`] on
+/// invalid docker-config JSON, [`Error::Base64DecodeError`] or [`Error::UTF8`] on a malformed
+/// `auth` field.
 #[cfg(feature = "k8s")]
 pub async fn resolve_registry_auth(
     secret_name: &str,
@@ -187,13 +236,11 @@ pub async fn resolve_registry_auth(
     ns: &str,
 ) -> Result<RegistryAuth> {
     let api: Api<Secret> = Api::namespaced(client, ns);
-    let secret = match api.get_opt(secret_name).await? {
-        Some(s) => s,
-        None => return Ok(RegistryAuth::Anonymous),
+    let Some(secret) = api.get_opt(secret_name).await? else {
+        return Ok(RegistryAuth::Anonymous);
     };
-    let data = match secret.data {
-        Some(d) => d,
-        None => return Ok(RegistryAuth::Anonymous),
+    let Some(data) = secret.data else {
+        return Ok(RegistryAuth::Anonymous);
     };
     let raw = match data.get(".dockerconfigjson") {
         Some(b) => b.0.clone(),
@@ -213,6 +260,12 @@ pub async fn resolve_registry_auth(
     }
 }
 
+/// Whether `registry/image:tag` exists, pulling its manifest: `false` on manifest-unknown or
+/// HTTP 404 responses, `true` on success.
+///
+/// # Errors
+///
+/// Returns [`Error::OCIDistrib`] for any other registry/server error.
 pub async fn verify_tag_in_registry(
     registry: &str,
     image: &str,
@@ -239,6 +292,15 @@ pub async fn verify_tag_in_registry(
     }
 }
 
+/// Reads a docker-config `path` and returns `{user, pass}` decoded from the `auth` entry of
+/// `registry`; empty strings when the registry or the entry is absent.
+///
+/// # Errors
+///
+/// Returns a Rhai error wrapping [`Error::Stdio`] if the file cannot be read, or
+/// [`Error::SerializationError`] if it is not valid JSON.
+// signature imposée par l'API Rhai (vyvil-core.sdd)
+#[allow(clippy::needless_pass_by_value)]
 pub fn get_auth_from_file(path: String, registry: String) -> RhaiRes<Dynamic> {
     let content = std::fs::read_to_string(&path).map_err(|e| rhai_err(Error::Stdio(e)))?;
     let json: serde_json::Value =
@@ -257,6 +319,7 @@ pub fn get_auth_from_file(path: String, registry: String) -> RhaiRes<Dynamic> {
     Ok(Dynamic::from_map(map))
 }
 
+/// Registers the `Registry` type and its OCI helpers on a Rhai `engine`.
 pub fn oci_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<Registry>("Registry")
@@ -325,7 +388,12 @@ mod tests {
     #[test]
     fn sign_image_empty_key_returns_ok() {
         let mut reg = Registry::new("r.io".into(), "u".into(), "p".into());
-        let result = reg.sign_image("repo/img".into(), "1.0.0".into(), "sha256:abc".into(), "".into());
+        let result = reg.sign_image(
+            "repo/img".into(),
+            "1.0.0".into(),
+            "sha256:abc".into(),
+            String::new(),
+        );
         assert!(result.is_ok(), "Empty key must be a no-op");
     }
 

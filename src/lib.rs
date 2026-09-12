@@ -122,21 +122,25 @@ pub enum Error {
     #[error("YamlError: {0}")]
     YamlError(String),
 
+    /// Handlebars template registration failure.
     #[cfg(feature = "hbs")]
     #[cfg_attr(docsrs, doc(cfg(feature = "hbs")))]
     #[error("Registering template failed with error: {0}")]
     HbsTemplateError(#[from] handlebars::TemplateError),
 
+    /// Handlebars template rendering failure.
     #[cfg(feature = "hbs")]
     #[cfg_attr(docsrs, doc(cfg(feature = "hbs")))]
     #[error("Renderer error: {0}")]
     HbsRenderError(#[from] handlebars::RenderError),
 
+    /// Rhai script evaluation failure.
     #[cfg(feature = "rhai")]
     #[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
     #[error("Rhai script error: {0}")]
     RhaiError(#[from] Box<rhai::EvalAltResult>),
 
+    /// HTTP transport failure (reqwest).
     #[cfg(feature = "http")]
     #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
     #[error("Reqwest error: {0}")]
@@ -166,11 +170,13 @@ pub enum Error {
     #[error("Semver error {0}")]
     Semver(#[from] ::semver::Error),
 
+    /// Argon2 hashing failure.
     #[cfg(feature = "crypto")]
     #[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]
     #[error("Argon2 password_hash error {0}")]
     Argon2hash(#[from] argon2::password_hash::Error),
 
+    /// Bcrypt hashing failure.
     #[cfg(feature = "crypto")]
     #[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]
     #[error("Bcrypt hash error {0}")]
@@ -192,6 +198,7 @@ pub enum Error {
     #[error("ParseIntError {0}")]
     ParseInt(#[from] std::num::ParseIntError),
 
+    /// OpenSSL key-generation failure.
     #[cfg(feature = "crypto")]
     #[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]
     #[error("KEY-OPENSSL-001 OpenSSL error {0}")]
@@ -209,31 +216,37 @@ pub enum Error {
     #[error("Error: {0}")]
     Other(String),
 
+    /// OCI distribution (pull/push) failure.
     #[cfg(feature = "oci")]
     #[cfg_attr(docsrs, doc(cfg(feature = "oci")))]
     #[error("OCI jukebox error {0}")]
     OCIDistrib(#[from] oci_client::errors::OciDistributionError),
 
+    /// OCI reference/image reference parse failure.
     #[cfg(feature = "oci")]
     #[cfg_attr(docsrs, doc(cfg(feature = "oci")))]
     #[error("OCI parse error {0}")]
     OCIParseError(#[from] oci_client::ParseError),
 
+    /// Kubernetes API interaction failure.
     #[cfg(feature = "k8s")]
     #[cfg_attr(docsrs, doc(cfg(feature = "k8s")))]
     #[error("K8s error: {0}")]
     KubeError(#[from] kube::Error),
 
+    /// Kubernetes wait/watch failure.
     #[cfg(feature = "k8s")]
     #[cfg_attr(docsrs, doc(cfg(feature = "k8s")))]
     #[error("K8s wait error: {0}")]
     KubeWaitError(#[from] kube::runtime::wait::Error),
 
+    /// Wait timeout elapsed.
     #[cfg(feature = "k8s")]
     #[cfg_attr(docsrs, doc(cfg(feature = "k8s")))]
     #[error("Elapsed wait error: {0}")]
     Elapsed(#[from] tokio::time::error::Elapsed),
 
+    /// Controller finalizer failure.
     #[cfg(feature = "k8s")]
     #[cfg_attr(docsrs, doc(cfg(feature = "k8s")))]
     #[error("Finalizer error: {0}")]
@@ -255,7 +268,7 @@ pub type RhaiRes<T> = std::result::Result<T, Box<rhai::EvalAltResult>>;
 /// connection-level failure (DNS, TLS, timeout, connection refused) — implement [`std::fmt::Display`]
 /// on the outer error only, leaving the actual cause reachable solely through `Error::source()`
 /// (i.e. visible in `{:?}` but not `{}`). Without walking the chain, a script (and whatever surfaces
-/// its error, e.g. a JukeBox `Updated` condition) only ever sees an opaque
+/// its error, e.g. a `JukeBox` `Updated` condition) only ever sees an opaque
 /// "error sending request for url (...)" with no indication of *why* the request failed.
 /// A source already restating an ancestor's message verbatim (e.g. `Error::ReqwestError`'s
 /// `#[error("Reqwest error: {0}")]` Display, which embeds its wrapped `reqwest::Error`'s own
@@ -277,12 +290,14 @@ pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 /// Convert a [`enum@Error`] into a Rhai `EvalAltResult`, including its full `source()` chain
 /// (see [`error_chain`]) so the real cause of a connection-level failure isn't swallowed.
 #[cfg(feature = "rhai")]
+#[allow(clippy::needless_pass_by_value)] // callback `map_err` impose `Error` par valeur (vyvil-core.sdd, erreur enrichie de la chaîne `source()`)
 pub fn rhai_err(e: Error) -> Box<rhai::EvalAltResult> {
     error_chain(&e).into()
 }
 
 /// Convert a string into a Rhai `EvalAltResult`.
 #[cfg(feature = "rhai")]
+#[must_use]
 pub fn rhai_err_str(e: String) -> Box<rhai::EvalAltResult> {
     e.into()
 }

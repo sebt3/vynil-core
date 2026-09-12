@@ -17,11 +17,13 @@ Must:
   Contenir dans `[lints.clippy]` la famille stricte : `unwrap_used`, `expect_used`, `panic`,
   `unreachable`, `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
   `arithmetic_side_effects`, plus les groupes `pedantic` et `cargo`.
+  Exclure `multiple_crate_versions` du harnais (`allow`) : ses doublons de versions sont imposés
+  par les dépendances amont — `thiserror` 1 via `handlebars_misc_helpers`, `syn` 2/3 via
+  `kube`/`darling`, `getrandom`/`rand_core`/`crypto-common` via `ahash`/`argon2`/`object_store`,
+  `windows-sys`, `r-efi`, `base64`, `core-foundation` — et `cargo update` ne les déduplique pas.
   Contenir dans `[lints.rust]` `unsafe_code = forbid` et `missing_docs = warn` sur toute la crate.
-  Garder la famille stricte et `pedantic`/`cargo` au niveau `warn` tant que la dette des
-  modules n'est pas purgée, module par module au fil de la migration des specs.
-  Passer la famille stricte en `deny` dès que la dette d'un module est purgée, et l'ensemble
-  en `deny` quand toute la crate est propre.
+  Maintenir la famille stricte et les groupes `pedantic`/`cargo` au niveau `deny` : la dette est
+  purgée sur toute la crate, et tout nouveau warning du harnais bloque la validation.
   Tolérer la famille panic/unwrap uniquement sous `cfg(test)` via l'exemption portée par
   `src/lib.rs` à la racine du crate.
 
@@ -41,11 +43,11 @@ Scenario: exemption en test
   Then aucun warning de la famille stricte n'est émis pour ce module
 
 Tasks:
-  [ ] Basculer la famille strict `deny` module par module à mesure que la dette est purgée.
-  [ ] Basculer `pedantic`/`cargo` en `deny` quand la crate est à zéro warning.
-  [ ] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand
+  [x] Basculer la famille strict `deny` module par module à mesure que la dette est purgée.
+  [x] Basculer `pedantic`/`cargo` en `deny` quand la crate est à zéro warning.
+  [x] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand
     `/.github/workflows/test.yml` le prévoit (voir sa spec).
-  [ ] Purger les warnings `missing_docs` (177 pub items non documentés au point de départ).
+  [x] Purger les warnings `missing_docs` (177 pub items non documentés au point de départ).
 
 Done when:
   `cargo clippy --all-features --all-targets -- -D warnings` sort sans warning, et

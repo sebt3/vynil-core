@@ -36,14 +36,13 @@ cargo test --no-default-features --features k8s
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
-cargo clippy --all-features --all-targets
+cargo clippy --all-features --all-targets -- -D warnings
 cargo +nightly fmt -- --check
 ```
 
-- `clippy` : le build peut passer avec des warnings (dette préexistante tolérée, voir
-  `tooling.sdd`), mais TOUT warning situé dans un fichier touché par la tâche est un
-  échec. Vérifier aussi que la dette ne grossit pas (compter les warnings par lint avant/
-  après si des fichiers de dette sont touchés).
+- `clippy` : zéro warning toléré (dette purgée, harnais en `deny`, voir `tooling.sdd`) ;
+  tout warning ou erreur est un échec, y compris sous `cfg(test)` pour les lints non
+  exemptés par `src/lib.rs`.
 - Si la tâche touche `rhai`/`hbs`/`hbs-scripting`/`http`/`crypto`/`k8s`/`oci`/`s3` :
   aussi `cargo test --no-default-features --features "hbs crypto"`, et vérifier par
   `cargo tree -e features` que `hbs` seul n'introduit pas `handlebars/script_helper`

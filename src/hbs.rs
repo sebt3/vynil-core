@@ -13,13 +13,12 @@ use crate::{Error, Result, hbs_json};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use handlebars::{Handlebars, handlebars_helper};
 use handlebars_misc_helpers::new_hbs;
-use regex::Regex;
 use serde_json::Value;
 use std::{fs, path::PathBuf};
-use tracing::*;
+use tracing::warn;
 use url::form_urlencoded;
 
-/// Generic helpers available in core's HandleBars (no vynil context dependency).
+/// Generic helpers available in core's `HandleBars` (no vynil context dependency).
 pub const CORE_HBS_HELPERS: &[&str] = &[
     // Handlebars built-ins
     "if",
@@ -103,81 +102,89 @@ pub const CORE_HBS_HELPERS: &[&str] = &[
     "concat",
 ];
 
-handlebars_helper!(base64_decode: |arg:Value| String::from_utf8(STANDARD.decode(arg.as_str().unwrap_or_else(|| {
-    warn!("handlebars::base64_decode received a non-string parameter: {:?}",arg);
-    ""
-})).unwrap_or_else(|e| {
-    warn!("handlebars::base64_decode failed to decode with: {e:?}");
-    vec![]
-})).unwrap_or_else(|e| {
-    warn!("handlebars::base64_decode failed to convert to string with: {e:?}");
-    String::new()
-}));
-handlebars_helper!(base64_encode: |arg:Value| STANDARD.encode(arg.as_str().unwrap_or_else(|| {
-    warn!("handlebars::base64_encode received a non-string parameter: {:?}",arg);
-    ""
-})));
-handlebars_helper!(url_encode: |arg:Value| form_urlencoded::byte_serialize(arg.as_str().unwrap_or_else(|| {
-    warn!("handlebars::url_encode received a non-string parameter: {:?}",arg);
-    ""
-}).as_bytes()).collect::<String>());
-handlebars_helper!(to_decimal: |arg:Value| format!("{}", u32::from_str_radix(arg.as_str().unwrap_or_else(|| {
-    warn!("handlebars::to_decimal received a non-string parameter: {:?}",arg);
-    ""
-}), 8).unwrap_or_else(|_| {
-    warn!("handlebars::to_decimal received a non-string parameter: {:?}",arg);
-    0
-})));
-handlebars_helper!(header_basic: |username:Value, password:Value| format!("Basic {}",STANDARD.encode(format!("{}:{}",username.as_str().unwrap_or_else(|| {
-    warn!("handlebars::header_basic received a non-string username: {:?}",username);
-    ""
-}),password.as_str().unwrap_or_else(|| {
-    warn!("handlebars::header_basic received a non-string password: {:?}",password);
-    ""
-})))));
-#[cfg(feature = "crypto")]
-handlebars_helper!(argon_hash: |password:Value| Argon::new().hash(password.as_str().unwrap_or_else(|| {
-    warn!("handlebars::argon_hash received a non-string password: {:?}",password);
-    ""
-}).to_string()).unwrap_or_else(|e| {
-    warn!("handlebars::argon_hash failed to convert to string with: {e:?}");
-    String::new()
-}));
-#[cfg(feature = "crypto")]
-handlebars_helper!(bcrypt_hash: |password:Value| crate::hashes::bcrypt_hash(password.as_str().unwrap_or_else(|| {
-    warn!("handlebars::bcrypt_hash received a non-string password: {:?}",password);
-    ""
-}).to_string()).unwrap_or_else(|e| {
-    warn!("handlebars::bcrypt_hash failed to convert to string with: {e:?}");
-    String::new()
-}));
-handlebars_helper!(crc32_hash: |password:Value| crate::hashes::crc32_hash(password.as_str().unwrap_or_else(|| {
-    warn!("handlebars::crc32_hash received a non-string password: {:?}",password);
-    ""
-}).to_string()));
-#[cfg(feature = "password")]
-handlebars_helper!(gen_password: |len:u32, {lower:u32=1, upper:u32=1, digits:u32=1, symbols:u32=1}| crate::password::generate(len as usize, lower as usize, upper as usize, digits as usize, symbols as usize).unwrap_or_else(|e| {
-    warn!("handlebars::gen_password failed with: {e:?}");
-    String::new()
-}));
-#[cfg(feature = "password")]
-handlebars_helper!(gen_password_alphanum: |len:u32| crate::password::generate(len as usize, 1, 1, 1, 0).unwrap_or_else(|e| {
-    warn!("handlebars::gen_password_alphanum failed with: {e:?}");
-    String::new()
-}));
-#[cfg(feature = "crypto")]
-handlebars_helper!(gen_private_key: |algo:str, {bits:u32=4096}| crate::key::gen_private_key(algo, bits).unwrap_or_else(|e| {
-    warn!("handlebars::gen_private_key failed with: {e:?}");
-    String::new()
-}));
-handlebars_helper!(concat: |a: Value, b: Value| format!("{}{}", a.as_str().unwrap_or_else(|| {
-    warn!("handlebars::concat received a non-string parameter: {:?}", a);
-    ""
-}),b.as_str().unwrap_or_else(|| {
-    warn!("handlebars::concat received a non-string parameter: {:?}", b);
-    ""
-})));
+/// Handlebars helpers defined with `handlebars_helper!`, kept in a private module because
+/// the macro emits its `pub struct`s without a doc hook (`missing_docs` cannot be silenced at
+/// the call site). Re-exported below so they stay reachable as `crate::hbs::<name>`.
+#[allow(missing_docs)] // structs generées par `handlebars_helper!` (vyvil-core.sdd)
+mod core_helpers {
+    use super::*;
 
+    handlebars_helper!(base64_decode: |arg:Value| String::from_utf8(STANDARD.decode(arg.as_str().unwrap_or_else(|| {
+        warn!("handlebars::base64_decode received a non-string parameter: {:?}",arg);
+        ""
+    })).unwrap_or_else(|e| {
+        warn!("handlebars::base64_decode failed to decode with: {e:?}");
+        vec![]
+    })).unwrap_or_else(|e| {
+        warn!("handlebars::base64_decode failed to convert to string with: {e:?}");
+        String::new()
+    }));
+    handlebars_helper!(base64_encode: |arg:Value| STANDARD.encode(arg.as_str().unwrap_or_else(|| {
+        warn!("handlebars::base64_encode received a non-string parameter: {:?}",arg);
+        ""
+    })));
+    handlebars_helper!(url_encode: |arg:Value| form_urlencoded::byte_serialize(arg.as_str().unwrap_or_else(|| {
+        warn!("handlebars::url_encode received a non-string parameter: {:?}",arg);
+        ""
+    }).as_bytes()).collect::<String>());
+    handlebars_helper!(to_decimal: |arg:Value| format!("{}", u32::from_str_radix(arg.as_str().unwrap_or_else(|| {
+        warn!("handlebars::to_decimal received a non-string parameter: {:?}",arg);
+        ""
+    }), 8).unwrap_or_else(|_| {
+        warn!("handlebars::to_decimal received a non-string parameter: {:?}",arg);
+        0
+    })));
+    handlebars_helper!(header_basic: |username:Value, password:Value| format!("Basic {}",STANDARD.encode(format!("{}:{}",username.as_str().unwrap_or_else(|| {
+        warn!("handlebars::header_basic received a non-string username: {:?}",username);
+        ""
+    }),password.as_str().unwrap_or_else(|| {
+        warn!("handlebars::header_basic received a non-string password: {:?}",password);
+        ""
+    })))));
+    #[cfg(feature = "crypto")]
+    handlebars_helper!(argon_hash: |password:Value| Argon::new().hash(password.as_str().unwrap_or_else(|| {
+        warn!("handlebars::argon_hash received a non-string password: {:?}",password);
+        ""
+    }).to_string()).unwrap_or_else(|e| {
+        warn!("handlebars::argon_hash failed to convert to string with: {e:?}");
+        String::new()
+    }));
+    #[cfg(feature = "crypto")]
+    handlebars_helper!(bcrypt_hash: |password:Value| crate::hashes::bcrypt_hash(password.as_str().unwrap_or_else(|| {
+        warn!("handlebars::bcrypt_hash received a non-string password: {:?}",password);
+        ""
+    }).to_string()).unwrap_or_else(|e| {
+        warn!("handlebars::bcrypt_hash failed to convert to string with: {e:?}");
+        String::new()
+    }));
+    handlebars_helper!(crc32_hash: |password:Value| crate::hashes::crc32_hash(password.as_str().unwrap_or_else(|| {
+        warn!("handlebars::crc32_hash received a non-string password: {:?}",password);
+        ""
+    }).to_string()));
+    #[cfg(feature = "password")]
+    handlebars_helper!(gen_password: |len:u32, {lower:u32=1, upper:u32=1, digits:u32=1, symbols:u32=1}| crate::password::generate(len as usize, lower as usize, upper as usize, digits as usize, symbols as usize).unwrap_or_else(|e| {
+        warn!("handlebars::gen_password failed with: {e:?}");
+        String::new()
+    }));
+    #[cfg(feature = "password")]
+    handlebars_helper!(gen_password_alphanum: |len:u32| crate::password::generate(len as usize, 1, 1, 1, 0).unwrap_or_else(|e| {
+        warn!("handlebars::gen_password_alphanum failed with: {e:?}");
+        String::new()
+    }));
+    #[cfg(feature = "crypto")]
+    handlebars_helper!(gen_private_key: |algo:str, {bits:u32=4096}| crate::key::gen_private_key(algo, bits).unwrap_or_else(|e| {
+        warn!("handlebars::gen_private_key failed with: {e:?}");
+        String::new()
+    }));
+    handlebars_helper!(concat: |a: Value, b: Value| format!("{}{}", a.as_str().unwrap_or_else(|| {
+        warn!("handlebars::concat received a non-string parameter: {:?}", a);
+        ""
+    }),b.as_str().unwrap_or_else(|| {
+        warn!("handlebars::concat received a non-string parameter: {:?}", b);
+        ""
+    })));
+}
+pub use core_helpers::*;
 /// Handlebars wrapper with generic helpers pre-registered.
 ///
 /// See [`CORE_HBS_HELPERS`] for the included helper names.
@@ -218,12 +225,24 @@ impl<'a> HandleBars<'a> {
     }
 
     /// Register a template string under `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HbsTemplateError`] when the template fails to compile.
     pub fn register_template(&mut self, name: &str, template: &str) -> Result<()> {
         self.engine
             .register_template_string(name, template)
             .map_err(Error::HbsTemplateError)
     }
 
+    /// Rhai binding of [`HandleBars::register_template`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::HbsTemplateError`] when the template fails to
+    /// compile.
+    // signature imposée par l'API Rhai (vyvil-core.sdd)
+    #[allow(clippy::needless_pass_by_value)]
     #[cfg(feature = "rhai")]
     pub fn rhai_register_template(&mut self, name: String, template: String) -> RhaiRes<()> {
         self.register_template(name.as_str(), template.as_str())
@@ -231,20 +250,29 @@ impl<'a> HandleBars<'a> {
     }
 
     /// Register every `*.rhai` file in `directory` as a Handlebars script helper
-    /// (requires `hbs-scripting` feature).
+    /// (requires `hbs-scripting` feature); a non-directory is a silent no-op, entries whose
+    /// file name is not UTF-8 are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Stdio`] when the directory cannot be read, [`Error::Other`] when a
+    /// helper file fails to register.
     #[cfg(feature = "hbs-scripting")]
     pub fn register_helper_dir(&mut self, directory: PathBuf) -> Result<()> {
         if std::path::Path::new(&directory).is_dir() {
-            let re_rhai = Regex::new(r"\.rhai$").unwrap();
-            for file in fs::read_dir(directory).unwrap() {
-                let path = file.unwrap().path();
-                let filename = path.file_name().unwrap().to_str().unwrap();
-                if re_rhai.is_match(filename) {
-                    let name = filename[0..(filename.len() - 5)].to_string();
-                    self.engine
-                        .register_script_helper_file(&name, path)
-                        .map_err(|e| Error::Other(format!("{:?}", e)))?;
-                }
+            for file in fs::read_dir(directory).map_err(Error::Stdio)? {
+                let path = file.map_err(Error::Stdio)?.path();
+                let Some(name) = path
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .and_then(|n| n.strip_suffix(".rhai"))
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                self.engine
+                    .register_script_helper_file(&name, path)
+                    .map_err(|e| Error::Other(format!("{e:?}")))?;
             }
             Ok(())
         } else {
@@ -253,25 +281,39 @@ impl<'a> HandleBars<'a> {
     }
 
     /// Rhai-facing wrapper for [`HandleBars::register_helper_dir`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Error::Stdio`] / [`Error::Other`] errors of
+    /// [`HandleBars::register_helper_dir`].
     #[cfg(feature = "hbs-scripting")]
     pub fn rhai_register_helper_dir(&mut self, directory: String) -> RhaiRes<()> {
         self.register_helper_dir(PathBuf::from(directory))
             .map_err(rhai_err)
     }
 
-    /// Register every `*.hbs` file in `directory` as a partial/template.
+    /// Register every `*.hbs` file in `directory` as a partial/template; a non-directory is a
+    /// silent no-op, entries whose file name is not UTF-8 are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Stdio`] when the directory or a file cannot be read,
+    /// [`Error::HbsTemplateError`] when a template fails to compile.
     pub fn register_partial_dir(&mut self, directory: PathBuf) -> Result<()> {
         if std::path::Path::new(&directory).is_dir() {
-            let re_rhai = Regex::new(r"\.hbs$").unwrap();
-            for file in fs::read_dir(directory).unwrap() {
-                let path = file.unwrap().path();
-                let filename = path.file_name().unwrap().to_str().unwrap();
-                if re_rhai.is_match(filename) {
-                    let name = filename[0..(filename.len() - 4)].to_string();
-                    let tmpl = std::fs::read_to_string(path).map_err(Error::Stdio)?;
-                    tracing::debug!("registering {}", name);
-                    self.register_template(&name, &tmpl)?;
-                }
+            for file in fs::read_dir(directory).map_err(Error::Stdio)? {
+                let path = file.map_err(Error::Stdio)?.path();
+                let Some(name) = path
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .and_then(|n| n.strip_suffix(".hbs"))
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                let tmpl = std::fs::read_to_string(path).map_err(Error::Stdio)?;
+                tracing::debug!("registering {name}");
+                self.register_template(&name, &tmpl)?;
             }
             Ok(())
         } else {
@@ -279,6 +321,12 @@ impl<'a> HandleBars<'a> {
         }
     }
 
+    /// Rhai-facing wrapper for [`HandleBars::register_partial_dir`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Error::Stdio`] / [`Error::HbsTemplateError`] errors
+    /// of [`HandleBars::register_partial_dir`].
     #[cfg(feature = "rhai")]
     pub fn rhai_register_partial_dir(&mut self, directory: String) -> RhaiRes<()> {
         self.register_partial_dir(PathBuf::from(directory))
@@ -286,12 +334,24 @@ impl<'a> HandleBars<'a> {
     }
 
     /// Render an inline `template` string with `data`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HbsRenderError`] when the template fails to compile or render.
     pub fn render(&mut self, template: &str, data: &serde_json::Value) -> Result<String> {
         self.engine
             .render_template(template, data)
             .map_err(Error::HbsRenderError)
     }
 
+    /// Rhai binding of [`HandleBars::render`], taking the data as a Rhai map.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`] when the map cannot be
+    /// round-tripped to JSON, [`Error::HbsRenderError`] on compile/render failure.
+    // signature imposée par l'API Rhai (vyvil-core.sdd)
+    #[allow(clippy::needless_pass_by_value)]
     #[cfg(feature = "rhai")]
     pub fn rhai_render(&mut self, template: String, data: rhai::Map) -> RhaiRes<String> {
         let json_data: serde_json::Value =
@@ -303,6 +363,11 @@ impl<'a> HandleBars<'a> {
     }
 
     /// Register `template` as `name` then render it with `data`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HbsTemplateError`] when the template fails to compile,
+    /// [`Error::HbsRenderError`] when it fails to render.
     pub fn render_named(&mut self, name: &str, template: &str, data: &serde_json::Value) -> Result<String> {
         self.engine
             .register_template_string(name, template)
@@ -310,6 +375,15 @@ impl<'a> HandleBars<'a> {
         self.engine.render(name, data).map_err(Error::HbsRenderError)
     }
 
+    /// Rhai binding of [`HandleBars::render_named`], taking the data as a Rhai map.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`] when the map cannot be
+    /// round-tripped to JSON, [`Error::HbsTemplateError`] on compile failure,
+    /// [`Error::HbsRenderError`] on render failure.
+    // signature imposée par l'API Rhai (vyvil-core.sdd)
+    #[allow(clippy::needless_pass_by_value)]
     #[cfg(feature = "rhai")]
     pub fn rhai_render_named(&mut self, name: String, template: String, data: rhai::Map) -> RhaiRes<String> {
         let json_data: serde_json::Value =

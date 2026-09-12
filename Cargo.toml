@@ -21,20 +21,23 @@ missing_docs = "warn"
 
 [lints.clippy]
 # Guidage pour tout code nouveau ou modifié : 0 warning pedantic/cargo sur les fichiers touchés.
-pedantic = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
-# Harnais strict : warn pour l'instant (dette existante, voir tooling.sdd) — flip en deny
-# quand la dette purgée, à chaque fin de migration d'un fichier.
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
-unreachable = "warn"
-dbg_macro = "warn"
-todo = "warn"
-unimplemented = "warn"
-print_stdout = "warn"
-print_stderr = "warn"
-arithmetic_side_effects = "warn"
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Harnais strict : dette purgée sur toute la crate (tooling.sdd) — deny.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+arithmetic_side_effects = "deny"
+# Décision Sébastien : hors de notre contrôle, doublons imposés par les dépendances amont
+# (thiserror 1 via handlebars_misc_helpers, syn 2+3 via kube/darling, getrandom/rand_core/
+# crypto-common via ahash/argon2/object_store, windows-sys/r-efi/base64/core-foundation).
+multiple_crate_versions = { level = "allow", priority = 1 }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -123,7 +126,6 @@ regex = "1.12.2"
 wildmatch = "2.6.1"
 openssl = { version = "0.10.73", optional = true }
 http = "1.1.0"
-lazy_static = "1.5.0"
 rand = "0.10.1"
 schemars = { version = "1.0", features = ["chrono04"], optional = true }
 kube = { version = "3.1.0", features = ["runtime", "client", "derive"], optional = true }

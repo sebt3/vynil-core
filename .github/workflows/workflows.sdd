@@ -24,8 +24,9 @@ Must:
   Utiliser `fail-fast: false` pour que chaque entrée de matrice remonte indépendamment.
   Vérifier le formatage avec rustfmt nightly (`cargo fmt -- --check`), `rustfmt.toml`
   contenant des options instables.
-  Lancer le harnais clippy via `cargo clippy --all-features --all-targets` sans escalade,
-  les lints bloquants étant portés par la table `[lints]` de `Cargo.toml`.
+  Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
+  lints bloquants étant portés par la table `[lints]` de `Cargo.toml` et les warnings rustc
+  résiduels escaladés par le flag (`../../tooling.sdd`).
   Refuser un tag `v*` dont la version ne correspond pas à celle de `Cargo.toml` avant toute
   publication.
   Lancer `cargo test --all-features` avant `cargo publish --all-features`.
@@ -33,11 +34,9 @@ Must:
 
 Must not:
   Publier alors que les tests `--all-features` du job de publication ont échoué.
-  Escalader les warnings clippy en erreurs (`-D warnings`) avant la fin de la purge de dette
-  tracée dans `../../tooling.sdd`.
 
 Tasks:
-  [ ] Remettre `-- -D warnings` sur le job clippy quand `../../tooling.sdd` l'autorise.
+  [x] Remettre `-- -D warnings` sur le job clippy quand `../../tooling.sdd` l'autorise.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut

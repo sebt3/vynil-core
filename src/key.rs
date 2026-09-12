@@ -11,6 +11,11 @@ pub const DEFAULT_RSA_BITS: u32 = 4096;
 
 /// Generate a PEM-encoded private key. `algo` is `rsa` or `ed25519` (case-insensitive).
 /// `bits` is only used for RSA. Returns `Error::UnsupportedKeyAlgorithm` for unknown algos.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsupportedKeyAlgorithm`] for an unknown `algo`, [`Error::OpenSSL`] when
+/// key generation or PEM encoding fails, [`Error::UTF8`] if the PEM is not valid UTF-8.
 pub fn gen_private_key(algo: &str, bits: u32) -> Result<String> {
     let pem = match algo.to_ascii_lowercase().as_str() {
         "ed25519" => PKey::generate_ed25519()?.private_key_to_pem_pkcs8()?,
@@ -20,6 +25,7 @@ pub fn gen_private_key(algo: &str, bits: u32) -> Result<String> {
     String::from_utf8(pem).map_err(Error::UTF8)
 }
 
+/// Registers the `gen_private_key` helpers on a Rhai `engine`.
 #[cfg(feature = "rhai")]
 pub fn key_rhai_register(engine: &mut Engine) {
     engine
@@ -29,7 +35,10 @@ pub fn key_rhai_register(engine: &mut Engine) {
         .register_fn(
             "gen_private_key",
             |algo: &str, bits: i64| -> crate::RhaiRes<String> {
-                gen_private_key(algo, bits as u32).map_err(|e| format!("{e}").into())
+                let Ok(bits) = u32::try_from(bits) else {
+                    return Err(format!("unsupported key size: {bits}").into());
+                };
+                gen_private_key(algo, bits).map_err(|e| format!("{e}").into())
             },
         );
 }

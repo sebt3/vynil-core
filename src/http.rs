@@ -3,7 +3,7 @@
 //! Requires the `http` feature (which implies `rhai`). All requests use the global
 //! client identity from [`crate::set_client_name`] as `User-Agent`.
 
-use crate::{Error, Error::*, RhaiRes, rhai_err};
+use crate::{Error, Error::UnsupportedMethod, RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Certificate, Client, Response};
 use rhai::{Dynamic, Engine, Map};
@@ -12,31 +12,43 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use serde_yaml;
 use tokio::runtime::Handle;
-use tracing::*;
+use tracing::{debug, warn};
 
+/// Read verb accepted by [`RestClient::obj_read`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
 pub enum ReadMethod {
+    /// `GET` (the only supported read verb).
     #[default]
     Get,
 }
+/// Create verbs accepted by [`RestClient::obj_create`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
 pub enum CreateMethod {
+    /// `POST` to the collection path.
     #[default]
     Post,
+    /// `PUT` to the collection path.
     Put,
 }
 
+/// Update verbs accepted by [`RestClient::obj_update`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
 pub enum UpdateMethod {
+    /// `PATCH` (server-side merge semantics).
     #[default]
     Patch,
+    /// `PUT` (full replace).
     Put,
+    /// `POST` to the object path.
     Post,
+    /// No request: the input is echoed back unchanged.
     None,
 }
 
+/// Delete verbs accepted by [`RestClient::obj_delete`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
 pub enum DeleteMethod {
+    /// `DELETE` (the only supported delete verb).
     #[default]
     Delete,
 }
@@ -60,6 +72,7 @@ pub struct RestClient {
 }
 
 impl RestClient {
+    /// Creates a client whose requests target `base` (joined as `base/path`).
     #[must_use]
     pub fn new(base: &str) -> Self {
         Self {
@@ -71,43 +84,54 @@ impl RestClient {
         }
     }
 
+    /// Sets the base URL (chainable).
     pub fn baseurl(&mut self, base: &str) -> &mut RestClient {
         self.baseurl = base.to_string();
         self
     }
 
+    /// Sets a PEM CA certificate added as trust root (makes requests use rustls).
     pub fn set_server_ca(&mut self, ca: &str) {
         self.server_ca = Some(ca.to_string());
     }
 
+    /// Sets the client PEM cert and key used to build the mTLS identity.
     pub fn set_mtls(&mut self, cert: &str, key: &str) {
         self.client_cert = Some(cert.to_string());
         self.client_key = Some(key.to_string());
     }
 
+    /// [`Self::baseurl`] variant for Rhai (returns nothing).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn baseurl_rhai(&mut self, base: String) {
         self.baseurl(base.as_str());
     }
 
+    /// Clears all custom headers (chainable).
     pub fn headers_reset(&mut self) -> &mut RestClient {
         self.headers = Map::new();
         self
     }
 
+    /// [`Self::headers_reset`] variant for Rhai (returns nothing).
     pub fn headers_reset_rhai(&mut self) {
         self.headers_reset();
     }
 
+    /// Appends a header sent on every request (chainable; repeated names are kept).
     pub fn add_header(&mut self, key: &str, value: &str) -> &mut RestClient {
         self.headers
             .insert(key.to_string().into(), value.to_string().into());
         self
     }
 
+    /// [`Self::add_header`] variant for Rhai (returns nothing).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn add_header_rhai(&mut self, key: String, value: String) {
         self.add_header(key.as_str(), value.as_str());
     }
 
+    /// Adds a JSON `Content-Type` unless one is already set (chainable).
     pub fn add_header_json_content(&mut self) -> &mut RestClient {
         if self
             .headers
@@ -121,6 +145,8 @@ impl RestClient {
         }
     }
 
+    /// Adds a JSON `Accept` unless one is already set (chainable); logs current headers at debug
+    /// level.
     pub fn add_header_json_accept(&mut self) -> &mut RestClient {
         for (key, val) in self.headers.clone() {
             debug!("RestClient.header: {:} {:}", key, val);
@@ -132,69 +158,46 @@ impl RestClient {
         }
     }
 
+    /// Adds the JSON `Content-Type` and `Accept` headers.
     pub fn add_header_json(&mut self) {
         self.add_header_json_content().add_header_json_accept();
     }
 
+    /// Sets an `Authorization: Bearer <token>` header.
     pub fn add_header_bearer(&mut self, token: &str) {
         self.add_header("Authorization", format!("Bearer {token}").as_str());
     }
 
+    /// Sets an `Authorization: Basic <base64(username:password)>` header.
     pub fn add_header_basic(&mut self, username: &str, password: &str) {
         let hash = STANDARD.encode(format!("{username}:{password}"));
         self.add_header("Authorization", format!("Basic {hash}").as_str());
     }
 
     fn get_client(&mut self) -> std::result::Result<Client, reqwest::Error> {
-        let five_sec = std::time::Duration::from_secs(60 * 5);
-        if self.server_ca.is_none() && (self.client_cert.is_none() || self.client_key.is_none()) {
-            Client::builder()
-                .user_agent(crate::get_client_name())
-                .timeout(five_sec)
-                .build()
-        } else if self.client_cert.is_none() || self.client_key.is_none() {
-            match Certificate::from_pem(self.server_ca.clone().unwrap().as_bytes()) {
-                Ok(c) => Client::builder()
-                    .user_agent(crate::get_client_name())
-                    .timeout(five_sec)
-                    .add_root_certificate(c)
-                    .use_rustls_tls()
-                    .build(),
-                Err(e) => Err(e),
-            }
-        } else {
-            let cli_cert = format!(
-                "{}\n{}",
-                self.client_key.clone().unwrap(),
-                self.client_cert.clone().unwrap()
-            );
-            match reqwest::Identity::from_pem(cli_cert.as_bytes()) {
-                Ok(identity) => {
-                    if self.server_ca.is_none() {
-                        Client::builder()
-                            .user_agent(crate::get_client_name())
-                            .timeout(five_sec)
-                            .use_rustls_tls()
-                            .identity(identity)
-                            .build()
-                    } else {
-                        match Certificate::from_pem(self.server_ca.clone().unwrap().as_bytes()) {
-                            Ok(c) => Client::builder()
-                                .user_agent(crate::get_client_name())
-                                .timeout(five_sec)
-                                .add_root_certificate(c)
-                                .use_rustls_tls()
-                                .identity(identity)
-                                .build(),
-                            Err(e) => Err(e),
-                        }
-                    }
-                }
-                Err(e) => Err(e),
-            }
+        let five_sec = std::time::Duration::from_mins(5);
+        let mut builder = Client::builder()
+            .user_agent(crate::get_client_name())
+            .timeout(five_sec);
+        if let Some(ca) = &self.server_ca {
+            let ca_cert = Certificate::from_pem(ca.as_bytes())?;
+            builder = builder.add_root_certificate(ca_cert).use_rustls_tls();
         }
+        if let (Some(key), Some(cert)) = (&self.client_key, &self.client_cert) {
+            let cli_cert = format!("{key}\n{cert}");
+            builder = builder
+                .identity(reqwest::Identity::from_pem(cli_cert.as_bytes())?)
+                .use_rustls_tls();
+        }
+        builder.build()
     }
 
+    /// Sends a `GET` to `base/path` with the configured headers (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`reqwest::Error`] if the client cannot be built (PEM/TLS issues) or the request
+    /// fails; builder errors are also logged at warn level.
     pub fn http_get(&mut self, path: &str) -> std::result::Result<Response, reqwest::Error> {
         debug!("http_get '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -214,6 +217,12 @@ impl RestClient {
         }
     }
 
+    /// GETs `path` and returns the response body as text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
+    /// on a non-success status (with the body excerpt).
     pub fn body_get(&mut self, path: &str) -> crate::Result<String> {
         let response = self.http_get(path).map_err(Error::ReqwestError)?;
         if !response.status().is_success() {
@@ -238,12 +247,25 @@ impl RestClient {
         Ok(text)
     }
 
+    /// GETs `path` and deserializes the response body as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Forwards [`Self::body_get`] errors and returns [`Error::JsonError`] on a non-JSON body.
     pub fn json_get(&mut self, path: &str) -> crate::Result<Value> {
         let text = self.body_get(path)?;
         let json = serde_json::from_str(&text).map_err(Error::JsonError)?;
         Ok(json)
     }
 
+    /// GET for Rhai: returns a map with `code` (i64), `headers` (for [`headers_get`]), `body`
+    /// and `json` (parsed body, empty object when not valid JSON).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the request fails (full cause chain via [`crate::error_chain`])
+    /// or if the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_get(&mut self, path: String) -> RhaiRes<Map> {
         let mut ret = Map::new();
         match self.http_get(path.as_str()) {
@@ -290,6 +312,12 @@ impl RestClient {
         }
     }
 
+    /// Sends a `HEAD` to `base/path` with the configured headers (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`reqwest::Error`] if the client cannot be built (PEM/TLS issues) or the request
+    /// fails; builder errors are also logged at warn level.
     pub fn http_head(&mut self, path: &str) -> std::result::Result<Response, reqwest::Error> {
         debug!("http_head '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -309,6 +337,13 @@ impl RestClient {
         }
     }
 
+    /// Returns the response headers of `path` as `(name, value)` pairs (the request is actually
+    /// a `GET`, not a `HEAD`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request fails, [`Error::MethodFailed`] on a
+    /// non-success status.
     pub fn header_head(&mut self, path: &str) -> crate::Result<Vec<(String, String)>> {
         let response = self.http_get(path).map_err(Error::ReqwestError)?;
         if !response.status().is_success() {
@@ -335,6 +370,13 @@ impl RestClient {
             .collect())
     }
 
+    /// `HEAD` for Rhai: returns a map with `code` (i64) and `headers` (for [`headers_get`]);
+    /// the body is not fetched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the request fails (full cause chain via [`crate::error_chain`]).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_head(&mut self, path: String) -> RhaiRes<Map> {
         let mut ret = Map::new();
         match self.http_head(path.as_str()) {
@@ -360,6 +402,12 @@ impl RestClient {
         }
     }
 
+    /// Sends a `PATCH` with `body` to `base/path` (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
     pub fn http_patch(&mut self, path: &str, body: &str) -> crate::Result<Response> {
         debug!("http_patch '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -377,6 +425,12 @@ impl RestClient {
         }
     }
 
+    /// `PATCH`es `path` and returns the response body as text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
+    /// on a non-success status (with the body excerpt).
     pub fn body_patch(&mut self, path: &str, body: &str) -> crate::Result<String> {
         let response = self.http_patch(path, body)?;
         if !response.status().is_success() {
@@ -401,6 +455,12 @@ impl RestClient {
         Ok(text)
     }
 
+    /// `PATCH`es `path` with `input` serialized as JSON and returns the JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::JsonError`] on serialization/deserialization failures, and forwards
+    /// [`Self::body_patch`] errors.
     pub fn json_patch(&mut self, path: &str, input: &Value) -> crate::Result<Value> {
         let body = serde_json::to_string(input).map_err(Error::JsonError)?;
         let text = self.body_patch(path, body.as_str())?;
@@ -408,6 +468,14 @@ impl RestClient {
         Ok(json)
     }
 
+    /// `PATCH` for Rhai: `val` is sent as-is when it is a string, JSON-serialized otherwise;
+    /// returns the same map shape as [`Self::rhai_get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the body cannot be serialized, the request fails (full cause
+    /// chain via [`crate::error_chain`]) or the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_patch(&mut self, path: String, val: Dynamic) -> RhaiRes<Map> {
         let body = if val.is_string() {
             val.to_string()
@@ -462,6 +530,12 @@ impl RestClient {
         }
     }
 
+    /// Sends a `PUT` with `body` to `base/path` (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
     pub fn http_put(&mut self, path: &str, body: &str) -> crate::Result<Response> {
         debug!("http_put '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -479,6 +553,12 @@ impl RestClient {
         }
     }
 
+    /// `PUT`s `path` and returns the response body as text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
+    /// on a non-success status (with the body excerpt).
     pub fn body_put(&mut self, path: &str, body: &str) -> crate::Result<String> {
         let response = self.http_put(path, body)?;
         if !response.status().is_success() {
@@ -503,6 +583,12 @@ impl RestClient {
         Ok(text)
     }
 
+    /// `PUT`s `path` with `input` serialized as JSON and returns the JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::JsonError`] on serialization/deserialization failures, and forwards
+    /// [`Self::body_put`] errors.
     pub fn json_put(&mut self, path: &str, input: &Value) -> crate::Result<Value> {
         let body = serde_json::to_string(input).map_err(Error::JsonError)?;
         let text = self.body_put(path, body.as_str())?;
@@ -510,6 +596,14 @@ impl RestClient {
         Ok(json)
     }
 
+    /// `PUT` for Rhai: `val` is sent as-is when it is a string, JSON-serialized otherwise;
+    /// returns the same map shape as [`Self::rhai_get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the body cannot be serialized, the request fails (full cause
+    /// chain via [`crate::error_chain`]) or the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_put(&mut self, path: String, val: Dynamic) -> RhaiRes<Map> {
         let body = if val.is_string() {
             val.to_string()
@@ -564,6 +658,12 @@ impl RestClient {
         }
     }
 
+    /// Sends a `POST` with `body` to `base/path` (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
     pub fn http_post(&mut self, path: &str, body: &str) -> crate::Result<Response> {
         debug!("http_post '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -581,6 +681,12 @@ impl RestClient {
         }
     }
 
+    /// `POST`s `path` and returns the response body as text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
+    /// on a non-success status (with the body excerpt).
     pub fn body_post(&mut self, path: &str, body: &str) -> crate::Result<String> {
         let response = self.http_post(path, body)?;
         if !response.status().is_success() {
@@ -605,6 +711,12 @@ impl RestClient {
         Ok(text)
     }
 
+    /// `POST`s `path` with `input` serialized as JSON and returns the JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::JsonError`] on serialization/deserialization failures, and forwards
+    /// [`Self::body_post`] errors.
     pub fn json_post(&mut self, path: &str, input: &Value) -> crate::Result<Value> {
         let body = serde_json::to_string(input).map_err(Error::JsonError)?;
         let text = self.body_post(path, body.as_str())?;
@@ -612,6 +724,14 @@ impl RestClient {
         Ok(json)
     }
 
+    /// `POST` for Rhai: `val` is sent as-is when it is a string, JSON-serialized otherwise;
+    /// returns the same map shape as [`Self::rhai_get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the body cannot be serialized, the request fails (full cause
+    /// chain via [`crate::error_chain`]) or the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_post(&mut self, path: String, val: Dynamic) -> RhaiRes<Map> {
         let body = if val.is_string() {
             val.to_string()
@@ -666,6 +786,13 @@ impl RestClient {
         }
     }
 
+    /// Sends a urlencoded form `POST` to `base/path` (a custom `Content-Type` header is
+    /// deliberately skipped; blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
     pub fn http_post_form(&mut self, path: &str, params: &[(String, String)]) -> crate::Result<Response> {
         debug!("http_post_form '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -683,6 +810,14 @@ impl RestClient {
         }
     }
 
+    /// Form `POST` for Rhai: map entries become urlencoded params (values via `to_string`);
+    /// returns the same map shape as [`Self::rhai_get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the request fails (full cause chain via [`crate::error_chain`])
+    /// or the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_post_form(&mut self, path: String, val: Map) -> RhaiRes<Map> {
         let params: Vec<(String, String)> = val
             .into_iter()
@@ -733,6 +868,12 @@ impl RestClient {
         }
     }
 
+    /// Sends a `DELETE` to `base/path` (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
     pub fn http_delete(&mut self, path: &str) -> crate::Result<Response> {
         debug!("http_delete '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
@@ -748,6 +889,13 @@ impl RestClient {
         }
     }
 
+    /// `DELETE`s `path` and returns the response body as text; `404` is treated as success
+    /// (idempotent delete).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
+    /// on a failure status other than `404` (with the body excerpt).
     pub fn body_delete(&mut self, path: &str) -> crate::Result<String> {
         let response = self.http_delete(path)?;
         if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
@@ -772,6 +920,12 @@ impl RestClient {
         Ok(text)
     }
 
+    /// `DELETE`s `path` and returns the JSON response; a non-JSON body is wrapped as
+    /// `{"body": <text>}`.
+    ///
+    /// # Errors
+    ///
+    /// Forwards [`Self::body_delete`] errors.
     pub fn json_delete(&mut self, path: &str) -> crate::Result<Value> {
         let text = self.body_delete(path)?;
         let json =
@@ -779,6 +933,14 @@ impl RestClient {
         Ok(json)
     }
 
+    /// `DELETE` for Rhai: returns the same map shape as [`Self::rhai_get`] (`404` is not an
+    /// error at the transport level but surfaces in `code`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the request fails (full cause chain via [`crate::error_chain`])
+    /// or the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_delete(&mut self, path: String) -> RhaiRes<Map> {
         let mut ret = Map::new();
         match self.http_delete(path.as_str()) {
@@ -825,6 +987,13 @@ impl RestClient {
         }
     }
 
+    /// Reads `path` (suffixed with `/<key>` when `key` is not empty) as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] for a method other than [`ReadMethod::Get`], and
+    /// forwards [`Self::json_get`] errors.
+    #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_read(&mut self, method: ReadMethod, path: &str, key: &str) -> crate::Result<Value> {
         let full_path = if key.is_empty() {
             path.to_string()
@@ -838,6 +1007,13 @@ impl RestClient {
         }
     }
 
+    /// Creates `input` at `path` using the given verb.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] for a method other than Post/Put, and forwards the
+    /// [`Self::json_post`] / [`Self::json_put`] errors.
+    #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_create(&mut self, method: CreateMethod, path: &str, input: &Value) -> crate::Result<Value> {
         if method == CreateMethod::Post {
             self.json_post(path, input)
@@ -848,6 +1024,14 @@ impl RestClient {
         }
     }
 
+    /// Updates `path` (suffixed with `/<key>`, plus trailing slash when `use_slash`);
+    /// [`UpdateMethod::None`] echoes `input` without any request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] for an unknown method value, and forwards the
+    /// patch/put/post JSON errors.
+    #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_update(
         &mut self,
         method: UpdateMethod,
@@ -876,6 +1060,13 @@ impl RestClient {
         }
     }
 
+    /// Deletes `path` (suffixed with `/<key>` when `key` is not empty).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] for a method other than [`DeleteMethod::Delete`], and
+    /// forwards [`Self::json_delete`] errors.
+    #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_delete(&mut self, method: DeleteMethod, path: &str, key: &str) -> crate::Result<Value> {
         let full_path = if key.is_empty() {
             path.to_string()
@@ -889,6 +1080,12 @@ impl RestClient {
         }
     }
 
+    /// Sends a `DELETE` carrying `body` to `base/path` (blocks on the tokio runtime).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
     pub fn http_delete_with_body(&mut self, path: &str, body: &str) -> crate::Result<Response> {
         debug!(
             "http_delete_with_body '{}' ",
@@ -909,6 +1106,12 @@ impl RestClient {
         }
     }
 
+    /// `DELETE`s `path` with `body` and returns the response text; `404` is treated as success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
+    /// on a failure status other than `404` (with the body excerpt).
     pub fn body_delete_with_body(&mut self, path: &str, body: &str) -> crate::Result<String> {
         let response = self.http_delete_with_body(path, body)?;
         if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
@@ -933,6 +1136,13 @@ impl RestClient {
         Ok(text)
     }
 
+    /// `DELETE`s `path` with `input` serialized as JSON; a non-JSON response is wrapped as
+    /// `{"body": <text>}`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::JsonError`] on serialization failures, and forwards
+    /// [`Self::body_delete_with_body`] errors.
     pub fn json_delete_with_body(&mut self, path: &str, input: &Value) -> crate::Result<Value> {
         let body = serde_json::to_string(input).map_err(Error::JsonError)?;
         let text = self.body_delete_with_body(path, body.as_str())?;
@@ -941,6 +1151,14 @@ impl RestClient {
         Ok(json)
     }
 
+    /// `DELETE`-with-body for Rhai: `val` is sent as-is when it is a string, JSON-serialized
+    /// otherwise; returns the same map shape as [`Self::rhai_get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the body cannot be serialized, the request fails (full cause
+    /// chain via [`crate::error_chain`]) or the response body cannot be read.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_delete_with_body(&mut self, path: String, val: Dynamic) -> RhaiRes<Map> {
         let body = if val.is_string() {
             val.to_string()
@@ -995,6 +1213,13 @@ impl RestClient {
         }
     }
 
+    /// Deletes `path` carrying `input` as a JSON request body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] for a method other than [`DeleteMethod::Delete`], and
+    /// forwards [`Self::json_delete_with_body`] errors.
+    #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_delete_with_body(
         &mut self,
         method: DeleteMethod,
@@ -1013,6 +1238,7 @@ impl RestClient {
 /// `Vec<(String, String)>` returned as the `headers` field of `get`/`post`/... results — it
 /// carries no rhai-visible indexing or iteration of its own, so this is the only way to read
 /// a specific header from a script. Returns `()` when the header is absent.
+#[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
 pub fn headers_get(headers: Vec<(String, String)>, name: String) -> Dynamic {
     headers
         .iter()
@@ -1021,33 +1247,43 @@ pub fn headers_get(headers: Vec<(String, String)>, name: String) -> Dynamic {
 }
 
 /// Case-insensitive presence check for a response header by name. See [`headers_get`].
+#[must_use]
+#[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
 pub fn headers_has(headers: Vec<(String, String)>, name: String) -> bool {
     headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(&name))
 }
 
+/// GETs `url`, optionally authenticated (`bearer` / `basic` `credential`), and returns the YAML
+/// body as a Rhai value.
+///
+/// # Errors
+///
+/// Returns [`Error::Other`] on an invalid auth header, a client builder failure or a non-success
+/// status (`SCAN-HTTP-001`), [`Error::ReqwestError`] on request/body-read failure, and
+/// [`Error::YamlError`] / [`Error::SerializationError`] when the body is not valid YAML/JSON.
 pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> RhaiRes<Dynamic> {
     tokio::task::block_in_place(|| {
         Handle::current().block_on(async move {
             let mut headers = reqwest::header::HeaderMap::new();
             match auth_type.as_str() {
                 "bearer" => {
-                    headers.insert(
-                        reqwest::header::AUTHORIZATION,
-                        format!("Bearer {}", credential).parse().unwrap(),
-                    );
+                    let value = format!("Bearer {credential}")
+                        .parse()
+                        .map_err(|e| Error::Other(format!("invalid bearer credential: {e}")))?;
+                    headers.insert(reqwest::header::AUTHORIZATION, value);
                 }
                 "basic" => {
                     let encoded = STANDARD.encode(&credential);
-                    headers.insert(
-                        reqwest::header::AUTHORIZATION,
-                        format!("Basic {}", encoded).parse().unwrap(),
-                    );
+                    let value = format!("Basic {encoded}")
+                        .parse()
+                        .map_err(|e| Error::Other(format!("invalid basic credential: {e}")))?;
+                    headers.insert(reqwest::header::AUTHORIZATION, value);
                 }
                 _ => {}
             }
             let client = reqwest::Client::builder()
                 .default_headers(headers)
-                .timeout(std::time::Duration::from_secs(300))
+                .timeout(std::time::Duration::from_mins(5))
                 .build()
                 .map_err(|e| Error::Other(e.to_string()))?;
             let response = client.get(&url).send().await.map_err(Error::ReqwestError)?;
@@ -1068,6 +1304,8 @@ pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> Rhai
     .map_err(rhai_err)
 }
 
+/// Registers `RestClient` (`new_http_client`/`new_client`), the HTTP verbs and the header
+/// helpers (`http_get_yaml`, `headers_get`, `headers_has`) on a Rhai engine.
 pub fn http_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<RestClient>("RestClient")
@@ -1147,7 +1385,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
         let d = result.unwrap();
         assert!(d.is_map(), "expected map Dynamic");
     }
@@ -1189,7 +1427,7 @@ mod tests {
             "bearer".to_string(),
             "token123".to_string(),
         );
-        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1207,7 +1445,7 @@ mod tests {
             "basic".to_string(),
             "user:pass".to_string(),
         );
-        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
     }
 
     #[test]

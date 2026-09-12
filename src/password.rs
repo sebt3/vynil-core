@@ -25,6 +25,11 @@ const SYMBOLS: &[char] = &['!', '#', '%', '*', '+', '-', '.', ':', '=', '?', '@'
 /// characters from each class. Symbols are `!#%*+-.:=?@_` (config-safe).
 ///
 /// Returns `Error::PasswordSpec` if minimums exceed `length` or no class is enabled.
+///
+/// # Errors
+///
+/// Returns [`Error::PasswordSpec`] when the sum of class minimums exceeds `length`
+/// (`PWD-SPEC-001`) or when no character class is enabled (`PWD-SPEC-002`).
 pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbols: usize) -> Result<String> {
     let classes: [(&[char], usize); 4] = [
         (LOWER, lower),
@@ -51,12 +56,18 @@ pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbol
     let mut rng = rng();
     let mut chars: Vec<char> = Vec::with_capacity(length);
     for (set, m) in &classes {
+        // Static alphabets, never empty; the skip branches are unreachable in practice.
         for _ in 0..*m {
-            chars.push(*set.choose(&mut rng).expect("character class is never empty"));
+            if let Some(c) = set.choose(&mut rng) {
+                chars.push(*c);
+            }
         }
     }
     while chars.len() < length {
-        chars.push(*pool.choose(&mut rng).expect("pool is never empty"));
+        let Some(c) = pool.choose(&mut rng) else {
+            break;
+        };
+        chars.push(*c);
     }
     chars.shuffle(&mut rng);
     Ok(chars.into_iter().collect())
@@ -66,19 +77,21 @@ pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbol
 fn class_min(spec: &Map, key: &str) -> usize {
     spec.get(key)
         .and_then(|v| v.as_int().ok())
-        .map(|i| i.max(0) as usize)
-        .unwrap_or(1)
+        .map_or(1, |i| usize::try_from(i.max(0)).unwrap_or(usize::MAX))
 }
 
+/// Registers the `gen_password` / `gen_password_alphanum` helpers on a Rhai `engine`.
 #[cfg(feature = "rhai")]
 pub fn password_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("gen_password", |len: i64| -> crate::RhaiRes<String> {
-            generate(len.max(0) as usize, 1, 1, 1, 1).map_err(|e| format!("{e}").into())
+            let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
+            generate(length, 1, 1, 1, 1).map_err(|e| format!("{e}").into())
         })
         .register_fn("gen_password", |len: i64, spec: Map| -> crate::RhaiRes<String> {
+            let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             generate(
-                len.max(0) as usize,
+                length,
                 class_min(&spec, "lower"),
                 class_min(&spec, "upper"),
                 class_min(&spec, "digits"),
@@ -87,7 +100,8 @@ pub fn password_rhai_register(engine: &mut Engine) {
             .map_err(|e| format!("{e}").into())
         })
         .register_fn("gen_password_alphanum", |len: i64| -> crate::RhaiRes<String> {
-            generate(len.max(0) as usize, 1, 1, 1, 0).map_err(|e| format!("{e}").into())
+            let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
+            generate(length, 1, 1, 1, 0).map_err(|e| format!("{e}").into())
         });
 }
 

@@ -33,6 +33,12 @@ fn build_store(
 
 /// Fetch `key` (prefixed by `prefix`) from `bucket`/`region`/`endpoint` and parse it as YAML
 /// into a Rhai [`Dynamic`] map. Rhai signature: `s3_get_yaml(bucket, region, prefix, endpoint, access_key, secret_key, key)`.
+///
+/// # Errors
+///
+/// Returns a Rhai error wrapping [`Error::Other`] on store build or object fetch failures,
+/// [`Error::UTF8`] on non-UTF-8 bytes, [`Error::YamlError`] on invalid YAML, or
+/// [`Error::SerializationError`] on the JSON/Rhai conversion.
 pub fn s3_get_yaml(
     bucket: String,
     region: String,
@@ -45,7 +51,7 @@ pub fn s3_get_yaml(
     block_in_place(|| {
         Handle::current().block_on(async move {
             let store = build_store(&bucket, &region, &endpoint, &access_key, &secret_key)?;
-            let full_key = format!("{}{}", prefix, key);
+            let full_key = format!("{prefix}{key}");
             let path = Path::from(full_key.as_str());
             let result = store.get(&path).await.map_err(|e| Error::Other(e.to_string()))?;
             let bytes = result.bytes().await.map_err(|e| Error::Other(e.to_string()))?;
@@ -60,6 +66,11 @@ pub fn s3_get_yaml(
 }
 
 /// List keys under `prefix` in `bucket`/`region`/`endpoint`. Rhai: `s3_list_keys(...) -> [String]`.
+///
+/// # Errors
+///
+/// Returns a Rhai error wrapping [`Error::Other`] if the store cannot be built or the listing
+/// fails.
 pub fn s3_list_keys(
     bucket: String,
     region: String,
@@ -84,6 +95,7 @@ pub fn s3_list_keys(
     .map_err(rhai_err)
 }
 
+/// Registers the S3 Rhai helpers on a Rhai `engine`.
 pub fn s3_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("s3_get_yaml", s3_get_yaml)

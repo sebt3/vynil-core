@@ -9,16 +9,28 @@ use crate::{Error, Result};
 #[cfg(feature = "rhai")] use rhai::{Dynamic, Engine, ImmutableString, Map};
 
 /// Parses a YAML string to a `serde_json::Value`.
+///
+/// # Errors
+///
+/// Returns [`Error::YamlError`] when the input is not valid YAML or cannot be converted.
 pub fn yaml_str_to_json(s: &str) -> Result<serde_json::Value> {
     serde_yaml::from_str(s).map_err(|e| Error::YamlError(e.to_string()))
 }
 
 /// Serialises any `serde::Serialize` value to a YAML string.
+///
+/// # Errors
+///
+/// Returns [`Error::YamlError`] when the value cannot be serialised to YAML.
 pub fn yaml_serialize_to_string<T: serde::Serialize>(val: &T) -> Result<String> {
     serde_yaml::to_string(val).map_err(|e| Error::YamlError(e.to_string()))
 }
 
 /// Serialises a slice of `serde::Serialize` values as a multi-document YAML string.
+///
+/// # Errors
+///
+/// Returns [`Error::YamlError`] when one of the values cannot be serialised to YAML.
 pub fn yaml_all_serialize_to_string<T: serde::Serialize>(vals: &[T]) -> Result<String> {
     let mut out = String::new();
     for v in vals {
@@ -28,18 +40,19 @@ pub fn yaml_all_serialize_to_string<T: serde::Serialize>(vals: &[T]) -> Result<S
     Ok(out)
 }
 
+/// Registers the `yaml_encode` / `yaml_decode` / `yaml_decode_multi` helpers on a Rhai `engine`.
 #[cfg(feature = "rhai")]
 pub fn yaml_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("yaml_encode", |val: Dynamic| -> RhaiRes<ImmutableString> {
             serde_yaml::to_string(&val)
                 .map_err(|e| rhai_err(Error::YamlError(e.to_string())))
-                .map(|s| s.into())
+                .map(std::convert::Into::into)
         })
         .register_fn("yaml_encode", |val: Map| -> RhaiRes<ImmutableString> {
             serde_yaml::to_string(&val)
                 .map_err(|e| rhai_err(Error::YamlError(e.to_string())))
-                .map(|s| s.into())
+                .map(std::convert::Into::into)
         })
         .register_fn("yaml_decode", |val: ImmutableString| -> RhaiRes<Dynamic> {
             serde_yaml::from_str(val.as_ref()).map_err(|e| rhai_err(Error::YamlError(e.to_string())))

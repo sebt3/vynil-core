@@ -6,53 +6,83 @@
 use crate::{RhaiRes, register_k8s_generic, register_k8s_object, register_k8s_raw};
 use kube::api::DynamicObject;
 use rhai::{Dynamic, Engine, FnPtr, Map, NativeCallContext, serde::to_dynamic};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
+/// In-memory stand-in for [`crate::k8s::K8sObject`] (Rhai `K8sObject` in mock mode).
 #[derive(Clone, Debug)]
 pub struct K8sObjectMock {
+    /// The whole seeded object as a Rhai map.
     pub obj: Dynamic,
+    /// Kind recorded on the resource this object was fetched from.
     pub kind: String,
 }
 impl K8sObjectMock {
+    /// Mock delete: does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_delete(&mut self) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// Mock delete wait: returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_wait_deleted(&mut self, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// `metadata` sub-document of the seeded object as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the seeded object has no `metadata` map.
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
-        if self.obj.is_map()
-            && self.obj.as_map_ref().unwrap().contains_key("metadata")
-            && self.obj.as_map_ref().unwrap()["metadata"].is_map()
-        {
-            Ok(self.obj.as_map_ref().unwrap()["metadata"].clone())
-        } else {
-            Err(format!("Failed to extract metadata from a {}", self.kind).into())
-        }
+        let metadata = self
+            .obj
+            .as_map_ref()
+            .ok()
+            .and_then(|map| map.get("metadata").filter(|meta| meta.is_map()).cloned());
+        metadata.ok_or_else(|| format!("Failed to extract metadata from a {}", self.kind).into())
     }
 
+    /// Kind of the resource this object was fetched from.
     pub fn get_kind(&mut self) -> String {
         self.kind.clone()
     }
 
+    /// Mock condition: always satisfied.
+    #[must_use]
     pub fn is_condition(_cond: String) -> impl kube::runtime::wait::Condition<DynamicObject> {
         move |_obj: Option<&DynamicObject>| true
     }
 
+    /// Mock condition wait: returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn wait_condition(&mut self, _condition: String, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// Mock `status.<prop>` boolean condition: always satisfied.
+    #[must_use]
     pub fn is_status(_prop: String) -> impl kube::runtime::wait::Condition<DynamicObject> {
         move |_obj: Option<&DynamicObject>| true
     }
 
+    /// Mock `status.<prop>` presence condition: always satisfied.
+    #[must_use]
     pub fn have_status(_prop: String) -> impl kube::runtime::wait::Condition<DynamicObject> {
         move |_obj: Option<&DynamicObject>| true
     }
 
+    /// Mock `status.<prop> == <value>` condition: always satisfied.
+    #[must_use]
     pub fn have_status_value(
         _prop: String,
         _value: String,
@@ -60,14 +90,29 @@ impl K8sObjectMock {
         move |_obj: Option<&DynamicObject>| true
     }
 
+    /// Mock status wait: returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn wait_status(&mut self, _prop: String, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// Mock status-property wait: returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn wait_status_prop(&mut self, _prop: String, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// Mock status-string wait (prop + expected value): returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn wait_status_string(&mut self, _prop: String, _value: String, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
@@ -78,6 +123,12 @@ impl K8sObjectMock {
     /// predicate exactly once against the seeded object: it returns `Ok(())` if the
     /// predicate holds and an error otherwise. This lets package tests assert both that a
     /// converged object passes the gate and that a mid-upgrade one does not.
+    ///
+    /// # Errors
+    ///
+    /// Returns the predicate's own Rhai error when it raises, or an error explaining that the
+    /// single evaluation returned `false` (the mock never polls).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn wait_for(
         ctx: NativeCallContext,
         obj: &mut K8sObjectMock,
@@ -97,6 +148,7 @@ impl K8sObjectMock {
         }
     }
 
+    /// Mock original kind: same as [`Self::get_kind`] (no runtime kind remapping).
     pub fn original_kind(&mut self) -> String {
         self.get_kind()
     }
@@ -104,6 +156,7 @@ impl K8sObjectMock {
 
 // ── K8sRaw mock ─────────────────────────────────────────────────────────────
 
+/// In-memory stand-in for [`crate::k8s::K8sRaw`] (Rhai `K8sRaw` in mock mode).
 #[derive(Clone, Debug)]
 pub struct K8sRawMock;
 
@@ -114,89 +167,130 @@ impl Default for K8sRawMock {
 }
 
 impl K8sRawMock {
+    /// Unit struct: always returns the same empty mock.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
+    /// Mock raw GET: always an empty JSON object (no cluster).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the empty object cannot be converted to a Rhai value (never in
+    /// practice).
     pub fn rhai_get_url(&mut self, _url: String) -> RhaiRes<Dynamic> {
-        to_dynamic(serde_json::Value::Object(Default::default()))
+        to_dynamic(serde_json::json!({}))
     }
 
+    /// Mock server version: always an empty JSON object (no cluster).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the empty object cannot be converted to a Rhai value (never in
+    /// practice).
     pub fn rhai_get_api_version(&mut self) -> RhaiRes<Dynamic> {
-        to_dynamic(serde_json::Value::Object(Default::default()))
+        to_dynamic(serde_json::json!({}))
     }
 
+    /// Mock API resources: always an empty JSON object (no cluster).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the empty object cannot be converted to a Rhai value (never in
+    /// practice).
     pub fn rhai_get_api_resources(&mut self) -> RhaiRes<Dynamic> {
-        to_dynamic(serde_json::Value::Object(Default::default()))
+        to_dynamic(serde_json::json!({}))
     }
 }
 
 // ── K8sWorkload mock (shared by Deploy, DaemonSet, StatefulSet, Job) ────────
 
+/// In-memory stand-in for the typed workload types (`K8sDeploy`, `K8sDaemonSet`,
+/// `K8sStatefulSet`, `K8sJob` in Rhai), backed by the seeded object map.
 #[derive(Clone, Debug)]
 pub struct K8sWorkloadMock {
+    /// The whole seeded workload object as a Rhai map.
     pub obj: Dynamic,
 }
 
 impl K8sWorkloadMock {
-    fn get_sub(&self, key: &str) -> RhaiRes<Dynamic> {
-        if self.obj.is_map() {
-            let map = self.obj.as_map_ref().unwrap();
-            if map.contains_key(key) {
-                return Ok(map[key].clone());
-            }
-        }
-        Ok(Dynamic::UNIT)
+    fn get_sub(&self, key: &str) -> Dynamic {
+        self.obj
+            .as_map_ref()
+            .ok()
+            .and_then(|map| map.get(key).cloned())
+            .unwrap_or(Dynamic::UNIT)
     }
 
+    /// Seeded `metadata` sub-document, or unit when absent/not a map.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
-        self.get_sub("metadata")
+        Ok(self.get_sub("metadata"))
     }
 
+    /// Seeded `spec` sub-document, or unit when absent/not a map.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn get_spec(&mut self) -> RhaiRes<Dynamic> {
-        self.get_sub("spec")
+        Ok(self.get_sub("spec"))
     }
 
+    /// Seeded `status` sub-document, or unit when absent/not a map.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn get_status(&mut self) -> RhaiRes<Dynamic> {
-        self.get_sub("status")
+        Ok(self.get_sub("status"))
     }
 
+    /// Mock workload availability wait: returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn wait_available(&mut self, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// Mock job completion wait: returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock (no cluster); the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn wait_done(&mut self, _timeout: i64) -> RhaiRes<()> {
         Ok(())
     }
 }
 
 fn find_workload_mock(
-    mocks: Arc<Mutex<Vec<Dynamic>>>,
+    mocks: &Arc<Mutex<Vec<Dynamic>>>,
     kind: &str,
     namespace: &str,
     name: &str,
 ) -> RhaiRes<K8sWorkloadMock> {
-    for m in mocks.lock().unwrap().clone() {
-        if !m.is_map() {
+    let snapshot = mocks.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    for m in snapshot {
+        let Ok(map) = m.as_map_ref() else { continue };
+        let Some(kind_val) = map.get("kind") else { continue };
+        if kind_val.clone().into_string().ok().as_deref() != Some(kind) {
             continue;
         }
-        let map = m.as_map_ref().unwrap();
-        if !map.contains_key("kind") || !map["kind"].is_string() {
+        let Some(meta) = map.get("metadata").and_then(|v| v.as_map_ref().ok()) else {
             continue;
-        }
-        if map["kind"].clone().into_string().unwrap() != kind {
-            continue;
-        }
-        if !map.contains_key("metadata") || !map["metadata"].is_map() {
-            continue;
-        }
-        let meta = map["metadata"].as_map_ref().unwrap();
-        let name_match = meta.contains_key("name")
-            && meta["name"].is_string()
-            && meta["name"].clone().into_string().unwrap() == name;
-        let ns_match = meta.contains_key("namespace")
-            && meta["namespace"].is_string()
-            && meta["namespace"].clone().into_string().unwrap() == namespace;
+        };
+        let name_match = meta
+            .get("name")
+            .is_some_and(|n| n.clone().into_string().ok().as_deref() == Some(name));
+        let ns_match = meta
+            .get("namespace")
+            .is_some_and(|n| n.clone().into_string().ok().as_deref() == Some(namespace));
         if name_match && ns_match {
             return Ok(K8sWorkloadMock { obj: m.clone() });
         }
@@ -204,12 +298,12 @@ fn find_workload_mock(
     Err(format!("Failed to find {kind} {name} in namespace {namespace} in the Mock database").into())
 }
 
-fn deep_merge_dynamic(base: Dynamic, patch: &Dynamic) -> Dynamic {
-    if base.is_map() && patch.is_map() {
-        let mut merged: Map = base.as_map_ref().unwrap().clone();
-        for (k, v) in patch.as_map_ref().unwrap().iter() {
+fn deep_merge_dynamic(base: &Dynamic, patch: &Dynamic) -> Dynamic {
+    if let (Ok(base_map), Ok(patch_map)) = (base.as_map_ref(), patch.as_map_ref()) {
+        let mut merged: Map = base_map.clone();
+        for (k, v) in patch_map.iter() {
             let new_val = if let Some(existing) = merged.get(k.as_str()) {
-                deep_merge_dynamic(existing.clone(), v)
+                deep_merge_dynamic(existing, v)
             } else {
                 v.clone()
             };
@@ -221,92 +315,62 @@ fn deep_merge_dynamic(base: Dynamic, patch: &Dynamic) -> Dynamic {
     }
 }
 
-fn merge_with_existing(list: &[Dynamic], kind: &str, obj: &Dynamic) -> Dynamic {
-    if !obj.is_map() {
-        return obj.clone();
+fn obj_name_ns(map: &Map) -> (Option<String>, Option<String>) {
+    let mut name = None;
+    let mut ns = None;
+    if let Some(md) = map.get("metadata")
+        && let Ok(meta) = md.as_map_ref()
+    {
+        name = meta.get("name").cloned().and_then(|n| n.into_string().ok());
+        ns = meta.get("namespace").cloned().and_then(|n| n.into_string().ok());
     }
-    let map = obj.as_map_ref().unwrap();
-    let meta: Option<Map> = match map.get("metadata") {
-        Some(m) if m.is_map() => Some(m.as_map_ref().unwrap().clone()),
-        _ => None,
+    (name, ns)
+}
+
+fn merge_with_existing(list: &[Dynamic], kind: &str, obj: &Dynamic) -> Dynamic {
+    let Ok(map) = obj.as_map_ref() else {
+        return obj.clone();
     };
-    let obj_name = meta
-        .as_ref()
-        .and_then(|m| m.get("name"))
-        .and_then(|n| n.clone().into_string().ok());
-    let obj_ns = meta
-        .as_ref()
-        .and_then(|m| m.get("namespace"))
-        .and_then(|n| n.clone().into_string().ok());
-    for entry in list.iter() {
-        if !entry.is_map() {
+    let (obj_name, obj_ns) = obj_name_ns(&map);
+    for entry in list {
+        let Ok(entry_map) = entry.as_map_ref() else {
             continue;
-        }
-        let entry_map: Map = entry.as_map_ref().unwrap().clone();
+        };
         let entry_kind = entry_map.get("kind").and_then(|k| k.clone().into_string().ok());
         if entry_kind.as_deref() != Some(kind) {
             continue;
         }
-        let entry_meta: Option<Map> = match entry_map.get("metadata") {
-            Some(m) if m.is_map() => Some(m.as_map_ref().unwrap().clone()),
-            _ => None,
-        };
-        let entry_name = entry_meta
-            .as_ref()
-            .and_then(|m| m.get("name"))
-            .and_then(|n| n.clone().into_string().ok());
-        let entry_ns = entry_meta
-            .as_ref()
-            .and_then(|m| m.get("namespace"))
-            .and_then(|n| n.clone().into_string().ok());
+        let (entry_name, entry_ns) = obj_name_ns(&entry_map);
         if entry_name == obj_name && entry_ns == obj_ns {
-            return deep_merge_dynamic(entry.clone(), obj);
+            return deep_merge_dynamic(entry, obj);
         }
     }
     obj.clone()
 }
 
 fn upsert_in_list(list: &mut Vec<Dynamic>, kind: &str, obj: &Dynamic) {
-    if !obj.is_map() {
+    let Ok(map) = obj.as_map_ref() else {
         list.push(obj.clone());
         return;
-    }
-    let map = obj.as_map_ref().unwrap();
-    let meta: Option<Map> = match map.get("metadata") {
-        Some(m) if m.is_map() => Some(m.as_map_ref().unwrap().clone()),
-        _ => None,
     };
-    let obj_name = meta
-        .as_ref()
-        .and_then(|m| m.get("name"))
-        .and_then(|n| n.clone().into_string().ok());
-    let obj_ns = meta
-        .as_ref()
-        .and_then(|m| m.get("namespace"))
-        .and_then(|n| n.clone().into_string().ok());
+    let (obj_name, obj_ns) = obj_name_ns(&map);
     for entry in list.iter_mut() {
-        if !entry.is_map() {
+        let Some((entry_name, entry_ns)) = entry
+            .as_map_ref()
+            .ok()
+            .filter(|entry_map| {
+                entry_map
+                    .get("kind")
+                    .and_then(|k| k.clone().into_string().ok())
+                    .as_deref()
+                    == Some(kind)
+            })
+            .map(|entry_map| obj_name_ns(&entry_map))
+        else {
             continue;
-        }
-        let entry_map: Map = entry.as_map_ref().unwrap().clone();
-        let entry_kind = entry_map.get("kind").and_then(|k| k.clone().into_string().ok());
-        if entry_kind.as_deref() != Some(kind) {
-            continue;
-        }
-        let entry_meta: Option<Map> = match entry_map.get("metadata") {
-            Some(m) if m.is_map() => Some(m.as_map_ref().unwrap().clone()),
-            _ => None,
         };
-        let entry_name = entry_meta
-            .as_ref()
-            .and_then(|m| m.get("name"))
-            .and_then(|n| n.clone().into_string().ok());
-        let entry_ns = entry_meta
-            .as_ref()
-            .and_then(|m| m.get("namespace"))
-            .and_then(|n| n.clone().into_string().ok());
         if entry_name == obj_name && entry_ns == obj_ns {
-            *entry = deep_merge_dynamic(entry.clone(), obj);
+            *entry = deep_merge_dynamic(entry, obj);
             return;
         }
     }
@@ -315,16 +379,23 @@ fn upsert_in_list(list: &mut Vec<Dynamic>, kind: &str, obj: &Dynamic) {
 
 // ── K8sGenericMock ──────────────────────────────────────────────────────────
 
+/// In-memory stand-in for [`crate::k8s::K8sGeneric`] (Rhai `K8sGeneric` in mock mode).
 #[derive(Clone, Debug)]
 pub struct K8sGenericMock {
+    /// Resource kind this handle was created for.
     pub kind: String,
+    /// Namespace requested at construction, if any.
     pub ns: Option<String>,
+    /// Mocks matching `kind` (and `ns` when set), snapshotted at construction.
     pub my_mocks: Vec<Dynamic>,
+    /// Shared mock database (also mutated by patch/apply/create).
     pub mocks: Arc<Mutex<Vec<Dynamic>>>,
+    /// Objects recorded by create/replace/apply, for post-install assertions.
     pub created: Arc<Mutex<Vec<Dynamic>>>,
 }
 
 impl K8sGenericMock {
+    /// Snapshots the mocks of `kind` (and matching namespace when `ns` is set).
     #[must_use]
     pub fn new(
         mocks: Arc<Mutex<Vec<Dynamic>>>,
@@ -332,55 +403,46 @@ impl K8sGenericMock {
         ns: Option<String>,
         created: Arc<Mutex<Vec<Dynamic>>>,
     ) -> Self {
-        let my_mocks: Vec<Dynamic> = mocks
+        let mut my_mocks: Vec<Dynamic> = mocks
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .into_iter()
             .filter(|m| {
-                m.is_map()
-                    && m.as_map_ref().unwrap().contains_key("kind")
-                    && m.as_map_ref().unwrap()["kind"].is_string()
-                    && m.as_map_ref().unwrap()["kind"].clone().into_string().unwrap() == name
+                m.as_map_ref()
+                    .ok()
+                    .and_then(|map| map.get("kind").cloned())
+                    .and_then(|k| k.into_string().ok())
+                    .as_deref()
+                    == Some(name)
             })
             .collect();
-        if ns.is_some() {
-            Self {
-                kind: name.into(),
-                ns: ns.clone(),
-                mocks: mocks.clone(),
-                my_mocks: my_mocks
-                    .into_iter()
-                    .filter(|m| {
-                        m.is_map()
-                            && m.as_map_ref().unwrap().contains_key("metadata")
-                            && m.as_map_ref().unwrap()["metadata"].is_map()
-                            && m.as_map_ref().unwrap()["metadata"]
-                                .as_map_ref()
-                                .unwrap()
-                                .contains_key("namespace")
-                            && m.as_map_ref().unwrap()["metadata"].as_map_ref().unwrap()["namespace"]
-                                .is_string()
-                            && m.as_map_ref().unwrap()["metadata"].as_map_ref().unwrap()["namespace"]
-                                .clone()
-                                .into_string()
-                                .unwrap()
-                                == ns.clone().unwrap()
+        if let Some(ns_filter) = ns.as_deref() {
+            my_mocks.retain(|m| {
+                m.as_map_ref()
+                    .ok()
+                    .and_then(|map| map.get("metadata").cloned())
+                    .and_then(|md| {
+                        md.as_map_ref()
+                            .ok()
+                            .and_then(|meta| meta.get("namespace").cloned())
+                            .and_then(|v| v.into_string().ok())
                     })
-                    .collect(),
-                created,
-            }
-        } else {
-            Self {
-                kind: name.into(),
-                ns,
-                mocks,
-                my_mocks,
-                created,
-            }
+                    .as_deref()
+                    == Some(ns_filter)
+            });
+        }
+        Self {
+            kind: name.into(),
+            ns,
+            mocks,
+            my_mocks,
+            created,
         }
     }
 
+    /// [`Self::new`] variant for Rhai `k8s_resource(api_version, name, ns)` callers: ignores
+    /// group and version, mocks are keyed by kind only.
     #[must_use]
     pub fn new_api_version(
         mocks: Arc<Mutex<Vec<Dynamic>>>,
@@ -393,6 +455,9 @@ impl K8sGenericMock {
         Self::new(mocks, name, ns, created)
     }
 
+    /// [`Self::new`] bound for the namespaced Rhai constructor.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn new_ns(
         mocks: Arc<Mutex<Vec<Dynamic>>>,
         name: String,
@@ -402,6 +467,9 @@ impl K8sGenericMock {
         Self::new(mocks, name.as_str(), Some(ns), created)
     }
 
+    /// [`Self::new`] bound for the global Rhai constructor.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn new_global(
         mocks: Arc<Mutex<Vec<Dynamic>>>,
         name: String,
@@ -410,6 +478,10 @@ impl K8sGenericMock {
         Self::new(mocks, name.as_str(), None, created)
     }
 
+    /// Rhai constructor mirroring `K8sGeneric::new_group_ns`: splits `api_version` on `/`
+    /// (group/version ignored by the mock) and always namespaced.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn new_group_ns(
         mocks: Arc<Mutex<Vec<Dynamic>>>,
         api_version: String,
@@ -417,7 +489,7 @@ impl K8sGenericMock {
         ns: String,
         created: Arc<Mutex<Vec<Dynamic>>>,
     ) -> Self {
-        let arr = api_version.split("/").collect::<Vec<&str>>();
+        let arr = api_version.split('/').collect::<Vec<&str>>();
         if arr.len() > 1 {
             Self::new_api_version(mocks, arr[0], arr[1], name.as_str(), Some(ns), created)
         } else {
@@ -425,22 +497,47 @@ impl K8sGenericMock {
         }
     }
 
+    /// Mock scope: always `"namespace"`.
     pub fn rhai_get_scope(&mut self) -> String {
         "namespace".to_string()
     }
 
+    /// Mock existence: resource handles always exist.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_exist(&mut self) -> RhaiRes<Dynamic> {
         Ok(true.into())
     }
 
+    /// Lists the snapshotted mocks (plus live database changes are not re-snapshotted):
+    /// `{"items": [...]}`, labels selectors ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the items cannot be converted to a Rhai value
+    /// (never for valid mock data).
     pub fn rhai_list(&mut self) -> RhaiRes<Dynamic> {
         to_dynamic(serde_json::json!({"items": self.my_mocks.clone()}))
     }
 
+    /// [`Self::rhai_list`]: the labels selector is ignored by the mock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the items cannot be converted to a Rhai value
+    /// (never for valid mock data).
     pub fn rhai_list_labels(&mut self, _labels: String) -> RhaiRes<Dynamic> {
         to_dynamic(serde_json::json!({"items": self.my_mocks.clone()}))
     }
 
+    /// [`Self::rhai_list`]: the mock does not distinguish metadata-only listings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the items cannot be converted to a Rhai value
+    /// (never for valid mock data).
     pub fn rhai_list_meta(&mut self) -> RhaiRes<Dynamic> {
         self.rhai_list()
     }
@@ -460,7 +557,7 @@ impl K8sGenericMock {
     }
 
     fn find_by_name_in_live(&self, name: &str) -> Option<Dynamic> {
-        let mocks = self.mocks.lock().unwrap();
+        let mocks = self.mocks.lock().unwrap_or_else(PoisonError::into_inner);
         mocks
             .iter()
             .find(|m| {
@@ -470,9 +567,8 @@ impl K8sGenericMock {
                     .and_then(|k| k.clone().into_string().ok())
                     .as_deref()
                     == Some(self.kind.as_str());
-                let meta_dyn = match map.get("metadata").cloned() {
-                    Some(v) => v,
-                    None => return false,
+                let Some(meta_dyn) = map.get("metadata").cloned() else {
+                    return false;
                 };
                 let Ok(meta) = meta_dyn.as_map_ref() else {
                     return false;
@@ -493,6 +589,12 @@ impl K8sGenericMock {
             .cloned()
     }
 
+    /// Gets a mock object by name from the snapshot or the live mock database.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error when no mock matches this kind/name (and namespace).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_get(&mut self, name: String) -> RhaiRes<Dynamic> {
         if let Some(obj) =
             Self::find_by_name_in(&self.my_mocks, &name).or_else(|| self.find_by_name_in_live(&name))
@@ -503,10 +605,21 @@ impl K8sGenericMock {
         }
     }
 
+    /// [`Self::rhai_get`]: the mock returns the full object wherever real metadata is expected.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error when no mock matches this kind/name (and namespace).
     pub fn rhai_get_meta(&mut self, name: String) -> RhaiRes<Dynamic> {
         self.rhai_get(name)
     }
 
+    /// Wraps the matching mock object (or the live database entry) in a [`K8sObjectMock`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error when no mock matches this kind/name (and namespace).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_get_obj(&mut self, name: String) -> RhaiRes<K8sObjectMock> {
         if let Some(obj) =
             Self::find_by_name_in(&self.my_mocks, &name).or_else(|| self.find_by_name_in_live(&name))
@@ -520,79 +633,143 @@ impl K8sGenericMock {
         }
     }
 
+    /// Mock delete: the object remains in the database.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_delete(&mut self, _name: String) -> RhaiRes<()> {
         Ok(())
     }
 
+    /// Mock apply: fills in the namespace (on `metadata` when absent) and the `kind`, upserts
+    /// the object into the mock database and records the merged view in `created`.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_apply(&mut self, _name: String, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let mut obj = data;
-        if let Some(ns) = self.ns.clone()
-            && obj.is_map()
-            && obj.as_map_ref().unwrap().contains_key("metadata")
-            && obj.as_map_ref().unwrap()["metadata"].is_map()
-            && !obj.as_map_ref().unwrap()["metadata"]
-                .as_map_ref()
-                .unwrap()
-                .contains_key("namespace")
-        {
-            obj.as_map_mut()
-                .unwrap()
-                .entry("metadata".into())
-                .and_modify(|meta| {
-                    meta.as_map_mut().unwrap().insert("namespace".into(), ns.into());
-                });
+        if let Ok(mut map) = obj.as_map_mut() {
+            if let Some(ns) = self.ns.clone()
+                && let Some(meta) = map.get_mut("metadata")
+                && let Ok(mut meta_map) = meta.as_map_mut()
+                && meta_map.get("namespace").is_none()
+            {
+                meta_map.insert("namespace".into(), ns.into());
+            }
+            if map.get("kind").is_none() {
+                map.insert("kind".into(), Dynamic::from(self.kind.clone()));
+            }
         }
-        if obj.is_map() && !obj.as_map_ref().unwrap().contains_key("kind") {
-            obj.as_map_mut()
-                .unwrap()
-                .insert("kind".into(), Dynamic::from(self.kind.clone()));
-        }
-        let merged = merge_with_existing(&self.mocks.lock().unwrap(), &self.kind, &obj);
-        upsert_in_list(&mut self.created.lock().unwrap(), &self.kind, &merged);
-        upsert_in_list(&mut self.mocks.lock().unwrap(), &self.kind, &obj);
+        let merged = merge_with_existing(
+            &self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
+        upsert_in_list(
+            &mut self.created.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &merged,
+        );
+        upsert_in_list(
+            &mut self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
         Ok(obj)
     }
 
+    /// Mock replace: fills in the `kind`, upserts the object into the mock database and records
+    /// the merged view in `created` (no deep merge of the stored object).
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_replace(&mut self, _name: String, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let mut obj = data;
-        if obj.is_map() && !obj.as_map_ref().unwrap().contains_key("kind") {
-            obj.as_map_mut()
-                .unwrap()
-                .insert("kind".into(), Dynamic::from(self.kind.clone()));
+        if let Ok(mut map) = obj.as_map_mut()
+            && map.get("kind").is_none()
+        {
+            map.insert("kind".into(), Dynamic::from(self.kind.clone()));
         }
-        let merged = merge_with_existing(&self.mocks.lock().unwrap(), &self.kind, &obj);
-        upsert_in_list(&mut self.created.lock().unwrap(), &self.kind, &merged);
-        upsert_in_list(&mut self.mocks.lock().unwrap(), &self.kind, &obj);
+        let merged = merge_with_existing(
+            &self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
+        upsert_in_list(
+            &mut self.created.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &merged,
+        );
+        upsert_in_list(
+            &mut self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
         Ok(obj)
     }
 
+    /// Mock patch: fills in the `kind` and upserts (deep-merging on collision) into the mock
+    /// database only.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_patch(&mut self, _name: String, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let mut obj = data;
-        if obj.is_map() && !obj.as_map_ref().unwrap().contains_key("kind") {
-            obj.as_map_mut()
-                .unwrap()
-                .insert("kind".into(), Dynamic::from(self.kind.clone()));
+        if let Ok(mut map) = obj.as_map_mut()
+            && map.get("kind").is_none()
+        {
+            map.insert("kind".into(), Dynamic::from(self.kind.clone()));
         }
-        upsert_in_list(&mut self.mocks.lock().unwrap(), &self.kind, &obj);
+        upsert_in_list(
+            &mut self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
         Ok(obj)
     }
 
+    /// Mock create: fills in the `kind`, upserts the object into the mock database and records
+    /// the merged view in `created`.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in the mock; the `RhaiRes` shape mirrors [`crate::k8s`].
     pub fn rhai_create(&mut self, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let mut obj = data;
-        if obj.is_map() && !obj.as_map_ref().unwrap().contains_key("kind") {
-            obj.as_map_mut()
-                .unwrap()
-                .insert("kind".into(), Dynamic::from(self.kind.clone()));
+        if let Ok(mut map) = obj.as_map_mut()
+            && map.get("kind").is_none()
+        {
+            map.insert("kind".into(), Dynamic::from(self.kind.clone()));
         }
-        let merged = merge_with_existing(&self.mocks.lock().unwrap(), &self.kind, &obj);
-        upsert_in_list(&mut self.created.lock().unwrap(), &self.kind, &merged);
-        upsert_in_list(&mut self.mocks.lock().unwrap(), &self.kind, &obj);
+        let merged = merge_with_existing(
+            &self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
+        upsert_in_list(
+            &mut self.created.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &merged,
+        );
+        upsert_in_list(
+            &mut self.mocks.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.kind,
+            &obj,
+        );
         Ok(obj)
     }
 }
 
 // ── Rhai registration (generic part only) ────────────────────────────────────
 
+/// Registers the mock types under the real Rhai names (`K8sGeneric`, `K8sObject`, `K8sRaw`,
+/// workloads), wires `k8s_resource` to the seeded `arced_mocks` / `created` databases and
+/// replaces `update_k8s_crd_cache` with a no-op (no cluster in mock mode).
+#[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
 pub fn k8s_mock_rhai_register(
     engine: &mut Engine,
     arced_mocks: Arc<Mutex<Vec<Dynamic>>>,
@@ -645,8 +822,7 @@ pub fn k8s_mock_rhai_register(
         .register_fn(
             "get_deployment",
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                let mock = wl_mocks.clone();
-                find_workload_mock(mock, "Deployment", &ns, &name)
+                find_workload_mock(&wl_mocks, "Deployment", &ns, &name)
             },
         )
         .register_get("metadata", K8sWorkloadMock::get_metadata)
@@ -661,8 +837,7 @@ pub fn k8s_mock_rhai_register(
         .register_fn(
             "get_deamonset",
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                let mock = wl_mocks.clone();
-                find_workload_mock(mock, "DaemonSet", &ns, &name)
+                find_workload_mock(&wl_mocks, "DaemonSet", &ns, &name)
             },
         )
         .register_get("metadata", K8sWorkloadMock::get_metadata)
@@ -677,8 +852,7 @@ pub fn k8s_mock_rhai_register(
         .register_fn(
             "get_statefulset",
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                let mock = wl_mocks.clone();
-                find_workload_mock(mock, "StatefulSet", &ns, &name)
+                find_workload_mock(&wl_mocks, "StatefulSet", &ns, &name)
             },
         )
         .register_get("metadata", K8sWorkloadMock::get_metadata)
@@ -693,8 +867,7 @@ pub fn k8s_mock_rhai_register(
         .register_fn(
             "get_job",
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                let mock = wl_mocks.clone();
-                find_workload_mock(mock, "Job", &ns, &name)
+                find_workload_mock(&wl_mocks, "Job", &ns, &name)
             },
         )
         .register_get("metadata", K8sWorkloadMock::get_metadata)

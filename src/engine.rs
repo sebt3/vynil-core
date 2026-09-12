@@ -10,7 +10,7 @@
 #[cfg(feature = "password")] use crate::password::password_rhai_register;
 #[cfg(feature = "shell")] use crate::shell::shell_rhai_register;
 use crate::{
-    Error::{self, *},
+    Error::{self, RhaiError},
     Result, RhaiRes,
     chrono::chrono_rhai_register,
     glob::glob_rhai_register,
@@ -30,10 +30,20 @@ pub use rhai::{
 use std::path::{Path, PathBuf};
 use url::form_urlencoded;
 
-pub fn base64_decode(input: String) -> Result<String> {
-    String::from_utf8(STANDARD.decode(&input).unwrap()).map_err(Error::UTF8)
+/// Base64 (standard alphabet) decode of `input` into a UTF-8 string.
+///
+/// # Errors
+///
+/// Returns [`Error::Base64DecodeError`] if `input` is not valid base64, and [`Error::UTF8`]
+/// if the decoded bytes are not valid UTF-8.
+pub fn base64_decode(input: &str) -> Result<String> {
+    let bytes = STANDARD.decode(input).map_err(Error::Base64DecodeError)?;
+    String::from_utf8(bytes).map_err(Error::UTF8)
 }
-pub fn url_encode(arg: String) -> String {
+
+/// Percent-encode `arg` for use in a URL query string.
+#[must_use]
+pub fn url_encode(arg: &str) -> String {
     form_urlencoded::byte_serialize(arg.as_bytes()).collect::<String>()
 }
 
@@ -46,12 +56,14 @@ fn core_common_rhai_register(engine: &mut Engine) {
         .register_fn("log_error", |s: ImmutableString| tracing::error!("{s}"))
         .register_fn("url_encode", url_encode)
         .register_fn("sleep", |seconds: i64| {
-            if seconds > 0 {
-                std::thread::sleep(std::time::Duration::from_secs(seconds as u64));
+            if let Ok(seconds) = u64::try_from(seconds)
+                && seconds > 0
+            {
+                std::thread::sleep(std::time::Duration::from_secs(seconds));
             }
         })
         .register_fn("get_env", |var: ImmutableString| -> String {
-            std::env::var(var.to_string()).unwrap_or("".into())
+            std::env::var(var.to_string()).unwrap_or_default()
         })
         .register_fn("to_decimal", |val: ImmutableString| -> RhaiRes<u32> {
             Ok(u32::from_str_radix(val.as_str(), 8).unwrap_or_else(|_| {
@@ -62,7 +74,9 @@ fn core_common_rhai_register(engine: &mut Engine) {
         .register_fn(
             "base64_decode",
             |val: ImmutableString| -> RhaiRes<ImmutableString> {
-                base64_decode(val.to_string()).map_err(rhai_err).map(|v| v.into())
+                base64_decode(val.as_str())
+                    .map_err(rhai_err)
+                    .map(std::convert::Into::into)
             },
         )
         .register_fn("base64_encode", |val: ImmutableString| -> ImmutableString {
@@ -71,11 +85,11 @@ fn core_common_rhai_register(engine: &mut Engine) {
         .register_fn("json_encode", |val: Dynamic| -> RhaiRes<ImmutableString> {
             serde_json::to_string(&val)
                 .map_err(|e| rhai_err(Error::SerializationError(e)))
-                .map(|v| v.into())
+                .map(std::convert::Into::into)
         })
         .register_fn("json_encode_escape", |val: Dynamic| -> RhaiRes<ImmutableString> {
             let str = serde_json::to_string(&val).map_err(|e| rhai_err(Error::SerializationError(e)))?;
-            Ok(format!("{:?}", str).into())
+            Ok(format!("{str:?}").into())
         })
         .register_fn("json_decode", |val: ImmutableString| -> RhaiRes<Dynamic> {
             serde_json::from_str(val.as_ref()).map_err(|e| rhai_err(Error::SerializationError(e)))
@@ -92,7 +106,7 @@ fn core_common_rhai_register(engine: &mut Engine) {
         .register_fn("dirname", |name: String| -> ImmutableString {
             Path::new(&name)
                 .parent()
-                .unwrap()
+                .unwrap_or(Path::new(""))
                 .to_str()
                 .unwrap_or_default()
                 .into()
@@ -108,7 +122,7 @@ fn fs_rhai_register(engine: &mut Engine) {
         .register_fn("file_read", |name: String| -> RhaiRes<ImmutableString> {
             std::fs::read_to_string(name)
                 .map_err(|e| rhai_err(Error::Stdio(e)))
-                .map(|v| v.into())
+                .map(std::convert::Into::into)
         })
         .register_fn("file_write", |name: String, content: String| -> RhaiRes<()> {
             std::fs::write(name, content).map_err(|e| rhai_err(Error::Stdio(e)))
@@ -153,6 +167,7 @@ impl Script {
     /// assert_eq!(s.eval("sha256(\"hello\")").unwrap().into_string().unwrap(),
     ///     "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     /// ```
+    #[must_use]
     pub fn new_bare(resolver_path: Vec<String>) -> Script {
         let mut script = Script {
             engine: Engine::new(),
@@ -190,6 +205,10 @@ impl Script {
     }
 
     /// Inject `assert` and `import_run`/`import_template` shims (called by `new_bare`).
+    ///
+    /// The shims are one long Rhai source each by design (they must be compiled as a single
+    /// global module), which keeps this function verbose.
+    #[allow(clippy::too_many_lines)] // shims Rhai `import_run`/`import_template` volontairement en un seul bloc (vyvil-core.sdd)
     pub fn add_common(&mut self) {
         self.add_code("fn assert(cond, mess) {if (!cond){throw mess}}");
         self.add_code(
@@ -321,32 +340,51 @@ impl Script {
     /// Errors are logged via `tracing::error!` and otherwise ignored.
     pub fn add_code(&mut self, code: &str) {
         match self.engine.compile(code) {
-            Ok(ast) => {
-                match Module::eval_ast_as_new(self.ctx.clone(), &ast, &self.engine) {
-                    Ok(module) => {
-                        self.engine.register_global_module(module.into());
-                    }
-                    Err(e) => {
-                        tracing::error!("Parsing {code} failed with: {e:}");
-                    }
-                };
-            }
+            Ok(ast) => match Module::eval_ast_as_new(self.ctx.clone(), &ast, &self.engine) {
+                Ok(module) => {
+                    self.engine.register_global_module(module.into());
+                }
+                Err(e) => {
+                    tracing::error!("Parsing {code} failed with: {e:}");
+                }
+            },
             Err(e) => {
-                tracing::error!("Loading {code} failed with: {e:}")
+                tracing::error!("Loading {code} failed with: {e:}");
             }
-        };
+        }
     }
 
     /// Push a JSON value into the persistent Rhai scope under `name`.
+    ///
+    /// The JSON round-trip into a [`Dynamic`] cannot fail for a valid [`serde_json::Value`];
+    /// a failure is logged and the scope is left untouched rather than propagated (this API
+    /// has no error channel).
     pub fn set_dynamic(&mut self, name: &str, val: &serde_json::Value) {
-        let value: Dynamic = serde_json::from_str(&serde_json::to_string(&val).unwrap()).unwrap();
-        self.ctx.set_or_push(name, value);
+        let converted = serde_json::to_string(val)
+            .map_err(Error::from)
+            .and_then(|json| serde_json::from_str::<Dynamic>(&json).map_err(Error::from));
+        match converted {
+            Ok(value) => {
+                self.ctx.set_or_push(name, value);
+            }
+            Err(e) => {
+                tracing::error!("cannot convert {name} to a Rhai Dynamic: {e}");
+            }
+        }
     }
 
     /// Evaluate the Rhai file at `file` inside the persistent scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingScript`] if `file` is not a file, [`Error::Other`] if its path
+    /// is not valid UTF-8, [`Error::RhaiError`] on a compile or evaluation failure.
     pub fn run_file(&mut self, file: &PathBuf) -> Result<Dynamic, Error> {
         if Path::new(&file).is_file() {
-            let str = file.as_os_str().to_str().unwrap();
+            let str = file
+                .as_os_str()
+                .to_str()
+                .ok_or_else(|| Error::Other(format!("{}: path is not valid UTF-8", file.display())))?;
             match self.engine.compile_file(str.into()) {
                 Ok(ast) => self
                     .engine
@@ -360,6 +398,10 @@ impl Script {
     }
 
     /// Evaluate a Rhai snippet and return its [`Dynamic`] result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RhaiError`] on a parse or evaluation failure.
     pub fn eval(&mut self, script: &str) -> Result<Dynamic, Error> {
         self.engine
             .eval_with_scope::<Dynamic>(&mut self.ctx, script)
@@ -367,6 +409,11 @@ impl Script {
     }
 
     /// Evaluate a Rhai snippet expected to return `bool`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RhaiError`] on a parse/evaluation failure or when the result is not a
+    /// `bool`.
     pub fn eval_truth(&mut self, script: &str) -> Result<bool, Error> {
         tracing::debug!("START: eval_truth({})", script);
         let r = self
@@ -378,6 +425,11 @@ impl Script {
     }
 
     /// Evaluate a Rhai snippet expected to return a `Map`, serialised to a JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RhaiError`] on a parse/evaluation failure or when the result is not a
+    /// `Map`, and [`Error::SerializationError`] if the map cannot be serialised.
     pub fn eval_map_string(&mut self, script: &str) -> Result<String, Error> {
         tracing::debug!("START: eval_map_string({})", script);
         let m = self
@@ -389,6 +441,11 @@ impl Script {
     }
 
     /// Evaluate a Rhai snippet expected to return a `Map`, as `serde_json::Value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RhaiError`] on a parse/evaluation failure or when the result is not a
+    /// `Map`, and [`Error::SerializationError`] if the map cannot be converted.
     pub fn eval_map_json(&mut self, script: &str) -> Result<serde_json::Value, Error> {
         let m = self
             .engine
@@ -426,7 +483,7 @@ mod tests {
     fn test_yaml_decode_boolean_value() {
         let mut s = make_script();
         let result = s.eval(r#"yaml_decode("enabled: true")["enabled"]"#).unwrap();
-        assert_eq!(result.cast::<bool>(), true);
+        assert!(result.cast::<bool>());
     }
 
     #[test]
@@ -567,23 +624,20 @@ mod tests {
     #[test]
     fn test_semver_comparison_operators() {
         let mut s = make_script();
-        assert_eq!(
+        assert!(
             s.eval(r#"semver_from("1.0.0") < semver_from("2.0.0")"#)
                 .unwrap()
-                .cast::<bool>(),
-            true
+                .cast::<bool>()
         );
-        assert_eq!(
+        assert!(
             s.eval(r#"semver_from("2.0.0") > semver_from("1.0.0")"#)
                 .unwrap()
-                .cast::<bool>(),
-            true
+                .cast::<bool>()
         );
-        assert_eq!(
+        assert!(
             s.eval(r#"semver_from("1.0.0") == semver_from("1.0.0")"#)
                 .unwrap()
-                .cast::<bool>(),
-            true
+                .cast::<bool>()
         );
     }
 

@@ -7,7 +7,7 @@
 //! The discovery cache is wired via `OnceLock` function pointers injected by the consumer (see
 //! `context_is_wired` / `set_get_client` …) — the crate itself does not assume a kubeconfig.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use crate::{Error, Result, RhaiRes, rhai_err, rhai_err_str};
 use k8s_openapi::api::{
@@ -29,26 +29,34 @@ use tokio::sync::RwLock;
 
 // ── Context function pointers (initialized by common at startup) ─────────────
 
+/// Injected kube [`Client`] factory, set by the consumer via [`set_get_client`].
 pub static GET_CLIENT: OnceLock<Box<dyn Fn() -> Client + Send + Sync>> = OnceLock::new();
+/// Injected common-labels accessor, set by the consumer via [`set_get_labels`].
 pub static GET_LABELS: OnceLock<Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>> = OnceLock::new();
+/// Injected owner-reference accessor, set by the consumer via [`set_get_owner`].
 pub static GET_OWNER: OnceLock<Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>> = OnceLock::new();
+/// Injected owner-namespace accessor, set by the consumer via [`set_get_owner_ns`].
 pub static GET_OWNER_NS: OnceLock<Box<dyn Fn() -> Option<String> + Send + Sync>> = OnceLock::new();
 
+/// Injects the kube-client factory; first call wins, later calls are ignored.
 pub fn set_get_client(f: Box<dyn Fn() -> Client + Send + Sync>) {
     GET_CLIENT.set(f).ok();
 }
+/// Injects the common-labels accessor; first call wins, later calls are ignored.
 pub fn set_get_labels(f: Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>) {
     GET_LABELS.set(f).ok();
 }
+/// Injects the owner-reference accessor; first call wins, later calls are ignored.
 pub fn set_get_owner(f: Box<dyn Fn() -> Option<serde_json::Value> + Send + Sync>) {
     GET_OWNER.set(f).ok();
 }
+/// Injects the owner-namespace accessor; first call wins, later calls are ignored.
 pub fn set_get_owner_ns(f: Box<dyn Fn() -> Option<String> + Send + Sync>) {
     GET_OWNER_NS.set(f).ok();
 }
 
-/// True if the client name (crate::set_client_name) and the 4 context accessors have been
-/// injected (see common::context::wire_core_k8s).
+/// True if the client name (`crate::set_client_name`) and the 4 context accessors have been
+/// injected (see `common::context::wire_core_k8s`).
 pub fn context_is_wired() -> bool {
     GET_CLIENT.get().is_some()
         && crate::client_name_is_set()
@@ -58,32 +66,44 @@ pub fn context_is_wired() -> bool {
 }
 
 fn call_get_labels() -> Option<serde_json::Value> {
-    GET_LABELS.get().map(|f| f()).unwrap_or(None)
+    GET_LABELS.get().and_then(|f| f())
 }
 fn call_get_owner() -> Option<serde_json::Value> {
-    GET_OWNER.get().map(|f| f()).unwrap_or(None)
+    GET_OWNER.get().and_then(|f| f())
 }
 fn call_get_owner_ns() -> Option<String> {
-    GET_OWNER_NS.get().map(|f| f()).unwrap_or(None)
+    GET_OWNER_NS.get().and_then(|f| f())
+}
+
+/// Builds the shared kube client from the injected [`GET_CLIENT`] factory.
+///
+/// # Panics
+///
+/// Panics if the k8s context was not wired (see [`context_is_wired`]).
+#[allow(clippy::expect_used)] // panic by design: no error channel in the CLIENT/RAW_CLIENT static initializers (vyvil-core.sdd)
+fn build_client() -> Client {
+    let f = GET_CLIENT.get().expect("k8s context not initialized");
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(async move { f() }))
+}
+
+/// Wait timeout as a [`std::time::Duration`]; a negative timeout clamps to zero (immediate timeout).
+fn timeout_duration(timeout: i64) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::try_from(timeout).unwrap_or(0))
 }
 
 // ── k8sgeneric ───────────────────────────────────────────────────────────────
 
-lazy_static::lazy_static! {
-    pub static ref CLIENT: Client = {
-        let f = GET_CLIENT.get().expect("k8s context not initialized");
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move { f() })
-        })
-    };
-}
+/// Shared kube client, built from the injected factory on first access.
+///
+/// Panics on first access if the k8s context was not wired (see [`context_is_wired`]).
+pub static CLIENT: LazyLock<Client> = LazyLock::new(build_client);
 
 fn aggregated_apiservice_group(spec: &serde_json::Value) -> Option<String> {
     spec.get("service").filter(|s| !s.is_null())?;
     spec.get("group")
         .and_then(|g| g.as_str())
         .filter(|g| !g.is_empty())
-        .map(|g| g.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 async fn excluded_apiservice_groups() -> Vec<String> {
@@ -108,40 +128,42 @@ async fn excluded_apiservice_groups() -> Vec<String> {
     }
 }
 
-async fn async_populate_cache() -> Discovery {
+async fn async_populate_cache() -> Result<Discovery> {
     let excluded = excluded_apiservice_groups().await;
-    let excluded_refs: Vec<&str> = excluded.iter().map(|s| s.as_str()).collect();
+    let excluded_refs: Vec<&str> = excluded.iter().map(std::string::String::as_str).collect();
     Discovery::new(CLIENT.clone())
         .exclude(&excluded_refs)
         .run()
         .await
-        .expect("create discovery (excluding api-services)")
+        .map_err(Error::KubeError)
 }
 
+#[allow(clippy::expect_used)] // panic by design: no error channel in the CACHE static initializer (vyvil-core.sdd)
 fn populate_cache() -> Discovery {
     tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async move {
-            let excluded = excluded_apiservice_groups().await;
-            let excluded_refs: Vec<&str> = excluded.iter().map(|s| s.as_str()).collect();
-            Discovery::new(CLIENT.clone())
-                .exclude(&excluded_refs)
-                .run()
-                .await
-                .expect("create discovery (excluding api-services)")
-        })
+        tokio::runtime::Handle::current()
+            .block_on(async_populate_cache())
+            .expect("create discovery (excluding api-services)")
     })
 }
 
-lazy_static::lazy_static! {
-    pub static ref CACHE: RwLock<Discovery> = RwLock::new(populate_cache());
-}
+/// Discovery cache, populated from the cluster on first access.
+///
+/// Panics on first access if discovery fails; use [`update_cache`] for a graceful refresh.
+pub static CACHE: LazyLock<RwLock<Discovery>> = LazyLock::new(|| RwLock::new(populate_cache()));
 
+/// Refreshes the discovery cache from the cluster, keeping the previous one on timeout or failure.
+///
+/// Exposed to Rhai as `update_k8s_crd_cache`.
 pub fn update_cache() {
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async move {
-            match tokio::time::timeout(std::time::Duration::from_secs(60), async_populate_cache()).await {
-                Ok(discovery) => {
+            match tokio::time::timeout(std::time::Duration::from_mins(1), async_populate_cache()).await {
+                Ok(Ok(discovery)) => {
                     *CACHE.write().await = discovery;
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache");
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -149,17 +171,26 @@ pub fn update_cache() {
                     );
                 }
             }
-        })
-    })
+        });
+    });
 }
 
+/// A single live Kubernetes object: its API handle plus the metadata fetched at creation.
 #[derive(Clone, Debug)]
 pub struct K8sObject {
+    /// API handle used for every operation on this object.
     pub api: Api<DynamicObject>,
+    /// Partial metadata fetched when the object was obtained (via `get_obj`).
     pub obj: PartialObjectMeta,
+    /// Kind recorded on the [`K8sGeneric`] this object came from.
     pub kind: String,
 }
 impl K8sObject {
+    /// Deletes the object with foreground propagation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     pub fn rhai_delete(&mut self) -> RhaiRes<()> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
@@ -173,6 +204,12 @@ impl K8sObject {
         .map_err(rhai_err)
     }
 
+    /// Waits until this object's uid is observed as deleted, up to `timeout` seconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the object has no uid, if `timeout` elapses ([`Error::Elapsed`])
+    /// or if the watch fails ([`Error::KubeWaitError`]).
     pub fn rhai_wait_deleted(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let uid = self
@@ -182,7 +219,7 @@ impl K8sObject {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
                 let cond = await_condition(self.api.clone(), &name, conditions::is_deleted(&uid));
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -192,24 +229,34 @@ impl K8sObject {
         .map(|_| ())
     }
 
+    /// This object's metadata rendered as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`] if the metadata cannot be
+    /// converted to a Rhai value.
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
         let v = serde_json::to_value(self.obj.metadata.clone())
             .map_err(|e| rhai_err(Error::SerializationError(e)))?;
         to_dynamic(v)
     }
 
+    /// Runtime kind read from the object's own type fields (empty when absent).
     pub fn get_kind(&mut self) -> String {
         if let Some(t) = self.obj.types.clone() {
             t.kind
         } else {
-            "".to_string()
+            String::new()
         }
     }
 
+    /// Kind recorded on the [`K8sGeneric`] this object was fetched from.
     pub fn original_kind(&mut self) -> String {
         self.kind.clone()
     }
 
+    /// Condition matching when `status.conditions` contains `cond` with `status: "True"`.
+    #[must_use]
     pub fn is_condition(cond: String) -> impl Condition<DynamicObject> {
         move |obj: Option<&DynamicObject>| {
             let Some(conditions) = obj
@@ -226,12 +273,18 @@ impl K8sObject {
         }
     }
 
+    /// Waits up to `timeout` seconds for `condition` to become `True` on this object.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_condition(&mut self, condition: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_condition(condition));
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -242,41 +295,51 @@ impl K8sObject {
         Ok(())
     }
 
+    /// Condition matching when `status.<prop>` is the boolean `true`.
+    #[must_use]
     pub fn is_status(prop: String) -> impl Condition<DynamicObject> {
         move |obj: Option<&DynamicObject>| {
             obj.and_then(|o| o.data.get("status"))
                 .and_then(|s| s.get(prop.as_str()))
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
         }
     }
 
+    /// Condition matching when `status.<prop>` is present and not null.
+    #[must_use]
     pub fn have_status(prop: String) -> impl Condition<DynamicObject> {
         move |obj: Option<&DynamicObject>| {
             obj.and_then(|o| o.data.get("status"))
                 .and_then(|s| s.get(prop.as_str()))
-                .map(|v| !v.is_null())
-                .unwrap_or(false)
+                .is_some_and(|v| !v.is_null())
         }
     }
 
+    /// Condition matching when `status.<prop>` equals the string `value`.
+    #[must_use]
     pub fn have_status_value(prop: String, value: String) -> impl Condition<DynamicObject> {
         move |obj: Option<&DynamicObject>| {
             obj.and_then(|o| o.data.get("status"))
                 .and_then(|s| s.get(prop.as_str()))
                 .and_then(|v| v.as_str())
-                .map(|v| v == value.as_str())
-                .unwrap_or(false)
+                .is_some_and(|v| v == value.as_str())
         }
     }
 
+    /// Waits up to `timeout` seconds for `status.<prop>` to become the boolean `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_status(&mut self, prop: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
         let cond = await_condition(self.api.clone(), &name, Self::is_status(prop));
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -287,13 +350,19 @@ impl K8sObject {
         Ok(())
     }
 
+    /// Waits up to `timeout` seconds for `status.<prop>` to appear (non-null).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_status_prop(&mut self, prop: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
         let cond = await_condition(self.api.clone(), &name, Self::have_status(prop));
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -304,13 +373,19 @@ impl K8sObject {
         Ok(())
     }
 
+    /// Waits up to `timeout` seconds for `status.<prop>` to equal the string `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_status_string(&mut self, prop: String, value: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
         let cond = await_condition(self.api.clone(), &name, Self::have_status_value(prop, value));
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -329,6 +404,12 @@ impl K8sObject {
     /// seconds elapse. Unlike `wait_status*`, the predicate can inspect arbitrarily nested
     /// fields (`obj.status.ceph.versions.overall.len() == 1`, …). A predicate that raises an
     /// error aborts the wait with that error rather than silently counting as `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the predicate's own Rhai error if it raises, otherwise a Rhai error if `timeout`
+    /// elapses ([`Error::Elapsed`]) or the watch fails ([`Error::KubeWaitError`]).
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn wait_for(
         ctx: rhai::NativeCallContext,
         obj: &mut K8sObject,
@@ -360,12 +441,9 @@ impl K8sObject {
         };
         let outcome = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(timeout as u64),
-                    await_condition(api, &name, cond),
-                )
-                .await
-                .map_err(Error::Elapsed)
+                tokio::time::timeout(timeout_duration(timeout), await_condition(api, &name, cond))
+                    .await
+                    .map_err(Error::Elapsed)
             })
         });
         if let Some(e) = pred_err.into_inner() {
@@ -379,15 +457,24 @@ impl K8sObject {
     }
 }
 
+/// Generic resource handle resolved from the discovery cache (`K8sGeneric` in Rhai).
 #[derive(Clone, Debug)]
 pub struct K8sGeneric {
+    /// Resolved API handle, `None` when the kind/plural was not found in the discovery cache.
     pub api: Option<Api<DynamicObject>>,
+    /// Namespace requested at construction, if any.
     pub ns: Option<String>,
+    /// Discovery scope of the resolved resource.
     pub scope: Scope,
+    /// Resolved kind (empty when unresolved).
     pub kind: String,
 }
 
 impl K8sGeneric {
+    /// Resolves a resource by kind or plural (case-insensitive) from the discovery cache.
+    ///
+    /// On ambiguity the lexicographically smallest group wins (the core group in practice).
+    /// Returns a handle with `api: None` when nothing matches.
     #[must_use]
     pub fn new(name: &str, ns: Option<String>) -> K8sGeneric {
         tokio::task::block_in_place(|| {
@@ -434,6 +521,9 @@ impl K8sGeneric {
         })
     }
 
+    /// Resolves a resource by api group, version and kind/plural from the discovery cache.
+    ///
+    /// Returns a handle with `api: None` when nothing matches.
     #[must_use]
     pub fn new_api_version(api_group: &str, version: &str, name: &str, ns: Option<String>) -> K8sGeneric {
         tokio::task::block_in_place(|| {
@@ -488,16 +578,26 @@ impl K8sGeneric {
         })
     }
 
+    /// Rhai constructor `k8s_resource(name, ns)`: namespaced [`Self::new`].
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn new_ns(name: String, ns: String) -> K8sGeneric {
         K8sGeneric::new(name.as_str(), Some(ns))
     }
 
+    /// Rhai constructor `k8s_resource(name)`: cluster-wide [`Self::new`] lookup.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn new_global(name: String) -> K8sGeneric {
         K8sGeneric::new(name.as_str(), None)
     }
 
+    /// Rhai constructor `k8s_resource(api_version, name, ns)`: splits `api_version` on `/`
+    /// and delegates to [`Self::new_api_version`] (or [`Self::new`] when no group is present).
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn new_group_ns(api_version: String, name: String, ns: String) -> K8sGeneric {
-        let arr = api_version.split("/").collect::<Vec<&str>>();
+        let arr = api_version.split('/').collect::<Vec<&str>>();
         if arr.len() > 1 {
             K8sGeneric::new_api_version(arr[0], arr[1], name.as_str(), Some(ns))
         } else {
@@ -505,6 +605,7 @@ impl K8sGeneric {
         }
     }
 
+    /// Discovery scope as `"cluster"` or `"namespace"` for Rhai.
     pub fn rhai_get_scope(&mut self) -> String {
         if self.scope == Scope::Cluster {
             "cluster".to_string()
@@ -513,14 +614,28 @@ impl K8sGeneric {
         }
     }
 
+    /// True when the resource was resolved at construction ([`Self::api`] is set).
+    #[must_use]
     pub fn exist(&self) -> bool {
         self.api.is_some()
     }
 
+    /// [`Self::exist`] as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the boolean cannot be converted to a Rhai value (never in
+    /// practice, kept for the `RhaiRes` shape).
     pub fn rhai_exist(&mut self) -> RhaiRes<Dynamic> {
         to_dynamic(self.api.is_some())
     }
 
+    /// Lists all objects of this resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn list(&self) -> Result<ObjectList<DynamicObject>> {
         if let Some(api) = self.api.clone() {
             tokio::task::block_in_place(|| {
@@ -532,12 +647,25 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::list`] as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::list`] errors or
+    /// [`Error::SerializationError`].
     pub fn rhai_list(&mut self) -> RhaiRes<Dynamic> {
         let res = self.list().map_err(rhai_err)?;
         let v = serde_json::to_value(res).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         to_dynamic(v)
     }
 
+    /// Lists objects of this resource matching a label selector (invalid selectors fail at
+    /// request time).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn list_labels(&self, labels: String) -> Result<ObjectList<DynamicObject>> {
         if let Some(api) = self.api.clone() {
             tokio::task::block_in_place(|| {
@@ -552,12 +680,24 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::list_labels`] as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::list_labels`] errors or
+    /// [`Error::SerializationError`].
     pub fn rhai_list_labels(&mut self, labels: String) -> RhaiRes<Dynamic> {
         let res = self.list_labels(labels).map_err(rhai_err)?;
         let v = serde_json::to_value(res).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         to_dynamic(v)
     }
 
+    /// Lists only the object metadata of this resource (cheaper full listing).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn list_meta(&self) -> Result<ObjectList<PartialObjectMeta>> {
         if let Some(api) = self.api.clone() {
             tokio::task::block_in_place(|| {
@@ -572,12 +712,24 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::list_meta`] as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::list_meta`] errors or
+    /// [`Error::SerializationError`].
     pub fn rhai_list_meta(&mut self) -> RhaiRes<Dynamic> {
         let res = self.list_meta().map_err(rhai_err)?;
         let v = serde_json::to_value(res).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         to_dynamic(v)
     }
 
+    /// Gets a single object by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn get(&self, name: &str) -> Result<DynamicObject> {
         if let Some(api) = self.api.clone() {
             tokio::task::block_in_place(|| {
@@ -589,12 +741,24 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::get`] as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::get`] errors or [`Error::SerializationError`].
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_get(&mut self, name: String) -> RhaiRes<Dynamic> {
         let res = self.get(&name).map_err(rhai_err)?;
         let v = serde_json::to_value(res).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         to_dynamic(v)
     }
 
+    /// Gets a single object's metadata by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn get_meta(&self, name: &str) -> Result<PartialObjectMeta> {
         if let Some(api) = self.api.clone() {
             tokio::task::block_in_place(|| {
@@ -606,12 +770,26 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::get_meta`] as a Rhai value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::get_meta`] errors or
+    /// [`Error::SerializationError`].
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_get_meta(&mut self, name: String) -> RhaiRes<Dynamic> {
         let res = self.get_meta(&name).map_err(rhai_err)?;
         let v = serde_json::to_value(res).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         to_dynamic(v)
     }
 
+    /// Fetches the object's metadata and wraps it in a [`K8sObject`] bound to this resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::UnsupportedMethod`] (resource unresolved) or the
+    /// [`Self::get_meta`] errors.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_get_obj(&mut self, name: String) -> RhaiRes<K8sObject> {
         let Some(api) = self.api.clone() else {
             return Err(rhai_err(Error::UnsupportedMethod));
@@ -624,6 +802,12 @@ impl K8sGeneric {
         })
     }
 
+    /// Deletes an object by name with foreground propagation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn delete(&self, name: &str) -> Result<()> {
         if let Some(api) = self.api.clone() {
             tokio::task::block_in_place(|| {
@@ -639,6 +823,12 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::delete`] variant for Rhai.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::delete`] errors.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_delete(&mut self, name: String) -> RhaiRes<()> {
         self.delete(&name).map_err(rhai_err)
     }
@@ -660,6 +850,9 @@ impl K8sGeneric {
 
 // ── Pure helper — testable without a live K8s client ─────────────────────────
 
+/// Normalizes a handle before create/replace/patch/apply: guarantees an object `metadata`,
+/// injects missing common labels (never overriding existing ones) and, for a namespaced
+/// resource in the owner's namespace, appends the owner reference.
 fn prepare_handle(
     mut handle: serde_json::Map<String, serde_json::Value>,
     labels: Option<serde_json::Value>,
@@ -668,34 +861,28 @@ fn prepare_handle(
     my_ns: Option<String>,
     is_namespaced: bool,
 ) -> serde_json::Map<String, serde_json::Value> {
-    if !handle.contains_key("metadata") || !handle["metadata"].is_object() {
+    if !handle.get("metadata").is_some_and(serde_json::Value::is_object) {
         handle.insert("metadata".to_string(), json!({}));
     }
+    let Some(metadata) = handle
+        .get_mut("metadata")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        // unreachable: the branch above just forced metadata to be an object
+        return handle;
+    };
     if let Some(labels) = labels {
-        if !handle["metadata"].as_object().unwrap().contains_key("labels") {
-            handle["metadata"]
-                .as_object_mut()
-                .unwrap()
-                .insert("labels".to_string(), json!({}));
-        } else if !handle["metadata"].as_object_mut().unwrap()["labels"].is_object() {
-            handle["metadata"].as_object_mut().unwrap().remove_entry("labels");
-            handle["metadata"]
-                .as_object_mut()
-                .unwrap()
-                .insert("labels".to_string(), json!({}));
+        if !metadata.get("labels").is_some_and(serde_json::Value::is_object) {
+            metadata.insert("labels".to_string(), json!({}));
         }
-        if let Some(label_map) = labels.as_object() {
+        if let Some(label_map) = labels.as_object()
+            && let Some(existing) = metadata
+                .get_mut("labels")
+                .and_then(serde_json::Value::as_object_mut)
+        {
             for (k, v) in label_map {
-                if !handle["metadata"].as_object_mut().unwrap()["labels"]
-                    .as_object_mut()
-                    .unwrap()
-                    .keys()
-                    .any(|name| name == k)
-                {
-                    handle["metadata"].as_object_mut().unwrap()["labels"]
-                        .as_object_mut()
-                        .unwrap()
-                        .insert(k.to_string(), v.clone());
+                if !existing.contains_key(k.as_str()) {
+                    existing.insert(k.clone(), v.clone());
                 }
             }
         }
@@ -706,26 +893,26 @@ fn prepare_handle(
         && let Some(mine) = my_ns
         && ns == mine
     {
-        if handle["metadata"]
-            .as_object()
-            .unwrap()
-            .contains_key("ownerReferences")
-        {
-            handle["metadata"].as_object_mut().unwrap()["ownerReferences"]
-                .as_array_mut()
-                .unwrap()
-                .push(owner);
-        } else {
-            handle["metadata"]
-                .as_object_mut()
-                .unwrap()
-                .insert("ownerReferences".to_string(), vec![owner].into());
+        let references = metadata
+            .entry("ownerReferences".to_string())
+            .or_insert_with(|| json!([]));
+        match references {
+            serde_json::Value::Array(items) => items.push(owner),
+            // malformed (non-array) references are replaced rather than panicking
+            other => *other = vec![owner].into(),
         }
     }
     handle
 }
 
 impl K8sGeneric {
+    /// Creates a resource from a handle map (labels/owner refs injected first).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved,
+    /// [`Error::SerializationError`] if the handle is not a valid object, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn create(&self, data: serde_json::Map<String, serde_json::Value>) -> Result<DynamicObject> {
         if let Some(api) = self.api.clone() {
             let handle = self.inject_labels_and_owner(data);
@@ -745,6 +932,13 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::create`] variant for Rhai, taking the handle as a Rhai map.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the map cannot be deserialized, or wrapping the
+    /// [`Self::create`] errors and [`Error::SerializationError`].
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_create(&mut self, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let data = rhai::serde::from_dynamic(&data)?;
         let res = self.create(data).map_err(|e: Error| rhai_err(e))?;
@@ -752,6 +946,13 @@ impl K8sGeneric {
         to_dynamic(v)
     }
 
+    /// Replaces (full update) a named resource from a handle map.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved,
+    /// [`Error::SerializationError`] if the handle is not a valid object, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn replace(
         &self,
         name: &str,
@@ -775,6 +976,13 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::replace`] variant for Rhai.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the map cannot be deserialized, or wrapping the
+    /// [`Self::replace`] errors and [`Error::SerializationError`].
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_replace(&mut self, name: String, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let data = rhai::serde::from_dynamic(&data)?;
         let res = self.replace(&name, data).map_err(|e: Error| rhai_err(e))?;
@@ -782,6 +990,12 @@ impl K8sGeneric {
         to_dynamic(v)
     }
 
+    /// Server-side applies a patch as the configured field manager (forced).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails.
     pub fn patch(
         &self,
         name: &str,
@@ -805,6 +1019,13 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::patch`] variant for Rhai.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the map cannot be deserialized, or wrapping the
+    /// [`Self::patch`] errors and [`Error::SerializationError`].
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_patch(&mut self, name: String, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let data = rhai::serde::from_dynamic(&data)?;
         let res = self.patch(&name, data).map_err(|e: Error| rhai_err(e))?;
@@ -812,6 +1033,13 @@ impl K8sGeneric {
         to_dynamic(v)
     }
 
+    /// Server-side applies a patch (as [`Self::patch`]), tolerating the immutable-spec error of
+    /// an already-completed `Job` by returning the current object instead of failing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedMethod`] if the resource was not resolved, or
+    /// [`Error::KubeError`] if the API call fails and the completed-Job fallback does not apply.
     pub fn apply(
         &self,
         name: &str,
@@ -857,6 +1085,13 @@ impl K8sGeneric {
         }
     }
 
+    /// [`Self::apply`] variant for Rhai.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if the map cannot be deserialized, or wrapping the [`Self::apply`]
+    /// errors and [`Error::SerializationError`].
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_apply(&mut self, name: String, data: rhai::Dynamic) -> RhaiRes<Dynamic> {
         let data = rhai::serde::from_dynamic(&data)?;
         let res = self.apply(&name, data).map_err(|e: Error| rhai_err(e))?;
@@ -866,11 +1101,15 @@ impl K8sGeneric {
 }
 
 fn job_is_completed(data: &serde_json::Value) -> bool {
-    let status = match data.get("status") {
-        Some(s) => s,
-        None => return false,
+    let Some(status) = data.get("status") else {
+        return false;
     };
-    if status.get("succeeded").and_then(|v| v.as_i64()).unwrap_or(0) > 0 {
+    if status
+        .get("succeeded")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0)
+        > 0
+    {
         return true;
     }
     status.get("completionTime").is_some()
@@ -878,15 +1117,15 @@ fn job_is_completed(data: &serde_json::Value) -> bool {
 
 // ── k8sraw ───────────────────────────────────────────────────────────────────
 
-lazy_static::lazy_static! {
-    pub static ref RAW_CLIENT: Client = {
-        let f = GET_CLIENT.get().expect("k8s context not initialized");
-        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(async move { f() }))
-    };
-}
+/// Shared kube client dedicated to raw API calls, built like [`CLIENT`].
+///
+/// Panics on first access if the k8s context was not wired (see [`context_is_wired`]).
+pub static RAW_CLIENT: LazyLock<Client> = LazyLock::new(build_client);
 
+/// Raw HTTP access to the Kubernetes API server through the kube client (`K8sRaw` in Rhai).
 #[derive(Clone)]
 pub struct K8sRaw {
+    /// Underlying kube client (the shared [`RAW_CLIENT`] by default).
     pub client: Client,
 }
 
@@ -897,15 +1136,23 @@ impl Default for K8sRaw {
 }
 
 impl K8sRaw {
+    /// Builds a [`K8sRaw`] bound to the shared [`RAW_CLIENT`].
+    #[must_use]
     pub fn new() -> Self {
         Self {
             client: RAW_CLIENT.clone(),
         }
     }
 
+    /// GETs a path on the API server and returns the JSON body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RawHTTP`] if the request cannot be built, or [`Error::KubeError`] if the
+    /// call fails or the body is not valid JSON.
     pub async fn get_url(&self, url: String) -> Result<serde_json::Value> {
         let req = http::Request::get(url)
-            .body(Default::default())
+            .body(Vec::default())
             .map_err(Error::RawHTTP)?;
         let resp = self
             .client
@@ -915,10 +1162,16 @@ impl K8sRaw {
         Ok(resp)
     }
 
+    /// GETs a path with the aggregated-discovery `Accept` header (v2/v2beta1 JSON).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RawHTTP`] if the request cannot be built, or [`Error::KubeError`] if the
+    /// call fails or the body is not valid JSON.
     pub async fn get_url_as_disco(&self, url: String) -> Result<serde_json::Value> {
         let req = http::Request::get(url)
             .header("Accept", "application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList,application/json;g=apidiscovery.k8s.io;v=v2beta1;as=APIGroupDiscoveryList,application/json")
-            .body(Default::default()).map_err(Error::RawHTTP)?;
+            .body(Vec::default()).map_err(Error::RawHTTP)?;
         let resp = self
             .client
             .request::<serde_json::Value>(req)
@@ -927,14 +1180,30 @@ impl K8sRaw {
         Ok(resp)
     }
 
+    /// Cluster version information (server `/version` endpoint).
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`Self::get_url`] errors.
     pub async fn get_api_version(&self) -> Result<serde_json::Value> {
         self.get_url("/version".to_string()).await
     }
 
+    /// Full API group discovery list (server `/apis` endpoint).
+    ///
+    /// # Errors
+    ///
+    /// Forwards the [`Self::get_url_as_disco`] errors.
     pub async fn get_api_resources(&self) -> Result<serde_json::Value> {
         self.get_url_as_disco("/apis".to_string()).await
     }
 
+    /// [`Self::get_url`] as a Rhai value (JSON round-trip through a string).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::get_url`] errors or
+    /// [`Error::SerializationError`].
     pub fn rhai_get_url(&mut self, url: String) -> RhaiRes<Dynamic> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
@@ -949,6 +1218,12 @@ impl K8sRaw {
         })
     }
 
+    /// [`Self::get_api_version`] as a Rhai value (JSON round-trip through a string).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::get_api_version`] errors or
+    /// [`Error::SerializationError`].
     pub fn rhai_get_api_version(&mut self) -> RhaiRes<Dynamic> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
@@ -963,6 +1238,12 @@ impl K8sRaw {
         })
     }
 
+    /// [`Self::get_api_resources`] as a Rhai value (JSON round-trip through a string).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the [`Self::get_api_resources`] errors or
+    /// [`Error::SerializationError`].
     pub fn rhai_get_api_resources(&mut self) -> RhaiRes<Dynamic> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
@@ -980,12 +1261,17 @@ impl K8sRaw {
 
 // ── k8sworkload ──────────────────────────────────────────────────────────────
 
+/// Typed `DaemonSet` handle fetched from a namespace (`K8sDaemonSet` in Rhai).
 #[derive(Clone, Debug)]
 pub struct K8sDaemonSet {
+    /// Namespace-scoped API handle for this `DaemonSet`.
     pub api: Api<DaemonSet>,
+    /// The `DaemonSet` as fetched.
     pub obj: DaemonSet,
 }
 impl K8sDaemonSet {
+    /// Condition matching when `number_available` reached `desired_number_scheduled`.
+    #[must_use]
     pub fn is_deamonset_available() -> impl Condition<DaemonSet> {
         |obj: Option<&DaemonSet>| {
             if let Some(ds) = &obj
@@ -997,6 +1283,12 @@ impl K8sDaemonSet {
         }
     }
 
+    /// Fetches a `DaemonSet` by namespace and name (`new_deamonset` entry point in Rhai).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deamonset(namespace: String, name: String) -> RhaiRes<K8sDaemonSet> {
         let api: Api<DaemonSet> = Api::namespaced(CLIENT.clone(), &namespace);
         let d = tokio::task::block_in_place(|| {
@@ -1010,29 +1302,50 @@ impl K8sDaemonSet {
         })
     }
 
+    /// Metadata rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.metadata).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Spec rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_spec(&mut self) -> RhaiRes<Dynamic> {
         let v = serde_json::to_string(&self.obj.spec).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Status rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_status(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.status).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Waits up to `timeout` seconds until all desired pods are available.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_deamonset_available());
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -1043,12 +1356,17 @@ impl K8sDaemonSet {
     }
 }
 
+/// Typed `StatefulSet` handle fetched from a namespace (`K8sStatefulSet` in Rhai).
 #[derive(Clone, Debug)]
 pub struct K8sStatefulSet {
+    /// Namespace-scoped API handle for this `StatefulSet`.
     pub api: Api<StatefulSet>,
+    /// The `StatefulSet` as fetched.
     pub obj: StatefulSet,
 }
 impl K8sStatefulSet {
+    /// Condition matching when `available_replicas` reached `spec.replicas` (defaults 1/0).
+    #[must_use]
     pub fn is_sts_available() -> impl Condition<StatefulSet> {
         |obj: Option<&StatefulSet>| {
             if let Some(sts) = &obj
@@ -1061,6 +1379,12 @@ impl K8sStatefulSet {
         }
     }
 
+    /// Fetches a `StatefulSet` by namespace and name (`get_statefulset` entry point in Rhai).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_sts(namespace: String, name: String) -> RhaiRes<K8sStatefulSet> {
         let api: Api<StatefulSet> = Api::namespaced(CLIENT.clone(), &namespace);
         let d = tokio::task::block_in_place(|| {
@@ -1074,29 +1398,50 @@ impl K8sStatefulSet {
         })
     }
 
+    /// Metadata rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.metadata).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Spec rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_spec(&mut self) -> RhaiRes<Dynamic> {
         let v = serde_json::to_string(&self.obj.spec).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Status rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_status(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.status).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Waits up to `timeout` seconds until `available_replicas` reaches the desired count.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_sts_available());
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -1107,12 +1452,17 @@ impl K8sStatefulSet {
     }
 }
 
+/// Typed `Deployment` handle fetched from a namespace (`K8sDeploy` in Rhai).
 #[derive(Clone, Debug)]
 pub struct K8sDeploy {
+    /// Namespace-scoped API handle for this Deployment.
     pub api: Api<Deployment>,
+    /// The Deployment as fetched.
     pub obj: Deployment,
 }
 impl K8sDeploy {
+    /// Condition matching when the `Available` status condition is `"True"`.
+    #[must_use]
     pub fn is_deploy_available() -> impl Condition<Deployment> {
         |obj: Option<&Deployment>| {
             if let Some(job) = &obj
@@ -1126,6 +1476,12 @@ impl K8sDeploy {
         }
     }
 
+    /// Fetches a `Deployment` by namespace and name (Rhai `get_deployment` entry point).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deployment(namespace: String, name: String) -> RhaiRes<K8sDeploy> {
         let api: Api<Deployment> = Api::namespaced(CLIENT.clone(), &namespace);
         let d = tokio::task::block_in_place(|| {
@@ -1139,29 +1495,50 @@ impl K8sDeploy {
         })
     }
 
+    /// Metadata rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.metadata).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Spec rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_spec(&mut self) -> RhaiRes<Dynamic> {
         let v = serde_json::to_string(&self.obj.spec).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Status rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_status(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.status).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Waits up to `timeout` seconds until the `Available` condition turns `"True"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_deploy_available());
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -1172,12 +1549,21 @@ impl K8sDeploy {
     }
 }
 
+/// Typed `Job` handle fetched from a namespace (`K8sJob` in Rhai).
 #[derive(Clone, Debug)]
 pub struct K8sJob {
+    /// Namespace-scoped API handle for this Job.
     pub api: Api<Job>,
+    /// The Job as fetched.
     pub obj: Job,
 }
 impl K8sJob {
+    /// Fetches a `Job` by namespace and name (Rhai `get_job` entry point).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
+    #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_job(namespace: String, name: String) -> RhaiRes<K8sJob> {
         let api: Api<Job> = Api::namespaced(CLIENT.clone(), &namespace);
         let j = tokio::task::block_in_place(|| {
@@ -1191,29 +1577,50 @@ impl K8sJob {
         })
     }
 
+    /// Metadata rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_metadata(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.metadata).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Spec rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_spec(&mut self) -> RhaiRes<Dynamic> {
         let v = serde_json::to_string(&self.obj.spec).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Status rendered as a Rhai value (JSON string round-trip).
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::SerializationError`].
     pub fn get_status(&mut self) -> RhaiRes<Dynamic> {
         let v =
             serde_json::to_string(&self.obj.status).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
 
+    /// Waits up to `timeout` seconds for the Job's `Completed` condition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
+    /// ([`Error::KubeWaitError`]).
     pub fn wait_done(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, conditions::is_job_completed());
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(timeout as u64), cond)
+                tokio::time::timeout(timeout_duration(timeout), cond)
                     .await
                     .map_err(Error::Elapsed)
             })
@@ -1226,6 +1633,7 @@ impl K8sJob {
 
 // ── Rhai registration ────────────────────────────────────────────────────────
 
+/// Registers `K8sGeneric`, `K8sObject` and `DynamicObject` types on a Rhai engine.
 pub fn k8sgeneric_rhai_register(engine: &mut Engine) {
     use crate::{register_k8s_generic, register_k8s_object};
     engine
@@ -1244,11 +1652,14 @@ pub fn k8sgeneric_rhai_register(engine: &mut Engine) {
     );
 }
 
+/// Registers the `K8sRaw` type (raw API access) on a Rhai engine.
 pub fn k8sraw_rhai_register(engine: &mut Engine) {
     use crate::register_k8s_raw;
     register_k8s_raw!(engine, K8sRaw, K8sRaw::new);
 }
 
+/// Registers the typed workload helpers (`K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`,
+/// `K8sJob`) on a Rhai engine.
 pub fn k8sworkload_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<K8sDeploy>("K8sDeploy")
@@ -1282,6 +1693,8 @@ pub fn k8sworkload_rhai_register(engine: &mut Engine) {
 
 // ── Macros ───────────────────────────────────────────────────────────────────
 
+/// Registers `$type` as the Rhai type `"K8sObject"`: kind/metadata getters plus `delete` and
+/// the `wait_*` methods.
 #[macro_export]
 macro_rules! register_k8s_object {
     ($engine:expr, $type:ty) => {{
@@ -1310,6 +1723,9 @@ macro_rules! register_k8s_object {
     }};
 }
 
+/// Registers `$type` as the Rhai type `"K8sGeneric"`: the three `k8s_resource` constructors
+/// (`$new_global`, `$new_ns`, `$new_group_ns`) plus CRUD/list/scope methods. Takes `$obj_type`
+/// as the object type returned by `get_obj`.
 #[macro_export]
 macro_rules! register_k8s_generic {
     ($engine:expr, $type:ty, $obj_type:ty,
@@ -1353,6 +1769,8 @@ macro_rules! register_k8s_generic {
     }};
 }
 
+/// Registers `$type` as the Rhai type `"K8sRaw"` with the `$new` constructor and the
+/// `get_url` / `get_cluster_version` / `get_api_resources` methods.
 #[macro_export]
 macro_rules! register_k8s_raw {
     ($engine:expr, $type:ty, $new:expr) => {{

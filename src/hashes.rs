@@ -31,6 +31,7 @@ impl Default for Argon {
 
 #[cfg(feature = "crypto")]
 impl Argon {
+    /// Creates a hasher with a freshly generated random salt.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -39,14 +40,24 @@ impl Argon {
         }
     }
 
+    /// Hashes `password` with this instance's salt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Argon2hash`] when Argon2 hashing fails.
     pub fn hash(&self, password: String) -> Result<String> {
         Ok(self
             .argon
-            .hash_password(password.as_bytes(), &self.salt)
+            .hash_password(&password.into_bytes(), &self.salt)
             .map_err(Error::Argon2hash)?
             .to_string())
     }
 
+    /// Rhai binding of [`Argon::hash`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping [`Error::Argon2hash`] when Argon2 hashing fails.
     #[cfg(feature = "rhai")]
     pub fn rhai_hash(&mut self, password: String) -> RhaiRes<String> {
         self.hash(password).map_err(rhai_err)
@@ -54,15 +65,21 @@ impl Argon {
 }
 
 /// Hash `password` with bcrypt (cost [`bcrypt::DEFAULT_COST`]). Feature `crypto` only.
+///
+/// # Errors
+///
+/// Returns [`Error::BcryptError`] when bcrypt hashing fails.
 #[cfg(feature = "crypto")]
 pub fn bcrypt_hash(password: String) -> Result<String> {
-    hash(&password, DEFAULT_COST).map_err(Error::BcryptError)
+    hash(password, DEFAULT_COST).map_err(Error::BcryptError)
 }
 /// CRC32 (IEEE) hash of `text`.
+#[must_use]
 pub fn crc32_hash(text: String) -> u32 {
-    crc32fast::hash(text.as_bytes())
+    crc32fast::hash(&text.into_bytes())
 }
 
+/// Registers the always-available hash helpers (`crc32_hash`) on a Rhai `engine`.
 #[cfg(feature = "rhai")]
 pub fn hashes_rhai_register(engine: &mut Engine) {
     engine.register_fn("crc32_hash", |s: ImmutableString| {
@@ -70,6 +87,7 @@ pub fn hashes_rhai_register(engine: &mut Engine) {
     });
 }
 
+/// Registers the `crypto`-feature hash helpers (`bcrypt_hash`, `Argon`) on a Rhai `engine`.
 #[cfg(all(feature = "rhai", feature = "crypto"))]
 pub fn crypto_hashes_rhai_register(engine: &mut Engine) {
     engine

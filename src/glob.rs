@@ -3,6 +3,8 @@
 use rhai::{Engine, ImmutableString};
 use wildmatch::WildMatch;
 
+// signature imposée par l'API Rhai (vyvil-core.sdd)
+#[allow(clippy::needless_pass_by_value)]
 fn glob_fn(text: ImmutableString, pattern: ImmutableString) -> bool {
     WildMatch::new(pattern.as_ref()).matches(text.as_ref())
 }

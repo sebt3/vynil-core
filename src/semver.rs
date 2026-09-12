@@ -15,13 +15,20 @@ use semver::{Prerelease, Version};
 /// the inner `semver::Version`.
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct Semver {
+    /// The parsed semantic version.
     pub version: Version,
+    /// Whether the original string had a leading `v`.
     pub use_v: bool,
 }
 
 impl Semver {
+    /// Parses a semver string, optionally prefixed with `v`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Semver`] if the string is not a valid semantic version.
     pub fn parse(str: &str) -> Result<Self> {
-        let use_v = str.starts_with("v");
+        let use_v = str.starts_with('v');
         let version = if use_v {
             let mut chars = str.chars();
             chars.next();
@@ -32,65 +39,109 @@ impl Semver {
         Ok(Self { version, use_v })
     }
 
+    /// Parses a semver string, returning `None` instead of an error on invalid input.
+    #[must_use]
     pub fn opt_parse(str: &str) -> Option<Self> {
         Self::parse(str).ok()
     }
 
+    /// [`Semver::parse`] variant for Rhai, mapping errors to [`rhai::EvalAltResult`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the stringified [`Error::Semver`] if the string is not a valid semantic version.
     #[cfg(feature = "rhai")]
     pub fn rhai_parse(str: &str) -> RhaiRes<Self> {
         Self::parse(str).map_err(rhai_err)
     }
 
+    /// Bumps the major version, resetting minor, patch and prerelease.
     pub fn inc_major(&mut self) {
-        self.version.major += 1;
+        self.version.major = self.version.major.saturating_add(1);
         self.version.minor = 0;
         self.version.patch = 0;
         self.version.pre = Prerelease::EMPTY;
     }
 
+    /// Bumps the minor version, resetting patch and prerelease.
     pub fn inc_minor(&mut self) {
-        self.version.minor += 1;
+        self.version.minor = self.version.minor.saturating_add(1);
         self.version.patch = 0;
         self.version.pre = Prerelease::EMPTY;
     }
 
+    /// Bumps the patch version, or only clears the prerelease when one is present.
     pub fn inc_patch(&mut self) {
         if self.version.pre.is_empty() {
-            self.version.patch += 1;
+            self.version.patch = self.version.patch.saturating_add(1);
         } else {
             self.version.pre = Prerelease::EMPTY;
         }
     }
 
+    /// Bumps the `beta.N` prerelease counter.
+    ///
+    /// From a stable or non-beta-prerelease version this bumps the patch and sets `beta.1`;
+    /// from `beta.N` it increments `N`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Semver`] if the resulting prerelease string is invalid, and
+    /// [`Error::Other`] if the existing `beta.` suffix is not a number.
     pub fn inc_beta(&mut self) -> Result<()> {
         if self.version.pre.is_empty() || !self.version.pre.starts_with("beta.") {
-            self.version.patch += 1;
+            self.version.patch = self.version.patch.saturating_add(1);
             self.version.pre = Prerelease::new("beta.1").map_err(Error::Semver)?;
         } else {
-            let str = self.version.pre.strip_prefix("beta.").unwrap().to_string();
-            let beta = str.parse::<u32>().unwrap() + 1;
-            self.version.pre = Prerelease::new(&format!("beta.{beta}")).map_err(Error::Semver)?;
+            let str = self.version.pre.strip_prefix("beta.").unwrap_or_default();
+            let beta = str
+                .parse::<u32>()
+                .map_err(|e| Error::Other(format!("invalid beta counter '{str}': {e}")))?;
+            self.version.pre =
+                Prerelease::new(&format!("beta.{}", beta.saturating_add(1))).map_err(Error::Semver)?;
         }
         Ok(())
     }
 
+    /// [`Semver::inc_beta`] variant for Rhai, mapping errors to [`rhai::EvalAltResult`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the stringified error of [`Semver::inc_beta`].
     #[cfg(feature = "rhai")]
     pub fn rhai_inc_beta(&mut self) -> RhaiRes<()> {
         self.inc_beta().map_err(rhai_err)
     }
 
+    /// Bumps the `alpha.N` prerelease counter.
+    ///
+    /// From a stable or non-alpha-prerelease version this bumps the patch and sets `alpha.1`;
+    /// from `alpha.N` it increments `N`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Semver`] if the resulting prerelease string is invalid, and
+    /// [`Error::Other`] if the existing `alpha.` suffix is not a number.
     pub fn inc_alpha(&mut self) -> Result<()> {
         if self.version.pre.is_empty() || !self.version.pre.starts_with("alpha.") {
-            self.version.patch += 1;
+            self.version.patch = self.version.patch.saturating_add(1);
             self.version.pre = Prerelease::new("alpha.1").map_err(Error::Semver)?;
         } else {
-            let str = self.version.pre.strip_prefix("alpha.").unwrap().to_string();
-            let alpha = str.parse::<u32>().unwrap() + 1;
-            self.version.pre = Prerelease::new(&format!("alpha.{alpha}")).map_err(Error::Semver)?;
+            let str = self.version.pre.strip_prefix("alpha.").unwrap_or_default();
+            let alpha = str
+                .parse::<u32>()
+                .map_err(|e| Error::Other(format!("invalid alpha counter '{str}': {e}")))?;
+            self.version.pre =
+                Prerelease::new(&format!("alpha.{}", alpha.saturating_add(1))).map_err(Error::Semver)?;
         }
         Ok(())
     }
 
+    /// [`Semver::inc_alpha`] variant for Rhai, mapping errors to [`rhai::EvalAltResult`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the stringified error of [`Semver::inc_alpha`].
     #[cfg(feature = "rhai")]
     pub fn rhai_inc_alpha(&mut self) -> RhaiRes<()> {
         self.inc_alpha().map_err(rhai_err)
@@ -107,6 +158,8 @@ impl std::fmt::Display for Semver {
     }
 }
 
+/// Registers the `Semver` type and its helpers (`semver_from`, `inc_major`, `inc_minor`,
+/// `inc_patch`, `inc_beta`, `inc_alpha`, comparison operators, `to_string`) on `engine`.
 #[cfg(feature = "rhai")]
 pub fn semver_rhai_register(engine: &mut Engine) {
     engine
@@ -150,14 +203,14 @@ mod tests {
 
     #[test]
     fn test_to_string_preserves_v_prefix() {
-        let mut sv = Semver::parse("v1.2.3").unwrap();
-        assert_eq!(Semver::to_string(&mut sv), "v1.2.3");
+        let sv = Semver::parse("v1.2.3").unwrap();
+        assert_eq!(Semver::to_string(&sv), "v1.2.3");
     }
 
     #[test]
     fn test_to_string_without_v_prefix() {
-        let mut sv = Semver::parse("1.2.3").unwrap();
-        assert_eq!(Semver::to_string(&mut sv), "1.2.3");
+        let sv = Semver::parse("1.2.3").unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.3");
     }
 
     #[test]
@@ -172,7 +225,7 @@ mod tests {
     fn test_comparison_eq() {
         let v1 = Semver::parse("1.2.3").unwrap();
         let v2 = Semver::parse("1.2.3").unwrap();
-        assert!(v1 == v2);
+        assert_eq!(v1, v2);
         assert!(v1 <= v2);
         assert!(v1 >= v2);
     }

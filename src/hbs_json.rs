@@ -99,8 +99,8 @@ fn to_ordored_toml_value(data: &Json) -> Result<Option<toml::Value>, RenderError
             .collect::<Result<Table, _>>()
             .map(|m| Some(toml::Value::Table(sort_toml_map(m)))),
         Json::Number(v) => {
-            if v.is_i64() {
-                Ok(Some(toml::Value::Integer(v.as_i64().unwrap())))
+            if let Some(i) = v.as_i64() {
+                Ok(Some(toml::Value::Integer(i)))
             } else if let Some(x) = v.as_f64() {
                 Ok(Some(toml::Value::Float(x)))
             } else {
@@ -161,6 +161,7 @@ impl DataFormat {
     }
 }
 
+// `JsonError` porte la chaîne d'erreur de rendu, trop volumineux pour un retour inline (vyvil-core.sdd)
 #[allow(clippy::result_large_err)]
 fn json_query<T: Serialize, E: AsRef<str>>(expr: E, data: T) -> Result<Json, JsonError> {
     let res = jmespath::compile(expr.as_ref())
@@ -222,7 +223,7 @@ impl HelperDef for json_to_str_fct {
         let data = h
             .param(0)
             .ok_or_else(|| to_other_error("param 0 (the json) not found"))
-            .map(|v| v.value())?;
+            .map(handlebars::PathAndJson::value)?;
         let result = format.write_string(data)?;
         Ok(ScopedJson::Derived(Json::String(result)))
     }
@@ -271,8 +272,7 @@ fn from_json_block<'reg, 'rc>(
     let format = find_data_format(h)?;
     let mut content = StringOutput::default();
     h.template()
-        .map(|t| t.render(r, ctx, rc, &mut content))
-        .unwrap_or(Ok(()))?;
+        .map_or(Ok(()), |t| t.render(r, ctx, rc, &mut content))?;
     let data = DataFormat::Json.read_string(&content.into_string().map_err(to_nested_error)?)?;
     let res = format.write_string(&data)?;
     out.write(&res).map_err(to_nested_error)
@@ -288,8 +288,7 @@ fn to_json_block<'reg, 'rc>(
     let format = find_data_format(h)?;
     let mut content = StringOutput::default();
     h.template()
-        .map(|t| t.render(r, ctx, rc, &mut content))
-        .unwrap_or(Ok(()))?;
+        .map_or(Ok(()), |t| t.render(r, ctx, rc, &mut content))?;
     let data = format.read_string(&content.into_string().map_err(to_nested_error)?)?;
     let res = DataFormat::JsonPretty.write_string(&data)?;
     out.write(&res).map_err(RenderError::from)
@@ -319,43 +318,43 @@ mod tests {
 
     #[test]
     fn empty_input_returns_empty() {
-        assert_eq!(render(r##"{{ json_to_str "" }}"##), "");
-        assert_eq!(render(r##"{{ str_to_json "" }}"##), "");
-        assert_eq!(render(r##"{{ json_query "foo" "" }}"##), "");
-        assert_eq!(render(r##"{{ json_str_query "foo" "" }}"##), "");
+        assert_eq!(render(r#"{{ json_to_str "" }}"#), "");
+        assert_eq!(render(r#"{{ str_to_json "" }}"#), "");
+        assert_eq!(render(r#"{{ json_query "foo" "" }}"#), "");
+        assert_eq!(render(r#"{{ json_str_query "foo" "" }}"#), "");
     }
 
     #[test]
     fn null_input_returns_empty() {
-        assert_eq!(render(r##"{{ json_to_str null }}"##), "");
-        assert_eq!(render(r##"{{ str_to_json null }}"##), "");
+        assert_eq!(render(r"{{ json_to_str null }}"), "");
+        assert_eq!(render(r"{{ str_to_json null }}"), "");
     }
 
     #[test]
     fn json_to_str_roundtrip() {
-        assert_eq!(render(r##"{{ json_to_str {} }}"##), "{}");
+        assert_eq!(render(r"{{ json_to_str {} }}"), "{}");
         assert_eq!(
-            render(r##"{{ json_to_str {"foo":{"bar":{"baz":true}}} }}"##),
-            r##"{"foo":{"bar":{"baz":true}}}"##
+            render(r#"{{ json_to_str {"foo":{"bar":{"baz":true}}} }}"#),
+            r#"{"foo":{"bar":{"baz":true}}}"#
         );
         assert_eq!(
-            render(r##"{{ json_to_str ( str_to_json "{\"foo\":true}" ) }}"##),
-            r##"{"foo":true}"##
+            render(r#"{{ json_to_str ( str_to_json "{\"foo\":true}" ) }}"#),
+            r#"{"foo":true}"#
         );
     }
 
     #[test]
     fn json_query_extracts_field() {
         assert_eq!(
-            render(r##"{{ json_to_str ( json_query "foo" {"foo":{"bar":{"baz":true}}} ) }}"##),
-            r##"{"bar":{"baz":true}}"##
+            render(r#"{{ json_to_str ( json_query "foo" {"foo":{"bar":{"baz":true}}} ) }}"#),
+            r#"{"bar":{"baz":true}}"#
         );
     }
 
     #[test]
     fn json_str_query_on_yaml() {
         assert_eq!(
-            render(r##"{{ json_str_query "foo.bar.baz" "foo:\n bar:\n  baz: true\n" format="yaml"}}"##),
+            render(r#"{{ json_str_query "foo.bar.baz" "foo:\n bar:\n  baz: true\n" format="yaml"}}"#),
             "true"
         );
     }
@@ -363,7 +362,7 @@ mod tests {
     #[test]
     fn json_str_query_on_toml() {
         assert_eq!(
-            render(r##"{{ json_str_query "foo.bar.baz" "[foo.bar]\nbaz=true\n" format="toml"}}"##),
+            render(r#"{{ json_str_query "foo.bar.baz" "[foo.bar]\nbaz=true\n" format="toml"}}"#),
             "true"
         );
     }
@@ -371,7 +370,7 @@ mod tests {
     #[test]
     fn to_json_block_wraps_rendered_content() {
         assert_eq!(
-            render(r##"{{#to_json}}{"foo":{"bar":{"baz":true}}}{{/to_json}}"##),
+            render(r#"{{#to_json}}{"foo":{"bar":{"baz":true}}}{{/to_json}}"#),
             "{\n  \"foo\": {\n    \"bar\": {\n      \"baz\": true\n    }\n  }\n}"
         );
     }
@@ -379,7 +378,7 @@ mod tests {
     #[test]
     fn from_json_block_converts_to_yaml() {
         assert_eq!(
-            render(r##"{{#from_json format="yaml"}}{"foo":{"bar":true}}{{/from_json}}"##),
+            render(r#"{{#from_json format="yaml"}}{"foo":{"bar":true}}{{/from_json}}"#),
             "foo:\n  bar: true\n"
         );
     }
@@ -387,7 +386,7 @@ mod tests {
     #[test]
     fn data_format_symmetry() {
         for (fmt, data) in [
-            (DataFormat::Json, r##"{"foo":{"bar":{"baz":true}}}"##),
+            (DataFormat::Json, r#"{"foo":{"bar":{"baz":true}}}"#),
             (DataFormat::Toml, "[foo.bar]\nbaz = true\n"),
         ] {
             let actual = fmt.write_string(&fmt.read_string(data).unwrap()).unwrap();

@@ -22,6 +22,13 @@ pub fn client_name_is_set() -> bool {
 }
 
 /// Returns the configured client name, panicking if not set (see [`set_client_name`]).
+///
+/// # Panics
+///
+/// Panics when [`set_client_name`] has not been called yet: the crate deliberately requires an
+/// explicit client identity with no embedded fallback (vyvil-core.sdd).
+// panic contractuelle : identité client exigée sans fallback embarqué (vyvil-core.sdd)
+#[allow(clippy::expect_used)]
 pub fn get_client_name() -> String {
     CLIENT_NAME.get().map(|f| f()).expect(
         "vynil_core: client name not configured — call vynil_core::set_client_name(...) before \

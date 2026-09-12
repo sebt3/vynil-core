@@ -62,7 +62,7 @@ Tasks:
   [ ] Spec `src/semver.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/shell.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/yaml.sdd` produite (spec-reverse) puis revue.
-  [ ] Purger la dette harnais stricte module par module, en coordination avec `./tooling.sdd`.
+  [x] Purger la dette harnais stricte module par module, en coordination avec `./tooling.sdd`.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

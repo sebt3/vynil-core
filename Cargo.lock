@@ -3355,7 +3355,6 @@ dependencies = [
  "jmespath",
  "k8s-openapi",
  "kube",
- "lazy_static",
  "object_store",
  "oci-client",
  "openssl",
