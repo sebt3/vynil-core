@@ -1,0 +1,333 @@
+Spec: key
+
+Purpose:
+  Fournir à la crate et à ses scripts Rhai la génération de clés privées PEM PKCS8 par
+    OpenSSL, algorithmes `ed25519` et `rsa` : @crate::key::gen_private_key est la seule porte
+    Rust, @crate::key::key_rhai_register y branche les deux surcharges de script
+    `gen_private_key` — fine colle sans état, sans I/O et sans persistance, le helper
+    Handlebars du même nom vivant dans ./hbs.rs.
+
+Owns:
+  ./key.rs
+
+References:
+  ./lib.rs — déclare `pub mod key;` derrière `#[cfg(feature = "crypto")]` et ne réexporte
+    aucun item du module à la racine ; le module y puise @crate::Error, @crate::Result et,
+    sous `rhai`, @crate::RhaiRes. Les variantes traversées y portent leurs affichages
+    d'attribut : @crate::Error::UnsupportedKeyAlgorithm
+    `KEY-ALGO-001 Unsupported key algorithm: {0}` (variante non gated), @crate::Error::OpenSSL
+    `KEY-OPENSSL-001 OpenSSL error {0}` (variante gated `crypto`, portée par
+    @openssl::error::ErrorStack via `#[from]`), @crate::Error::UTF8 `UTF8 error {0}`
+    (variante non gated).
+  ./engine.rs — @Script::new_bare est l'unique appelant de @crate::key::key_rhai_register :
+    l'appel vit dans un bloc `#[cfg(feature = "crypto")]`, ./engine.rs étant lui-même réservé
+    à la feature `rhai` — la condition effective du câblage est donc `rhai` + `crypto`. Aucun
+    test de script `gen_private_key` n'existe ce jour.
+  ./hbs.rs — sous `crypto` + `hbs`, le helper Handlebars `gen_private_key` appelle
+    @crate::key::gen_private_key avec un paramètre `bits` optionnel par défaut `4096` et
+    avale l'erreur en chaîne vide après un `warn` ; ce contrat Handlebars vivra dans la spec
+    de ./hbs.rs, ./hbs.rs consommant ce module et jamais l'inverse.
+  ../docs/rhai_helpers.md — les deux surcharges de script y sont déjà documentées : `rsa` à
+    `4096` par défaut, taille ignorée pour `ed25519`.
+
+Must:
+  Le module ne compile que sous la feature `crypto` : la porte `#[cfg(feature = "crypto")]`
+    préfixe `pub mod key;` dans ./lib.rs ; ./key.rs ajoute deux portes `#[cfg(feature = "rhai")]` —
+    l'import de @rhai::Engine et @crate::key::key_rhai_register — si bien que sous `crypto`
+    seul @crate::key::gen_private_key et @crate::key::DEFAULT_RSA_BITS restent appelables et
+    @crate::key::key_rhai_register absente. ./Cargo.toml ne fait dériver `crypto` d'aucune
+    autre feature, ni `rhai` de `crypto` : les deux portes sont indépendantes.
+  @crate::key::DEFAULT_RSA_BITS vaut `4096`, @std::primitive::u32 `pub const` sous `crypto` —
+    cette valeur est contractuelle : seul le collage unaire de script l'applique.
+  La reconnaissance d'algorithme s'opère sur une copie de l'entrée passée par
+    @std::primitive::str::to_ascii_lowercase, et seuls `ed25519` et `rsa` y sont reconnus,
+    sans alias, préfixe ni variante orthographique. La copie lowercased sert aussi de texte à
+    la variante rejetée : pour un algo inconnu, @crate::Error::UnsupportedKeyAlgorithm porte
+    le texte lowercased de l'entrée (`DSA` rend `dsa`), jamais sa casse d'origine — point
+    ouvert en `Tasks`.
+  La dispatch est exactement : `ed25519` via @openssl::pkey::PKey::generate_ed25519 puis
+    @openssl::pkey::PKey::private_key_to_pem_pkcs8, `bits` jamais lu quelle que soit sa valeur ;
+    `rsa` via @openssl::rsa::Rsa::generate, @openssl::pkey::PKey::from_rsa puis
+    @openssl::pkey::PKey::private_key_to_pem_pkcs8 ; tout autre contenu, chaîne vide incluse,
+    rend @crate::Error::UnsupportedKeyAlgorithm sans aucun appel OpenSSL.
+  La sortie est toujours un PEM PKCS8 : première ligne exactement `-----BEGIN PRIVATE KEY-----`
+    pour les deux algorithmes, relisible par @openssl::pkey::PKey::private_key_from_pem — le
+    module ne produit jamais d'en-tête PKCS1.
+  @crate::key::gen_private_key ne filtre aucune valeur de `bits` avant OpenSSL : `0`, `1` ou
+    toute taille licite en @std::primitive::u32, y compris `4294967295`, sont transmises à
+    @openssl::rsa::Rsa::generate, dont l'acceptation ou le refus détermine seul le résultat.
+  Le collage binaire applique d'abord @std::convert::TryFrom::try_from vers
+    @std::primitive::u32 sur le @std::primitive::i64 reçu : négatif ou strictement supérieur
+    à `4294967295`, l'appel renvoie une erreur @crate::RhaiRes au message exact
+    `unsupported key size: <bits>`, `<bits>` rendu tel quel, sans que
+    @crate::key::gen_private_key soit appelée. Le garde précède tout dispatch et s'applique
+    donc aussi à `ed25519` : une taille négative échoue même pour cet algorithme qui
+    n'utilise jamais `bits`.
+  @crate::key::key_rhai_register n'enregistre que deux @rhai::Engine::register_fn, tous deux
+    sous l'unique nom de script `gen_private_key`, et rien d'autre : unaire `algo` transmettant
+    @crate::key::DEFAULT_RSA_BITS, binaire `algo, bits` avec le garde de
+    @std::convert::TryFrom::try_from. Aucune coercition scalaire n'existe pour leurs paramètres
+    et toute autre arité échoue en fonction inconnue par @rhai, avant ce module.
+  Sous le @crate::RhaiRes des deux surcharges, le texte porté par une erreur venant du module
+    est le seul @std::string::ToString::to_string de @crate::Error, produit par `format!("{e}")` —
+    @crate::rhai_err et @crate::error_chain ne sont pas consommés ici, contrairement à
+    d'autres collages de la crate.
+  Le module est sans état propre : aucune variable globale, cache, lecture d'environnement ni
+    I/O ; deux appels successifs aux mêmes paramètres rendent des PEM distincts (aléa de
+    génération sous OpenSSL).
+  Le code de production de ./key.rs est sans @std::result::Result::unwrap,
+    @std::option::Option::expect, @std::panic, @std::todo ni @std::unimplemented, la
+    propagation se faisant par `?` et @std::result::Result::map_err ; chaque item `pub` porte
+    sa rustdoc, celle de @crate::key::gen_private_key avec sa section `# Errors` énumérant ses
+    trois variantes (règle de harnais de ../.specdd/bootstrap.project.md).
+
+Must not:
+  Enregistrer un pendant Handlebars de `gen_private_key` depuis ce module : ./key.rs ne
+    connaît que @rhai::Engine, le helper Handlebars vit dans ./hbs.rs sous `crypto` + `hbs`.
+  Exposer une variante Rust de @crate::key::gen_private_key à taille par défaut : la porte
+    Rust exige `bits` explicitement, @crate::key::DEFAULT_RSA_BITS n'appartient qu'au collage
+    unaire de script.
+  Ajouter un filtre de bornes (minimum, maximum, multiples de puissance de deux) sur `bits`
+    devant @openssl::rsa::Rsa::generate dans ce module : OpenSSL arbitre des tailles qu'il
+    reçoit, le seul filtre existant est le garde @std::convert::TryFrom::try_from du collage
+    binaire.
+
+Depends on:
+  openssl — @openssl::pkey::PKey (@openssl::pkey::PKey::generate_ed25519,
+    @openssl::pkey::PKey::from_rsa, @openssl::pkey::PKey::private_key_to_pem_pkcs8,
+    @openssl::pkey::PKey::private_key_from_pem), @openssl::rsa::Rsa
+    (@openssl::rsa::Rsa::generate) et la remontée par `?` via le `#[from]` de
+    @crate::Error::OpenSSL sur @openssl::error::ErrorStack — c'est la pile complète, jamais
+    l'@openssl::error::Error individuel, qui traverse ; dépendance `dep:openssl` gated
+    `crypto` (`exigence 0.10.73`, verrouillée `0.10.81` dans ./Cargo.lock). La forme du texte
+    de la pile appartient à openssl et n'est verrouillée nulle part ici.
+  @crate::Error et @crate::Result sans condition dans le module ; @crate::RhaiRes sous la
+    porte `rhai`.
+  rhai — @rhai::Engine et @rhai::Engine::register_fn derrière la feature du même nom.
+
+Exposes:
+  @crate::key::DEFAULT_RSA_BITS — `pub const DEFAULT_RSA_BITS: @std::primitive::u32 = 4096`,
+    sous `crypto` seulement, présent même sans `rhai`.
+  @crate::key::gen_private_key — signature `pub fn gen_private_key(algo: &str, bits: u32) -> @crate::Result<@std::string::String>`,
+    sous `crypto`, sans `#[must_use]` ni paramètre par défaut.
+  @crate::key::key_rhai_register — signature `pub fn key_rhai_register(engine: &mut @rhai::Engine)`,
+    porte combinée `crypto` (module) + `rhai` (item).
+  Fonction de script `gen_private_key(algo)` — enregistrée depuis la fermeture
+    `|algo: &str| -> @crate::RhaiRes<@std::string::String>`, une chaîne en entrée, PEM rendu
+    comme `string`, taille `4096` pour `rsa`.
+  Fonction de script `gen_private_key(algo, bits)` — enregistrée depuis la fermeture
+    `|algo: &str, bits: i64| -> @crate::RhaiRes<@std::string::String>`, PEM rendu comme
+    `string`, seule voie filtrant la taille.
+  Rien n'est réexporté à la racine : le module s'atteint par son chemin @crate::key.
+
+Accepts:
+  @crate::key::gen_private_key — un `algo` `&str` de contenu libre, la casse n'importe que
+    pour les deux reconnus, chaîne vide et tout autre contenu tombant au rejet ; un `bits`
+    @std::primitive::u32 non contrôlé par le module, bornes admises `0` et `4294967295` quand
+    l'algorithme les consulte.
+  @crate::key::key_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant, qu'elle ne
+    lit pas et sur lequel elle n'ajoute que les deux surcharges.
+  Les fonctions de script — arité exactement unaire ou binaire ; en position deux du binaire,
+    un @std::primitive::i64 (le nombre usuel côté script), aucune coercition depuis une
+    chaîne, un flottant ou un booléen.
+
+Returns:
+  @crate::key::gen_private_key — un @std::string::String de PEM PKCS8, première ligne
+    exactement `-----BEGIN PRIVATE KEY-----`, contenu frais à chaque appel.
+  @crate::key::key_rhai_register — `()`.
+  Les fonctions de script — le PEM, vu comme un `string` par `type_of`.
+
+Raises:
+  @crate::key::gen_private_key — @crate::Error::UnsupportedKeyAlgorithm pour tout `algo`
+    autre que `ed25519` et `rsa`, casse confondue, chaîne vide comprise, sans aucun appel
+    OpenSSL ; l'affichage rendu est `KEY-ALGO-001 Unsupported key algorithm: ` suivi du texte
+    lowercased de l'entrée.
+  @crate::key::gen_private_key — @crate::Error::OpenSSL sur chaque étape OpenSSL des deux
+    voies (@openssl::pkey::PKey::generate_ed25519, @openssl::rsa::Rsa::generate,
+    @openssl::pkey::PKey::from_rsa, @openssl::pkey::PKey::private_key_to_pem_pkcs8) remontant
+    un @openssl::error::ErrorStack par la conversion `?` ; l'affichage commence par
+    `KEY-OPENSSL-001 OpenSSL error ` suivi de la pile.
+  @crate::key::gen_private_key — @crate::Error::UTF8 quand les octets du PEM ne sont pas du
+    UTF-8, dernier @std::result::Result::map_err de @std::string::String::from_utf8 sur un
+    @std::string::FromUtf8Error ; chemin défensif, les PEM d'OpenSSL sont de l'ASCII pur et
+    aucune entrée publique ne l'atteint — aucune Scenario ne le verrouille au-delà de cette
+    ligne, choix de spec assumé.
+  Fonction de script `gen_private_key(algo)` — un @crate::RhaiRes porteur du seul texte de
+    @crate::Error produit par `format!("{e}")` : `KEY-ALGO-001 Unsupported key algorithm: <texte>`
+    pour un algo inconnu, préfixe `KEY-OPENSSL-001 OpenSSL error ` pour une génération refusée.
+  Fonction de script `gen_private_key(algo, bits)` — les mêmes erreurs et les mêmes textes,
+    plus, avant toute autre chose, le message exact `unsupported key size: <bits>` quand
+    `bits` est négatif ou strictement supérieur à `4294967295` ; ce texte n'est pas un
+    affichage de @crate::Error et ne porte ni `KEY-ALGO-001` ni `KEY-OPENSSL-001`.
+  @crate::key::key_rhai_register — rien : les deux @rhai::Engine::register_fn sont
+    infaillibles.
+
+Handles:
+  `bits` pour `ed25519` — totalement ignoré par @openssl::pkey::PKey::generate_ed25519 quelle
+    que soit la valeur admise (`0`, `7`, `4294967295`) ; la surcharge unaire ne transite même
+    pas par le garde, la taille n'y existant pas.
+  Tailles non filtrées pour `rsa` — `0`, `1` et `4294967295` sont transmis à
+    @openssl::rsa::Rsa::generate : refus d'OpenSSL rendu @crate::Error::OpenSSL, acceptation
+    rendu PEM, le module ne pose ni bornes ni trim avant l'appel.
+  Messages OpenSSL — seule la variante @crate::Error::OpenSSL et son préfixe de crate sont
+    contractés ; la portion @openssl::error::ErrorStack appartient à la dépendance et varie
+    avec les versions et builds, jamais verrouillée ici ni en test.
+  Appels d'autre forme — zéro argument, trois arguments, entier en première position, taille
+    non entière : aucune signature enregistrée ne correspond, @rhai échoue avant que
+    @crate::key::gen_private_key ne s'exécute.
+  Combinaisons de features — `crypto` seule : face Rust vivante, @crate::key::key_rhai_register
+    non compilée, ./engine.rs absent ; `crypto` + `rhai` : les deux surcharges n'existent
+    qu'après appel de l'enregistrement ou via @Script::new_bare ; sans `crypto` : @crate::key
+    inexistant et aucun engine, y compris celui de @Script::new_bare, ne connaît
+    `gen_private_key`.
+
+Tasks:
+  [ ] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
+    `#[cfg(test)]` de ./key.rs — Rust direct, @rhai::Engine local enregistré par
+    @crate::key::key_rhai_register ou @Script::new_bare ; les deux Scenario de gating
+    appartiennent à la batterie de features de la crate.
+    Les cinq tests inline existants verrouillent une partie de la face Rust :
+    `ed25519_produces_valid_pkcs8_pem`, `rsa_produces_valid_pkcs8_pem` et
+    `two_generations_differ` couvrent les leurs ; `algorithm_is_case_insensitive` ne teste
+    que `ED25519` et `unknown_algorithm_is_rejected` que le refus, sans le texte porté.
+    Sont sans test : l'affichage exact du refus, les tailles aberrantes pour `ed25519`,
+    tout le versant script et les portes de features.
+  [?] Trancher le texte porté par @crate::Error::UnsupportedKeyAlgorithm : le code matche la
+    copie lowercased (./key.rs ligne 20) et l'algo d'origine est donc perdu à la ligne 23 —
+    `DSA` rend `dsa`. La spec fige ce comportement courant ; si l'intention est de conserver
+    la casse d'origine, corriger le collage (comparer en lowercased, alimenter la variante
+    avec l'original) puis reprendre la spec.
+
+Scenario: la voie ed25519 rend un PEM PKCS8 valide
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When elle est appelée avec `ed25519` et `0`
+  Then un @std::result::Result::Ok est retourné
+  And le PEM commence par la ligne `-----BEGIN PRIVATE KEY-----`
+  And @openssl::pkey::PKey::private_key_from_pem sur ses octets rend une clé d'@openssl::pkey::Id::ED25519
+
+Scenario: la voie rsa rend un PEM de la taille demandée
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When elle est appelée avec `rsa` et `2048`
+  Then un @std::result::Result::Ok est retourné
+  And le PEM commence par la ligne `-----BEGIN PRIVATE KEY-----`
+  And la clé décodée par @openssl::pkey::PKey::private_key_from_pem est d'@openssl::pkey::Id::RSA
+  And @openssl::pkey::PKey::bits sur cette clé vaut `2048`
+
+Scenario: reconnaissance d'algorithme insensible à la casse
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When `gen_private_key("ED25519", 0)` est appelé
+  Then un PEM ed25519 valide est retourné
+  And `gen_private_key("Ed25519", 0)` est accepté de même
+  And `gen_private_key("Rsa", 2048)` retourne une clé RSA de taille `2048`
+
+Scenario: l'algo inconnu porte le texte lowercased reçu
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When `gen_private_key("DSA", 0)` est appelé
+  Then un @crate::Error::UnsupportedKeyAlgorithm est retourné
+  And son @std::fmt::Display est exactement `KEY-ALGO-001 Unsupported key algorithm: dsa`
+  And le texte porté est `dsa`, la copie lowercased matchée, point ouvert en `Tasks`
+  But aucun PEM n'est produit et aucune erreur @crate::Error::OpenSSL n'apparaît
+
+Scenario: l'algo vide est refusé avec un texte vide
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When `gen_private_key("", 0)` est appelé
+  Then un @crate::Error::UnsupportedKeyAlgorithm au contenu vide est retourné
+  And son affichage est exactement `KEY-ALGO-001 Unsupported key algorithm: `
+
+Scenario: deux générations consécutives diffèrent
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When elle est appelée deux fois de suite avec `ed25519` et `0`
+  Then les deux PEM rendus sont des @std::string::String différents
+  And chacun se relit par @openssl::pkey::PKey::private_key_from_pem en clé ed25519
+
+Scenario: Rust ignore les tailles aberrantes pour ed25519
+  Given @crate::key::gen_private_key compilée sous la feature `crypto`
+  When `gen_private_key("ed25519", 7)` est appelé
+  Then un PEM ed25519 valide est retourné
+  And `gen_private_key("ed25519", 4294967295)` retourne un PEM ed25519 valide de même
+  And aucun message @crate::Error::OpenSSL n'apparaît, la génération ed25519 ne consultant
+    jamais la taille
+
+Scenario: la surcharge unaire de script génère ed25519
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("ed25519")`
+  Then l'évaluation réussit et rend un `string`
+  And cette chaîne commence par `-----BEGIN PRIVATE KEY-----`
+  And elle se décode en clé ed25519
+
+Scenario: la surcharge unaire de script applique 4096 sur rsa
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("rsa")`
+  Then le PEM rendu se décode en clé RSA
+  And @openssl::pkey::PKey::bits sur cette clé vaut `4096`
+  And cette valeur est exactement @crate::key::DEFAULT_RSA_BITS
+
+Scenario: la surcharge binaire de script dimensionne rsa
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("rsa", 2048)`
+  Then le PEM rendu se décode en clé RSA
+  And @openssl::pkey::PKey::bits sur cette clé vaut `2048`
+
+Scenario: le nombre de bits négatif est refusé sans génération
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("ed25519", -1)`
+  Then l'évaluation échoue en @crate::RhaiRes au message exactement `unsupported key size: -1`
+  And le message ne porte ni `KEY-ALGO-001` ni `KEY-OPENSSL-001`, le garde coupant avant dispatch
+  But `gen_private_key("rsa", -1)` échoue du même message exact
+
+Scenario: la taille au-delà de u32 est refusée sans génération
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("ed25519", 4294967296)`
+  Then l'évaluation échoue au message exactement `unsupported key size: 4294967296`
+  And `gen_private_key("rsa", 4294967296)` échoue du même message
+  And aucun PEM n'est produit pour ces deux appels
+
+Scenario: la binaire admet une taille aberrante pour ed25519
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("ed25519", 7)`
+  Then un PEM ed25519 valide est retourné, la taille admise n'étant jamais consultée
+
+Scenario: la taille zéro sur rsa laisse OpenSSL décider
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key("rsa", 0)`
+  Then l'évaluation échoue en @crate::RhaiRes
+  And le message commence par `KEY-OPENSSL-001 OpenSSL error `, la suite laissée à openssl et non verrouillée
+  But le message n'est pas `unsupported key size: 0`, `0` étant dans la plage admise par le garde
+
+Scenario: l'engine sans enregistrement ne connaît aucun des deux noms
+  Given un @rhai::Engine fraîchement créé, sans appel de @crate::key::key_rhai_register
+  Then `gen_private_key("ed25519")` et `gen_private_key("rsa", 2048)` y échouent en fonction inconnue
+  And après @crate::key::key_rhai_register les deux mêmes appels réussissent
+
+Scenario: new_bare livre les deux surcharges
+  Given un @Script::new_bare construit avec un vecteur de chemins vide sous `crypto` et `rhai`
+  When un script évalue `gen_private_key("ed25519")` puis `gen_private_key("rsa", 2048)`
+  Then les deux évaluations réussissent
+  And chaque chaîne rendue commence par `-----BEGIN PRIVATE KEY-----`
+
+Scenario: aucune coercition scalaire sur les arguments de script
+  Given un @rhai::Engine enregistré par @crate::key::key_rhai_register
+  When un script évalue `gen_private_key(1)`
+  Then l'évaluation échoue en fonction inconnue, aucun scalaire n'est converti en chaîne
+  When `gen_private_key("rsa", "2048")` est évalué à son tour
+  Then l'évaluation échoue de même, la taille attendue étant un @std::primitive::i64 et non une chaîne
+  And `gen_private_key("rsa", 2048, 0)` échoue de même, les deux arités seules étant enregistrées
+  But @crate::key::gen_private_key ne s'exécute pour aucun de ces appels
+
+Scenario: le réenregistrement est sans effet visible
+  Given un @rhai::Engine déjà enregistré par @crate::key::key_rhai_register
+  When @crate::key::key_rhai_register est appelée une seconde fois sur cet engine
+  Then l'appel rend `()` sans erreur
+  And `gen_private_key("ed25519", 2048)` réussit comme auparavant
+  And `gen_private_key("ed25519", -1)` échoue toujours au message `unsupported key size: -1`
+
+Scenario: sans crypto le module et ses helpers disparaissent
+  Given la crate compilée par `cargo check --no-default-features`
+  Then @crate::key n'existe pour aucun consommateur
+  And avec `cargo check --no-default-features --features rhai`, l'évaluation de
+    `gen_private_key("ed25519")` sur un @Script::new_bare échoue en fonction inconnue
+
+Scenario: sans rhai la face Rust reste et la porte script ferme
+  Given la crate compilée par `cargo check --no-default-features --features crypto`
+  Then @crate::key::gen_private_key et @crate::key::DEFAULT_RSA_BITS compilent et s'appellent
+  But @crate::key::key_rhai_register n'est pas compilée, sa propre porte `rhai` faisant défaut
