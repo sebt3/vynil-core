@@ -1,0 +1,180 @@
+Spec: client_name
+
+Purpose:
+  Fournir à toute la crate l'identité client unique déclarée par le consommateur — utilisée
+    comme `User-Agent` HTTP et comme field manager du Server-Side-Apply sous la feature `k8s` —
+    configurée une seule fois et explicitement via @client_name::set_client_name, sans aucun
+    fallback embarqué : toute lecture trop précoce panique avec un message actionnable
+    (vyvil-core.sdd).
+
+Owns:
+  ./client_name.rs
+
+References:
+  ./lib.rs — déclaration `pub mod client_name;` et réexport complète sous
+    `pub use client_name::{client_name_is_set, get_client_name, set_client_name};`, l'une et
+    l'autre sans porte `cfg`.
+  ./http.rs — @RestClient::get_client appelle @client_name::get_client_name à chaque
+    construction du client reqwest, faisant de l'identité l'en-tête `User-Agent` des requêtes ;
+    ce comportement d'en-tête sera contracté par la spec de ./http.rs.
+  ./k8s.rs — @K8sGeneric::patch et @K8sGeneric::apply passent @client_name::get_client_name
+    comme field manager de chaque Server-Side-Apply, et @k8s::context_is_wired miroite
+    @client_name::client_name_is_set dans son verdict de câblage ; comportement à contracter
+    par la spec de ./k8s.rs.
+
+Must:
+  Le module compile sans condition : aucun attribut `#[cfg(...)]` dans ./client_name.rs, ni sur
+    sa déclaration ni sur sa réexport dans ./lib.rs — @client_name::set_client_name,
+    @client_name::client_name_is_set et @client_name::get_client_name sont disponibles même
+    sous `--no-default-features`.
+  L'unique état du module est le statique privé @CLIENT_NAME, un @std::sync::OnceLock d'une
+    `Box<dyn Fn() -> String + Send + Sync>` ; l'état lui-même n'est exposé sous aucune forme.
+  Le nom lu par @client_name::get_client_name ne peut provenir que de la closure injectée par
+    @client_name::set_client_name — aucun nom par défaut, fallback, variable d'environnement ni
+    valeur embarquée où que ce soit dans le module (vyvil-core.sdd).
+  Première écriture gagnante, idempotence silencieuse : @client_name::set_client_name installe
+    via @std::sync::OnceLock::set, résultat jeté par `.ok()` ; tout appel postérieur est ignoré
+    sans erreur, renvoie `()` et laisse la closure d'origine intacte ; une fois configuré,
+    l'état dure jusqu'à la fin du processus, l'API publique n'offre ni effacement ni
+    redéfinition.
+  Aucune mise en cache : @client_name::get_client_name invoque la closure stockée à chaque
+    appel, donc l'identité peut différer entre deux lectures si la fabrique varie ; ses
+    consommateurs la relisent à chaque opération HTTP ou Kubernetes.
+  La fabrique est bornée `Send + Sync + 'static` et @std::sync::OnceLock départage les
+    écritures concurrentes en un seul gagnant ; @client_name::client_name_is_set et
+    @client_name::get_client_name peuvent être appelés depuis plusieurs threads simultanément
+    sans aucune synchronisation supplémentaire dans ce module.
+  @client_name::get_client_name appelé avant tout @client_name::set_client_name panique avec le
+    message exact `vynil_core: client name not configured — call vynil_core::set_client_name(...) before performing HTTP or Kubernetes requests`.
+    C'est le seul comportement observable de l'état non configuré : ni variant de @crate::Error,
+    ni valeur de repli, ni journal.
+  @client_name::get_client_name conserve son `#[allow(clippy::expect_used)]` et son commentaire
+    de justification d'une ligne citant vyvil-core.sdd, les deux maintenus ensemble (règle
+    harnais de ../.specdd/bootstrap.project.md).
+  Les trois fonctions sont réexportées telles quelles à la racine de la crate :
+    @vynil_core::set_client_name, @vynil_core::client_name_is_set et
+    @vynil_core::get_client_name sont les mêmes items que leurs versions sous @client_name,
+    sans wrapper ni renommage.
+
+Must not:
+  Enregistrer @client_name::set_client_name, @client_name::client_name_is_set ou
+    @client_name::get_client_name dans un @rhai::Engine ou comme helper Handlebars — le module
+    est à API Rust uniquement, chaque consommateur consomme l'identité sur ses sites d'appel.
+  Valider, filtrer ou retoucher la chaîne renvoyée par la closure — la valeur est restituée
+    telle quelle, chaîne vide comprise ; aucune validité de forme (en-tête HTTP, field manager)
+    n'est vérifiée ni exigée ici.
+
+Depends on:
+  std — @std::sync::OnceLock uniquement ; le module ne consomme aucune crate extérieure, aucun
+    autre module de la crate, aucun mécanisme de features.
+
+Exposes:
+  @client_name::set_client_name — unique point d'entrée de configuration, `pub` et réexporté à
+    la racine, première écriture gagnante, appels suivants ignorés silencieusement.
+  @client_name::client_name_is_set — test de présence non destructif, renvoie un `bool`, ne
+    panique jamais quel que soit l'état.
+  @client_name::get_client_name — lecture consommée par @RestClient et @K8sGeneric, renvoie un
+    @std::string::String possédé, documentée par une section `# Panics`, seul chemin du module
+    qui puisse paniquer sur l'état non configuré.
+
+Accepts:
+  @client_name::set_client_name — une closure `impl Fn() -> String + Send + Sync + 'static`,
+    sans argument, au contenu libre, stockée sans être appelée ni inspectée à
+    l'enregistrement.
+  @client_name::client_name_is_set — rien.
+  @client_name::get_client_name — rien.
+
+Returns:
+  @client_name::set_client_name — `()`, y compris quand l'appel est ignoré car @CLIENT_NAME
+    est déjà rempli.
+  @client_name::client_name_is_set — `true` à partir du premier @client_name::set_client_name
+    accepté, `false` avant.
+  @client_name::get_client_name — un @std::string::String fraîchement produit par la closure à
+    chaque appel, jamais le clone d'une valeur mise en cache.
+
+Raises:
+  @client_name::get_client_name — un panic au message verrouillé quand
+    @client_name::set_client_name n'a jamais été accepté : @std::option::Option::expect
+    contractuel sous `#[allow(clippy::expect_used)]`, jamais un variant de @crate::Error.
+  @client_name::get_client_name — le panic émis par la closure elle-même, propagé tel quel, ni
+    capturé ni remplacé par le message de non-configuration.
+  @client_name::set_client_name et @client_name::client_name_is_set — rien : l'écriture ne peut
+    échouer et le test de présence ne panique jamais.
+
+Handles:
+  @client_name::get_client_name ayant paniqué faute de configuration — laisse @CLIENT_NAME
+    vide : un @client_name::set_client_name postérieur installe normalement l'identité.
+  Valeur renvoyée par la closure — pass-through strict, sans validation, trim, rejet ni
+    normalisation ; à chaque consommateur d'en juger au niveau où il l'exploite.
+  Combinaisons de features — module compilé dans toutes les combinaisons, comportement
+    identique avec ou sans `rhai`, `http`, `k8s` ou `hbs` actives.
+
+Tasks:
+  [ ] Convertir chaque Scenario de cette spec en test Rust passant, le statique @CLIENT_NAME
+    restant privé et observé uniquement par les trois fonctions publiques, les panics étant
+    rattrapés par @std::panic::catch_unwind. Aucun test inline n'existe à ce jour dans
+    ./client_name.rs : les onze Scenario sont à convertir.
+
+Scenario: lecture du nom configuré
+  Given @client_name::set_client_name appelé avec une closure retournant `my-app.example.com`
+  When @client_name::get_client_name est appelé
+  Then `my-app.example.com` est retourné
+  And @client_name::client_name_is_set renvoie `true`
+
+Scenario: état avant toute configuration
+  Given un processus où @client_name::set_client_name n'a jamais été appelé
+  When @client_name::client_name_is_set est appelé
+  Then `false` est retourné
+
+Scenario: lecture non configurée, message de panic actionnable
+  Given un processus où @client_name::set_client_name n'a jamais été appelé
+  When @client_name::get_client_name est appelé
+  Then le panic porte le message `vynil_core: client name not configured — call vynil_core::set_client_name(...) before performing HTTP or Kubernetes requests`
+  And aucun @crate::Error ni valeur rattrapable n'est produit
+
+Scenario: la lecture qui rate ne verrouille pas la configuration
+  Given @client_name::get_client_name a déjà paniqué faute de configuration
+  When @client_name::set_client_name est appelé avec une closure retournant `late-app.example.com`
+  Then @client_name::client_name_is_set renvoie `true`, la lecture échouée n'a pas rempli @CLIENT_NAME
+  And @client_name::get_client_name retourne `late-app.example.com`
+
+Scenario: la première configuration gagne sans bruit
+  Given l'identité déjà configurée avec `first.example.com`
+  When @client_name::set_client_name est appelé avec une closure retournant `second.example.com`
+  Then `()` est retourné
+  And @client_name::get_client_name renvoie toujours `first.example.com`
+
+Scenario: configurations concurrentes, un seul gagnant
+  Given dix threads appelant simultanément @client_name::set_client_name avec des noms distincts
+  When les dix threads ont tous terminé
+  Then @client_name::client_name_is_set renvoie `true`
+  And @client_name::get_client_name renvoie de façon stable sur toutes les relectures l'un des
+    dix noms soumis
+
+Scenario: la closure est réévaluée à chaque lecture
+  Given @client_name::set_client_name appelé avec une closure retournant une valeur différente à chaque appel
+  When @client_name::get_client_name est appelé deux fois de suite
+  Then les deux chaînes retournées diffèrent — le module ne met aucune valeur en cache
+
+Scenario: la chaîne vide est une configuration comme une autre
+  Given @client_name::set_client_name appelé avec une closure retournant `""`
+  When @client_name::client_name_is_set puis @client_name::get_client_name sont appelés
+  Then le premier renvoie `true` et le second renvoie `""`
+  And aucune validation, trim ni rejet du contenu n'est intervenu
+
+Scenario: le panic de la closure se propage tel quel
+  Given @client_name::set_client_name appelé avec une closure qui panique avec `boom`
+  When @client_name::get_client_name est appelé
+  Then le panic `boom` se propage, sans être capturé ni remplacé par le message de non-configuration
+
+Scenario: l'API est présente sans aucune feature
+  Given la crate compilée avec `--no-default-features`
+  When la surface publique de @vynil_core est inspectée
+  Then @client_name::set_client_name, @client_name::client_name_is_set et
+    @client_name::get_client_name compilent et s'appellent depuis leur module et la racine
+
+Scenario: rien n'est exposé du côté des scripts
+  Given un moteur de scripts construit par @Script::new_bare avec les features par défaut
+  When un script évalue un appel à `client_name`, `get_client_name` ou `set_client_name`
+  Then l'évaluation échoue en erreur de fonction inconnue
+  And aucun helper du même nom n'est déclaré côté Handlebars
