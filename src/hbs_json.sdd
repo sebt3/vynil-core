@@ -1,0 +1,396 @@
+Spec: hbs_json
+
+Purpose:
+  Enregistrer les six helpers Handlebars de manipulation de données `json_to_str`,
+    `str_to_json`, `from_json`, `to_json`, `json_query` et `json_str_query` — portage
+    vendored (CC0-1.0) du feature json de `handlebars_misc_helpers` 0.17.0, réimplémenté
+    contre @jmespath 0.5.0 direct plutôt que contre le `0.3.0` épinglé par cette
+    dépendance, dont le trait `Function` sans borne `Send` casse tout graphe qui unifie
+    aussi `lazy_static/spin_no_std` (en-tête du fichier, et sa raison d'être contractuelle) —
+    avec cinq formats de transcription : `json`, `json_pretty`, `yaml`, `toml`,
+    `toml_pretty`. Module privé de ./lib.rs : @crate::hbs_json::register est son seul item
+    `pub(crate)` ; la face observable est uniquement le jeu des six noms vus par un template
+    sur tout @crate::hbs::HandleBars.
+
+Owns:
+  ./hbs_json.rs
+
+References:
+  ./lib.rs — unique déclarant : `#[cfg(feature = "hbs")] mod hbs_json;`, sans `pub` :
+    aucun item du module n'atteint un consommateur par Rust ; la rustdoc de la crate présente
+    la famille vendored `json_to_str` / `str_to_json` / `json_query` parmi les helpers
+    Handlebars.
+  ./hbs.rs — unique point d'appel : @crate::hbs_json::register invoked dans
+    @crate::hbs::HandleBars::new, juste après @handlebars_misc_helpers::new_hbs() et hors de
+    tout bloc `#[cfg(feature = "crypto")]` ; @crate::hbs::CORE_HBS_HELPERS cite les six noms
+    sous le commentaire « vendored from handlebars_misc_helpers's json feature — see
+    hbs_json.rs ». Le `no_escape` de production est posé par @new_hbs, ce module ne pose
+    jamais l'échappement.
+  ./yaml.sdd — référence croisée : ce module appelle @serde_yaml directement avec sa propre
+    découpe `---\n` à l'écriture et ne transite jamais par @crate::yaml ; ./yaml.sdd énonce
+    déjà la même symétrie depuis l'autre côté.
+  ../docs/handlebars_helpers.md — section 8 : table des six helpers, le `format=` commun,
+    « Empty or null input to any of these returns an empty string » et « `null` if nothing
+    matches » pour les requêtes JMESPath.
+  ./Cargo.toml — la liste de la feature `hbs`,
+    `hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:toml"]` :
+    @handlebars 6.2.0 avec `string_helpers`, @jmespath 0.5.0 optionnel, @toml 0.8 optionnel ;
+    @serde_yaml 0.9 et @serde_json sont NON optionnels, donc la branche yaml compile sous
+    `hbs` seul.
+
+Must:
+  Se compiler sous la seule porte `hbs` : ./lib.rs ne porte que ce `#[cfg(feature = "hbs")]` ;
+    les features `crypto`, `rhai` et `hbs-scripting` ne sont ni lues ni requises ; aucun type
+    @rhai n'apparaît dans ./hbs_json.rs et @handlebars_misc_helpers::new_hbs n'y est jamais
+    appelé.
+  Enregistrer exactement les six noms `json_to_str`, `str_to_json`, `from_json`, `to_json`,
+    `json_query`, `json_str_query`, et rien d'autre : chaque @handlebars::Handlebars::register_helper
+    remplace un enregistrement antérieur du même nom ; ./hbs.rs appelle ce `register` après
+    @new_hbs, dont la dépendance est compilée sans son propre feature `json` (./Cargo.toml),
+    d'où l'absence de duel de noms dans l'ordre courant.
+  Poser `format` en argument de hash uniquement, jamais positionnel : absent, ou présent mais
+    non-chaîne, vaut `json` ; la valeur est lowercasée avant comparaison avec `json`,
+    `json_pretty`, `yaml`, `toml`, `toml_pretty`, donc `format="YAML"` passe ; toute autre
+    valeur texte, vide comprise, remonte @JsonError::DataFormatUnknown d'affichage exactement
+    `data format unknown '<valeur brute>'`, la casse d'origine conservée dans le texte, sans
+    repli sur `json`.
+  Remonter toute anomalie de parsing, de format ou de requête en @handlebars::RenderError,
+    sans @tracing::warn, sans valeur de repli et sans dégobage en chaîne vide — contrairement
+    au motif des helpers de ./hbs.rs : les erreurs typées passent par la voie privée
+    `to_nested_error` (Reason::NestedError avec préservation de la @core::error::Error::source),
+    les erreurs à message texte par `to_other_error` (Reason::Other). Le seul repli silencieux
+    du module est la voie vide décrit plus bas.
+  Courte-circuiter les entrées vides avant tout parser ou encoder : lire la chaîne vide rend
+    un @serde_json::Value de type chaîne vide quel que soit `format` ; écrire une valeur
+    @serde_json::Value::Null ou une chaîne vide rend la chaîne vide quel que soit `format`.
+  Garder les sens de conversion câblés dans un seul sens : `from_json` lit toujours le corps
+    du bloc en JSON dur et écrit dans `format` ; `to_json` lit le corps du bloc dans `format`
+    et écrit toujours en `json_pretty` (@serde_json::to_string_pretty). Le corps de
+    `from_json` en YAML ou la sortie `from_json` en pretty ne sont pas câblables.
+  Exécuter les requêtes JMESPath par @jmespath::compile suivi de @jmespath::Jmespath::search
+    puis @serde_json::Serialize de l'objet de résultat via @serde_json::to_value, et par aucun
+    autre moteur : @jmespath n'est référencé nulle part ailleurs dans ./src. Une expression
+    invalide ou un échec de recherche produit @JsonError::JsonQueryFailure d'affichage
+    `query failure for expression '<expression>'` avec @jmespath::JmespathError en source ; une
+    conversion impossible produit @JsonError::ToJsonValueError d'affichage
+    `fail to convert '<résultat en Debug>'`.
+  Rendre la sortie de `json_str_query` selon la forme du résultat : tableau ou objet est
+    réécrit dans `format` sans trim ; tout autre résultat est forcé en `json` compact avec
+    trim. `json_query` ne lit jamais le hash `format` : ses paramètres sont l'expression puis
+    une valeur JSON, et il rend un @serde_json::Value brut.
+  Convertir vers TOML en deux passes : la conversion privée `to_ordored_toml_value` (nom avec
+    faute de frappe du code source) transforme chaîne, nombre, booléen et tableau en
+    @toml::Value, et égoutte silencieusement les valeurs @serde_json::Value::Null — les clés
+    disparaissent des tables, les éléments disparaissent des tableaux — puis la tri prive
+    `sort_toml_map` range récursivement scalars d'abord, tableaux ensuite, tables enfin : cette
+    contrainte d'ordre vient de @toml, qui sérialise un « table après non-table » en erreur
+    `ValueAfterTable`, comme le dit le commentaire de la fonction. Les nombres deviennent un
+    entier si @serde_json::Number::as_i64 en sort un, sinon un flottant si `as_f64` en sort
+    un ; le troisième bras, message `to_other_error`
+    `to_toml: can not convert a Json Number: <v>`, est défensif et inatteignable pour un
+    @serde_json::Number normal.
+  Lire le TOML cible en @serde_json::Value (@toml::from_str sur le type de retour) comme les
+    autres formats, avec la même voie d'erreur `to_nested_error`.
+  Rendre les paramètres chaîne manquants et non-chaînes silencieusement vides sur les trois
+    helpers qui les lisent par la voie privée `find_str_param` : paramètre absent à une
+    position donne l'erreur à message texte `param <N> (the string) not found` ; paramètre
+    présent mais non-chaîne devient la chaîne vide via @std::option::Option::unwrap_or — une valeur
+    présente mais non-chaîne devient ainsi la chaîne vide, sans avertissement. Le
+    paramètre `data` de `json_to_str` (valeur JSON, position 0) est lu sans contrainte de
+    type, seul l'absence donne `param 0 (the json) not found`.
+  Se enregistrer sans toucher l'échappement : @handlebars::no_escape n'est posé que par
+    l'auxiliaire de test `render` ; en production c'est @new_hbs de ./hbs.rs qui le pose en
+    amont de @crate::hbs_json::register, et ce module ne le reconfigure jamais.
+  Assumer deux `#[allow]` justifiés du harnais : @std::result::Result sur @JsonError dépasse
+    le seuil `result_large_err` de clippy — allowance commentée pointant ./vyvil-core.sdd sur
+    la fonction privée `json_query` — et les noms de structs snake_case portent l'allowance
+    `non_camel_case_types` du motif `handlebars_helper!`.
+
+Must not:
+  Exposer quoi que ce soit d'autre que six noms de template : le module est privé, son
+    `register` est `pub(crate)`, aucune fonction Rust de ce fichier n'atteint la face publique
+    de la crate ; le chemin @crate::hbs_json::register n'existe qu'à l'intérieur de la crate.
+  Avaler une erreur en `warn` plus chaîne vide pour un parsing, un format ou une requête
+    invalides : toute anomalie remonte en @handlebars::RenderError ; les seules sorties vides
+    sont les courtes-circuits vide/Null contractes plus haut.
+  Accepter le `format` autrement qu'en hash `format="..."` ; accepter un sixième format ou un
+    alias (`yml`, `pretty`) : `DataFormat::from_str` ne reconnaît que les cinq chaînes exactes,
+    lowercasées.
+  Câbler un autre sens de lecture pour les block helpers : `from_json` ne lit pas le bloc en
+    `format`, `to_json` n'écrit pas dans `format` — ces deux inversionnes sont refusées par le
+    câblage, pas seulement par la documentation.
+  Consommer @crate::yaml pour la branche YAML : @serde_yaml est appelé directement, la découpe
+    `---\n` est propre au module.
+  Interroger le rendu avec un autre moteur de requête que @jmespath, ou réutiliser
+    l'objet compilé entre appels : `json_query` recoompile l'expression à chaque appel.
+
+Depends on:
+  handlebars — @handlebars::Handlebars, @handlebars::HelperDef, @handlebars::Helper,
+    @handlebars::ScopedJson, @handlebars::RenderError et @handlebars::RenderErrorReason,
+    @handlebars::StringOutput, la macro @handlebars_helper! ; @handlebars 6.2.0 (feature
+    `string_helpers`), gated `hbs` via ./Cargo.toml.
+  serde_json — @serde_json::Value comme type interne des six helpers, @serde_json::to_string,
+    @serde_json::to_string_pretty, @serde_json::from_str, @serde_json::to_value ; dépendance
+    non optionnelle sans la feature `preserve_order` de la crate : l'ordre des clés d'un objet
+    n'y est jamais contractuel (le graphe interne trie par défaut ; une unification de feature
+    externe peut changer l'ordre).
+  serde_yaml — @serde_yaml::from_str et @serde_yaml::to_string (dépendance non optionnelle)
+    pour la branche yaml ; @yaml_frontend n'existe pas — la découpe `---\n` est un
+    @std::primitive::str::trim_start_matches local.
+  toml — @toml::from_str, @toml::to_string, @toml::to_string_pretty, @toml::Value avec ses
+    variants Integer/Float/Boolean/String/Array/Table ; @toml 0.8, gated `hbs` via ./Cargo.toml.
+  jmespath — @jmespath::compile et @jmespath::Jmespath : la sémantique d'expression, de
+    coercition et de nullité au non-match appartient à la dépendance `0.5.0` et n'est
+    verrouillée ici ni l'une ni l'autre fois.
+  thiserror + serde — @thiserror::Error pour @JsonError et @serde::Serialize pour la borne de
+    réécriture ; sans condition de feature côté déclarant.
+  @crate::RhaiRes ou le client name ./client_name.rs ne sont ni lus ni requis.
+
+Exposes:
+  @crate::hbs_json::register — signature `pub(crate) fn register(handlebars: &mut @handlebars::Handlebars)`,
+    porte `hbs` : enregistre les six helpers ci-dessous, remplaçant tout homonyme ; face Rust
+    interne uniquement, invisible de la face publique de la crate.
+  Helper Handlebars `str_to_json(chaîne)` — rendu comme @handlebars::ScopedJson::Derived d'un
+    @serde_json::Value : le résultat est une valeur JSON navigable dans le template, pas une
+    chaîne.
+  Helper Handlebars `json_to_str(valeur)` — rendu comme `string` de la sérialisation dans
+    `format`.
+  Helper Handlebars bloc `{{#from_json}}contenu{{/from_json}}` — lit le contenu rendu en JSON
+    strict, rend le corps écrit dans `format`.
+  Helper Handlebars bloc `{{#to_json}}contenu{{/to_json}}` — lit le contenu rendu dans
+    `format`, rend du `json_pretty`.
+  Helper Handlebars `json_query(expression, valeur)` — rendu comme @serde_json::Value du
+    résultat JMESPath (`null` si rien ne correspond) ; ne lit pas `format`.
+  Helper Handlebars `json_str_query(expression, chaîne)` — chaîne lue dans `format`, tableau ou
+    objet rendu réencodé dans `format`, tout autre résultat rendu en `json` compact après
+    trim.
+  Rien de plus : le module privé ne publie aucun type, aucune constante ; @JsonError,
+    @DataFormat et les trois fonctions privées restent internes.
+
+Accepts:
+  Le hash `format="..."` des six emplacements où il est lu — toute chaîne, casse
+    indifférente, cinq valeurs reconnues, toute autre valeur textuelle refusée avant parsing.
+  `str_to_json` et `json_str_query` côté chaîne : paramètre manquant = erreur de position, paramètre
+    présent non-chaîne = chaîne vide, donc la voie vide.
+  `json_to_str` : n'importe quel @serde_json::Value en paramètre 0, y compris `null` et `{}`.
+  `json_query` : une expression en premier paramètre chaîne, un @serde_json::Value en second ;
+    l'expression est recompilée à chaque appel.
+  `from_json` et `to_json` : tout contenu de bloc (l'absence de bloc rend un contenu vide,
+    donc le cour-circuit vide ou la lecture de la chaîne vide, jamais une erreur d'absence).
+  Les deux fonctions privées de service `find_str_param` et `find_data_format` — le premier
+  paramètre par position, le second par le seul hash `format`.
+
+Returns:
+  Les six helpers, au rendu de template, en succès : `str_to_json` et `json_query` rendent une
+    valeur JSON (vue comme objet, tableau, scalaire ou `null` dans le template) ; les quatre
+    autres rendent une chaîne.
+  La chaîne vide pour lecture de contenu vide, écriture de `null` ou écriture de chaîne vide ;
+    ce triptyque est le seul repli silencieux du module, tous formats confondus.
+  Pour `to_json` sans bloc, un contenu de bloc vide est une chaîne vide lue dans `format` —
+    donc un @serde_json::Value chaîne vide, court-circuité à l'écriture, qui
+    rend la chaîne vide.
+
+Raises:
+  Les six helpers rendent leurs échecs en @handlebars::RenderError, propageable jusqu'à
+    l'échec du rendu complet du template (`render_template` est une erreur en Rust) :
+    @JsonError::DataFormatUnknown `data format unknown '<brut>'` ; @JsonError::JsonQueryFailure
+    `query failure for expression '<expr>'` avec source @jmespath::JmespathError ;
+    @JsonError::ToJsonValueError `fail to convert '<Debug>'` avec source
+    @serde_json::Error ; les erreurs de parsing @serde_json::Error, @serde_yaml::Error et
+    @toml::de::Error nichées telles quelles en NestedError ; les erreurs d'écriture en
+    NestedError ; l'absence de paramètre chaîne requis en Reason::Other
+    `param <N> (the string) not found` ; l'absence de la valeur `json_to_str` en
+    `param 0 (the json) not found`. La forme d'habillage finale du @handlebars::RenderError
+    (préfixe « Render error ») appartient à @handlebars et n'est pas verrouillée.
+  `to_ordored_toml_value` — Reason::Other `to_toml: can not convert a Json Number: <v>` :
+    branche défensive, inatteignable par @serde_json::Number standard, aucune Scenario ne la
+    déclenche, seule cette ligne la contracte.
+  @crate::hbs_json::register — rien : @handlebars::Handlebars::register_helper est infaillible.
+
+Handles:
+  Objet JSON vers TOML — les Null disparaissent à la conversion (`{"a":null,"b":1}` rend
+    `b = 1`), les tables sont repoussées après scalars et tableaux, récursivement : l'ordre
+    des clés dans une table TOML n'est jamais l'ordre d'insertion.
+  Format YAML écriture contre lecture — à l'écriture, le préfixe `---\n` émis par le sérialiseur
+    est rogné par la découpe locale ; à la lecture, aucune rognage n'existe, @serde_yaml accepte
+    le document avec ou sans préfixe. ./yaml.sdd documente la même asymétrie de son côté ; les
+    deux modules restent indépendants.
+  Chaîne vide partout — `{{ json_to_str "" }}`, `{{ str_to_json "" }}`,
+    `{{ json_query "" "" }}` et `{{ json_str_query "" "" }}` rendent la chaîne vide sans
+    atteindre les parsers ; `{{ json_to_str null }}` et `{{ json_str_query "x" "null" }}`...
+    la valeur Null côté écriture rend aussi la chaîne vide.
+  Requêtes JMESPath sans correspondance — le résultat est `null` ; `json_query` le rend comme
+    valeur nulle dans le template, `json_str_query` le force en `json` compact « null » après
+    trim — la coercition JMESPath exacte appartient à @jmespath 0.5.0.
+  Valeur non textuelle sur les paramètres de chaîne — l'`as_str().unwrap_or("")`
+    de `find_str_param` la transforme en chaîne vide, ce qui masque une erreur de gabarit en
+    résultat vide plutôt qu'en erreur, comportement discuté en `Tasks`.
+  Combinaisons de features — sans `hbs` : module absent, ./hbs.rs absent, aucun des six noms
+    n'existe nulle part ; `hbs` sans `crypto` ni `rhai` : les six noms sont enregistrés, la
+    branche yaml compile car @serde_yaml est non optionnel, et @hbs_json ne dépend de
+    @hbs-scripting en rien ; `hbs-scripting` ajoute le `script_helper` de @handlebars sans rien
+    changer ici.
+  Enregistrement double — rappeler @crate::hbs_json::register sur un engine déjà peuplé
+    remplace les six homonymes sans erreur ni accumulation.
+
+Tasks:
+  [ ] Convertir chaque Scenario de cette spec en test Rust passant dans le `mod tests` sous
+    `#[cfg(test)]` de ./hbs_json.rs, via l'auxiliaire `render` existant ou la face privée
+    `DataFormat` directement ; rien n'atteint ces helpers hors templates Handlebars. Neuf tests
+    existent : `empty_input_returns_empty` couvre les quatre cour-circuits vides ;
+    `null_input_returns_empty` les écritures Null ; `json_to_str_roundtrip` le
+    `json_to_str`/`str_to_json` imbriqués et l'objet littéral ; `json_query_extracts_field`
+    l'extraction JMESPath imbriquée ; `json_str_query_on_yaml` et `json_str_query_on_toml` la
+    lecture multi-format par la requête chaîne ; `to_json_block_wraps_rendered_content` et
+    `from_json_block_converts_to_yaml` chaque block helper dans son sens câblé, avec assertions
+    exactes sur la sortie pretty et YAML ; `data_format_symmetry` la boucle Json et Toml
+    `write(read(x)) == x`. Restent sans test : la table complète des cinq formats en lecture
+    ET en écriture (en particulier `JsonPretty` en lecture, acceptée par le même bras que
+    `Json`), la casse de `format` et son message `data format unknown ''` pour valeur vide,
+    les blocs sans contenu, l'absence de paramètre avec son texte `param N not found`, la
+    non-coercition des non-chaînes en paramètres, l'égouttage Null et l'ordonnancement TOML,
+    la sortie trim/compacte du `json_str_query` scalaire vs tableau-vs-format, la rognure
+    `---\n` à l'écriture yaml seule, et la branche échec de `json_query`.
+  [?] Trancher la non-coercition silencieuse des paramètres non-chaînes : `find_str_param`
+    remplace une valeur non-textuelle par la chaîne vide (`as_str().unwrap_or("")`), ce qui
+    transforme une erreur de gabarit (`{{str_to_json 5}}` rend la chaîne vide) en exécution
+    vide ou faussement valide plutôt qu'en erreur explicite. Garder, ou rendre la non-chaîne
+    également erroree comme l'absence.
+  [?] Trancher la mention « All accept format= » de ../docs/handlebars_helpers.md : la doc dit
+    le hash lu par tous les helpers, mais `json_query` ne le lit jamais (signature à deux
+    paramètres sans hash) et l'ignorer silencieusement est du comportement — corriger la table
+    pour `json_query` (le `format=` y est un no-op) ou le lui faire honorer.
+  [?] Trancher l'ordre des clés JSON comme contrat : le crate ne demande pas la feature
+    `preserve_order` de @serde_json et l'objet de test actuel est déjà trié alphabétiquement, si
+    bien que l'assertion `{"foo":{"bar":{"baz":true}}}` passe par accident d'ordre ; un
+    consommateur unifiant la feature depuis son propre graphe changerait l'ordre rendu sans
+    changer la compilation. Figer l'ordre trié dans les tests en connaissance de cause, ou
+    trier avant toute assertion.
+
+Scenario: la table des portes limite le module à hbs
+  Given la crate compilée sans aucune feature
+  Then @crate::hbs_json n'existe pas et @crate::hbs non plus
+  When la crate est compilée par `cargo check --no-default-features --features hbs`
+  Then les six helpers sont enregistrés et @crate::hbs::CORE_HBS_HELPERS les énumère tous
+  And la branche yaml compile sans la feature `yaml`, @serde_yaml n'étant optionnel pour personne
+  But @crate::hbs_json ne cite ni `crypto`, ni `rhai`, ni `hbs-scripting`
+
+Scenario: le format se lit en hash et résiste à la casse
+  Given un engine de test avec les six helpers et no_escape
+  When un template évalue `{{#to_json format="TOML"}}b=1{{/to_json}}`
+  Then le contenu est lu en TOML et rendu en `json_pretty`, le nom de format ayant survécu à la
+    casse
+  When il évalue `{{json_to_str {"a":1} format="yml"}}`
+  Then le rendu est l'échec de `DataFormat::from_str` dont le message porte exactement
+    `data format unknown 'yml'`, et l'alias `yml` n'est pas reconnu
+  And `format=""` rend `data format unknown ''`, la valeur vide n'est pas le défaut
+
+Scenario: vide et null rendent vide quel que soit le format
+  Given un engine de test avec les six helpers
+  When les évaluations `{{ json_to_str "" }}`, `{{ str_to_json "" }}`, `{{ json_query "foo" "" }}`
+    et `{{ json_str_query "foo" "" }}` rendent une valeur chacune
+  Then les quatre rendus sont la chaîne vide sans qu'aucun parser ne soit atteint
+  Given les écritures `{{ json_to_str null }}` et une écriture `format="toml"` sur une valeur null
+  Then les deux rendent aussi la chaîne vide, le format n'atteignant jamais le Null
+
+Scenario: str_to_json rend une valeur et json_to_str sa chaîne
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ str_to_json "{\"foo\":true}" }}`
+  Then le rendu est la valeur JSON elle-même dans le template, et non sa chaîne échappée
+  When il évalue `{{ json_to_str ( str_to_json "{\"foo\":true}" ) }}` imbriqués
+  Then il rend la chaîne `{"foo":true}` en `json` compact par défaut
+  And les clés ordonnées ainsi sont dues au tri du sérialiseur, la feature de préservation
+    d'ordre d'insertion n'étant demandée par personne, point ouvert en `Tasks`
+
+Scenario: le paramètre chaîne manquant parle, le non-texte se tait
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_str_query }}` sans paramètre
+  Then le rendu échoue sur le message exactement `param 0 (the string) not found`
+  When il évalue `{{ json_str_query "x" }}` avec un seul paramètre
+  Then le même message cite la position `1`
+  When il évalue `{{ str_to_json 5 }}`, un nombre en position de chaîne
+  Then aucune erreur de coercition ne survient : le nombre devient la chaîne vide, la voie vide
+    le short-circuite, et le rendu est la chaîne vide — comportement discuté en `Tasks`
+
+Scenario: la rognure --- precède le yaml écrit seulement
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_to_str {"a":1} format="yaml" }}`
+  Then la sortie est immédiatement `a: 1`, sans préfixe de document, la découpe locale
+    `---\n` ayant retiré celui du sérialiseur
+  When un template évalue sur un document `---\na: 1\n` un `{{ str_to_json "..." format="yaml" }}`
+  Then le parse @serde_yaml accepte le préfixe sans aucune découpe, la rognure n'existant qu'à
+    l'écriture — asymétrie symétrique de celle que ./yaml.sdd documente côté @crate::yaml
+
+Scenario: json_query rend la valeur nulle au non-match et l'erreur au mauvais chemin
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_query "missing.field" {"foo":"bar"} }}`
+  Then le rendu est la valeur nulle JMESPath dans le template, coercition laissée à @jmespath
+    0.5.0
+  When il évalue une expression syntaxiquement invalide
+  Then le rendu échoue en NestedError portant @JsonError::JsonQueryFailure d'affichage
+    `query failure for expression '<expression>'`, la source @jmespath::JmespathError nichée
+    telle quelle
+
+Scenario: json_str_query force le scalaire en json trim et garde le format conteneur
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_str_query "foo.bar.baz" "a:\n  b:\n    c: true\n" format="yaml" }}`
+    dont un scalaire est le résultat
+  Then le rendu est exactement `true` en json compact après trim, pas en YAML
+  When un template évalue la même requête dont le résultat est un tableau en `format="toml"`
+  Then le tableau est réencodé en toml, sans trim, la forme conteneur gardant le format demandé
+
+Scenario: to_json lit le format demandé et écrit du json joli
+  Given un engine de test avec les six helpers
+  When un block évalue `{{#to_json format="toml"}}[foo.bar]\nbaz=true\n{{/to_json}}`
+  Then la sortie est le @serde_json::to_string_pretty exact du document lu, indentation de deux
+    espaces comprise
+  When un block évalue `{{#to_json}}{"foo":{"bar":{"baz":true}}}{{/to_json}}`
+  Then le rendu est la chaîne pretty multi-lignes exacte verrouillée par le test existant
+  But un contenu non-vidé qui ne parse pas dans le `format` demande échoue le rendu en erreur
+
+Scenario: from_json lit dur json et écrit dans le format
+  Given un engine de test avec les six helpers
+  When un block évalue `{{#from_json format="yaml"}}{"foo":{"bar":true}}{{/from_json}}`
+  Then la sortie est `foo:` puis indentation deux espaces `bar: true` puis nouvelle de ligne
+  When il évalue le même block avec `format="toml"`
+  Then la sortie porte la table repoussée selon l'ordonnancement local
+  And le contenu d'un block jamais rendu en `format` — le lecteur de corps est JSON en dur — une
+    erreur de lecture sur le corps est donc un ParseError de @serde_json quel que soit `format`
+
+Scenario: vers toml les null sortent et les tables descendent
+  Given un @serde_json::Value `{"z":1,"b":null,"arr":[1,null],"tab":{"k":2}}`
+  When la conversion privée vers @toml::Value est exercée depuis le module sous `hbs`
+  Then la clé `b` disparaît et le tableau perd son élément null
+  And les clés scalaires `z` précèdent `arr`, qui précède `tab` — l'ordre d'insertion source
+    n'est pas préservé, la faute `ValueAfterTable` de @toml étant la raison d'être du tri
+
+Scenario: le paramètre valeur de json_to_str n'a pas besoin d'être une chaîne
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_to_str {"foo":{"bar":{"baz":true}}} }}`
+  Then la sortie est la chaîne compacte attendue, l'objet littéral étant accepté brut
+  When il évalue sans paramètre une invocation qui ne peut s'appuyer sur un défaut handlebars
+  Then le message est exactement `param 0 (the json) not found`
+
+Scenario: block sans bloc et corps vide ne craschent pas
+  Given un engine de test avec les six helpers
+  When un template invoque `{{#from_json}}{{/from_json}}` avec un corps vide
+  Then le rendu est la chaîne vide, la lecture de vide produisant une chaîne vide court-circuitée
+    à l'écriture quel que soit `format`
+  When il invoque `{{#to_json}}{{/to_json}}`
+  Then le rendu est aussi la chaîne vide, le même court-circuit d'écriture vidant la sortie avant
+    même que lepretty ne s'exerce
+
+Scenario: les six noms vivent dans le HandleBars public après new_hbs
+  Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
+  Then les six noms sont résolus par un template, listés dans @crate::hbs::CORE_HBS_HELPERS
+  And le `no_escape` provient de @new_hbs en amont : `{{ json_to_str "{\"x\":\"<y>\"}" }}`
+    rend le chevron non échappé, sans que le module n'ait jamais posé l'échappement
+  When @crate::hbs_json::register est rappelé sur le même engine
+  Then les rendements des six noms restent inchangés, sans accumulation ni erreur
+
+Scenario: sans hbs rien de tout cela n'existe
+  Given la crate compilée par `cargo check --no-default-features --features rhai`
+  Then ni @crate::hbs ni le module privé n'existent et @jmespath comme @toml restent hors du
+    graphe, n'étant activés que par la feature `hbs`
+  And un assemblage `hbs-scripting` ne change rien de visible côté module, la macro
+    `script_helper` étant orthogonal au registre des six
