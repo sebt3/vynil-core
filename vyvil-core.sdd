@@ -54,7 +54,7 @@ Tasks:
   [ ] Spec `src/hbs_json.sdd` produite (spec-reverse) puis revue.
   [ ] Spec groupée `src/http.sdd` owns `src/http.rs` + `src/http_mock.rs`, produite puis revue.
   [ ] Spec groupée `src/k8s.sdd` owns `src/k8s.rs` + `src/k8s_mock.rs`, produite puis revue.
-  [ ] Spec `src/key.sdd` produite (spec-reverse) puis revue.
+  [x] Spec `src/key.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/lib.sdd` produite (spec-reverse) puis revue (racine crate, @Error, @set_client_name).
   [ ] Spec groupée `src/oci.sdd` owns `src/oci.rs` + `src/oci_mock.rs`, produite puis revue.
   [ ] Spec `src/password.sdd` produite (spec-reverse) puis revue.
