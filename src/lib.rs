@@ -290,6 +290,7 @@ pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 /// Convert a [`enum@Error`] into a Rhai `EvalAltResult`, including its full `source()` chain
 /// (see [`error_chain`]) so the real cause of a connection-level failure isn't swallowed.
 #[cfg(feature = "rhai")]
+#[must_use]
 #[allow(clippy::needless_pass_by_value)] // callback `map_err` impose `Error` par valeur (vyvil-core.sdd, erreur enrichie de la chaîne `source()`)
 pub fn rhai_err(e: Error) -> Box<rhai::EvalAltResult> {
     error_chain(&e).into()

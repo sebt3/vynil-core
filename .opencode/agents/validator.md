@@ -36,13 +36,20 @@ cargo test --no-default-features --features k8s
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
+cargo clippy -- -D warnings
+cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
+cargo clippy --no-default-features --features oci --all-targets -- -D warnings
+cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
+cargo clippy --no-default-features --features k8s,oci,s3 --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo +nightly fmt -- --check
 ```
 
 - `clippy` : zéro warning toléré (dette purgée, harnais en `deny`, voir `tooling.sdd`) ;
   tout warning ou erreur est un échec, y compris sous `cfg(test)` pour les lints non
-  exemptés par `src/lib.rs`.
+  exemptés par `src/lib.rs`. Les COMBINAISONS de features comptent : des lints `pedantic`
+  (`must_use_candidate` en tête) ne se déclenchent que sur un graphe de features donné, donc
+  le harnais doit être lancé sur chaque entrée de la matrice, pas seulement `--all-features`.
 - Si la tâche touche `rhai`/`hbs`/`hbs-scripting`/`http`/`crypto`/`k8s`/`oci`/`s3` :
   aussi `cargo test --no-default-features --features "hbs crypto"`, et vérifier par
   `cargo tree -e features` que `hbs` seul n'introduit pas `handlebars/script_helper`

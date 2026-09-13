@@ -64,7 +64,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # Harnais clippy porté par Cargo.toml [lints] (strict family + pedantic/cargo en deny,
-      # missing_docs warn). Dette purgée sur toute la crate (tooling.sdd) : escalation en
-      # erreurs via `-D warnings` pour aussi bloquer les warnings rustc hors [lints].
-      - name: cargo clippy --all-features --all-targets
-        run: cargo clippy --all-features --all-targets -- -D warnings
+      # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. La matrice de
+      # features est rejouée ici : les analyses pedantic (pureté de `must_use_candidate`, etc.)
+      # dépendent du graphe de features et un lint peut ne se déclencher que sur une combinaison
+      # (voir ../../tooling.sdd). `set -e` : la première combinaison qui tombe fait échouer le job.
+      - name: cargo clippy (feature matrix)
+        run: |
+          set -e
+          cargo clippy --all-targets -- -D warnings
+          for features in k8s oci s3 k8s,oci,s3; do
+            cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
+          done
+          cargo clippy --all-features --all-targets -- -D warnings

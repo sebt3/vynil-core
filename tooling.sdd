@@ -26,6 +26,10 @@ Must:
   purgée sur toute la crate, et tout nouveau warning du harnais bloque la validation.
   Tolérer la famille panic/unwrap uniquement sous `cfg(test)` via l'exemption portée par
   `src/lib.rs` à la racine du crate.
+  Lancer le harnais sur chaque combinaison de features testée (défaut, chaque `k8s`/`oci`/`s3`
+  isolée, `k8s,oci,s3`, `--all-features`) : les analyses `pedantic` dépendent du graphe de
+  features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
+  uniquement en `--all-features` laisse passer des avertissements.
 
 Must not:
   Accepter un `#[allow(...)]` de lint du harnais dans du code de production sans commentaire
@@ -36,6 +40,11 @@ Scenario: unwrap ajouté dans du code touché
   Given une tâche d'implémentation ajoute un `.unwrap()` sur un Resultat dans du code de production
   When le validateur lance `cargo clippy --all-features --all-targets`
   Then la tâche est rejetée et remonte dans la synthèse du validateur
+
+Scenario: lint visé par une seule combinaison de features
+  Given un lint pedantic que seule la combinaison de features par défaut déclenche
+  When le validateur lance le harnais sur la matrice de features
+  Then la combinaison concernée échoue et la tâche est rejetée
 
 Scenario: exemption en test
   Given un module de test `cfg(test)` utilise `.expect()` abondamment
@@ -50,5 +59,6 @@ Tasks:
   [x] Purger les warnings `missing_docs` (177 pub items non documentés au point de départ).
 
 Done when:
-  `cargo clippy --all-features --all-targets -- -D warnings` sort sans warning, et
+  `cargo clippy -- -D warnings` et `cargo clippy --all-features --all-targets -- -D warnings`
+  trient sans warning, comme chaque entrée de la matrice de features, et
   `cargo +nightly fmt -- --check` passe.

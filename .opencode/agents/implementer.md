@@ -30,7 +30,9 @@ de la spec.
 
 ## Contrat harnais (non négociable, voir tooling.sdd)
 
-- Fichiers que tu touches : `cargo clippy --all-features --all-targets` doit ne remonter
+- Fichiers que tu touches : `cargo clippy --all-features --all-targets` (puis la matrice de
+  features si tes changements sont feature-gated — des lints `pedantic` ne se déclenchent que
+  sur un seul graphe) ne doit remonter
   AUCUN warning imputable à ton nouveau code / ton code modifié (pedantic, cargo, famille
   stricte, missing_docs).
 - Production : jamais `unwrap()` / `expect()` / `panic!` / `todo!` / `unimplemented!` /

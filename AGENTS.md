@@ -53,9 +53,18 @@ cargo test --no-default-features --features k8s       # matrice de features
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
-cargo clippy --all-features --all-targets -- -D warnings   # harnais (zéro warning toléré)
+cargo clippy -- -D warnings                           # harnais default (zéro warning toléré)
+cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
+cargo clippy --no-default-features --features oci --all-targets -- -D warnings
+cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
+cargo clippy --no-default-features --features k8s,oci,s3 --all-targets -- -D warnings
+cargo clippy --all-features --all-targets -- -D warnings
 cargo +nightly fmt -- --check                         # voir rustfmt.toml
 ```
+
+Le harnais clippy doit tourner sur **toutes** ces combinaisons : des lints `pedantic`
+(`must_use_candidate` en premier) dépendent du graphe de features et peuvent ne se déclencher
+que sur l'une d'elles (voir `tooling.sdd`).
 
 Contraintes de features à préserver (voir racine `vyvil-core.sdd`) : `k8s`/`oci`/`s3`/`http`
 impliquent `rhai` (leurs types cœur sont des API Rhai directes) ; `hbs-scripting` doit rester
