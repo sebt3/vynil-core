@@ -1,0 +1,315 @@
+Spec: chrono
+
+Purpose:
+  Fournir aux scripts Rhai des valeurs gelées de l'instant local courant : des
+    @crate::chrono::DateTimeHandler obtenus via la fonction de script `date_now` et mis en
+    forme par la méthode de script `format` à partir d'une chaîne de format strftime de
+    @chrono — fine colle au-dessus de @chrono::Local pour la seule mise en forme, sans
+    parsing, sans conversion de fuseau, sans calcul de durée ni pendant Handlebars.
+
+Owns:
+  ./chrono.rs
+
+References:
+  ./lib.rs — déclare `pub mod chrono;` sans aucune porte `cfg` : le module et son API Rust
+    existent sous toutes les combinaisons de features.
+  ./engine.rs — @Script::new_bare est l'unique appelant de
+    @crate::chrono::chrono_rhai_register et l'appelle sans condition locale : l'enregistrement
+    est donc fait à chaque engine construit puisque ./engine.rs ne compile que sous la feature
+    `rhai`.
+  ../docs/rhai_helpers.md — la doc des helpers Rhai présente la même surface `date_now` +
+    `format` et renvoie à la page strftime de @chrono pour la grille reconnue.
+
+Must:
+  @crate::chrono compile dans toutes les combinaisons de features : sa déclaration
+    `pub mod chrono;` dans ./lib.rs ne porte aucun `#[cfg]`, et les seules portes du fichier
+    sont les `#[cfg(feature = "rhai")]` de @crate::chrono::DateTimeHandler::rhai_format et
+    @crate::chrono::chrono_rhai_register — @crate::chrono::DateTimeHandler, son champ,
+    @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format restent
+    disponibles sous `--no-default-features`.
+  Le nom du module @crate::chrono collide avec la crate externe @chrono : ./chrono.rs ne vise
+    dans ses `use` que la crate externe (@chrono::DateTime, @chrono::Local), ./lib.rs
+    n'introduit aucun `use chrono::` à sa racine, et tout accès Rust au module passe par le
+    chemin complet `crate::chrono::…`, comme le fait ./engine.rs.
+  Seule l'heure locale du système est disponible : @crate::chrono::DateTimeHandler::now
+    capture l'instant par @chrono::Local::now, offset local figé avec lui ; le module n'offre
+    ni conversion de fuseau ni rendu en UTC.
+  @crate::chrono::DateTimeHandler::format ne relit aucune horloge et ne lit aucun état
+    extérieur : seul le contenu du champ public @crate::chrono::DateTimeHandler::date est
+    rendu, si bien qu'une valeur injectée par un consommateur Rust se met en forme comme une
+    valeur venue de @crate::chrono::DateTimeHandler::now.
+  Le rendu est exactement `format!("{}", self.date.format(fmt))` : application directe de la
+    grille strftime de @chrono à l'instant local, sans pré- ni post-traitement du module —
+    aucun trim, aucun changement de casse, aucun repli sur une chaîne par défaut.
+  Le formateur est un `{}` nu : ni largeur ni précision ne sont appliquées, donc aucun
+    padding ni troncature n'est ajouté par ./chrono.rs, et la sortie est la concaténation
+    exacte des items produits par @chrono.
+  Les textes localisés — noms de jours et de mois, AM/PM — sortent dans l'anglais embarqué de
+    @chrono : la feature chrono `unstable-locales` n'est activée nulle part de la crate et le
+    module n'expose aucune sélection de locale.
+  La grille de spécificateurs reconnue est celle de la version de chrono résolue (`0.4.45`
+    dans ./Cargo.lock, plancher `0.4.38` posé par ./Cargo.toml) ; un caractère qu'elle ne
+    reconnaît pas, comme un `%` final sans spec, devient un item d'erreur de @chrono qui fait
+    retourner @std::fmt::Error au `Display` de @chrono::format::DelayedFormat, donc paniquer
+    le `format!` de ./chrono.rs — c'est le seul mode d'échec du module, en appel Rust comme
+    en appel de script.
+  Ni @crate::chrono::DateTimeHandler::format ni @crate::chrono::DateTimeHandler::rhai_format
+    ne retourne de type d'erreur : pas de @crate::Error, pas de @crate::RhaiRes ; aujourd'hui
+    une chaîne de format invalide dans un script n'est donc pas rattrapable par un `try` de
+    script.
+  @crate::chrono::chrono_rhai_register enregistre exactement trois choses sur le
+    @rhai::Engine reçu, et rien d'autre : @rhai::Engine::register_type_with_name du type sous
+    le nom de script `DateTimeHandler`, @rhai::Engine::register_fn de
+    @crate::chrono::DateTimeHandler::now sous le nom de script `date_now` à zéro argument,
+    @rhai::Engine::register_fn de @crate::chrono::DateTimeHandler::rhai_format sous le nom de
+    script `format`, méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne.
+  @crate::chrono::DateTimeHandler::rhai_format garde son récepteur `&mut self` et son
+    paramètre @std::string::String par valeur, signatures imposées par
+    @rhai::Engine::register_fn, et conserve en pair le
+    `#[allow(clippy::needless_pass_by_value)]` et son commentaire de justification d'une
+    ligne citant vyvil-core.sdd (règle de harnais de ../.specdd/bootstrap.project.md).
+  @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format gardent
+    leur `#[must_use]` : leurs deux seules voies utiles passent par la valeur de retour.
+
+Must not:
+  Exposer une création, un parsing ou un calcul de date aux scripts — pas de `date_from_*`,
+    pas de lecture RFC 3339, pas d'arithmétique de durée, pas de changement de fuseau : la
+    fonction de script `date_now` reste l'unique producteur de valeur côté script, et
+    @crate::chrono::DateTimeHandler::now l'unique côté Rust.
+  Publier le champ @crate::chrono::DateTimeHandler::date aux scripts par un accesseur, un
+    mutateur ou un enregistrement de propriété : @chrono::DateTime n'est pas un type de
+    script et le module ne doit le rendre atteignable que par la mise en forme.
+  Enregistrer un pendant Handlebars de `date_now` ou `format`, ou consommer @crate::hbs
+    depuis ce module : ./chrono.rs ne connaît que @rhai::Engine.
+
+Depends on:
+  chrono — @chrono::Local::now, @chrono::DateTime, @chrono::Local et toute la mécanique
+    strftime (items de @chrono::format, @chrono::format::DelayedFormat, texte anglais) ;
+    dépendance non gated de ./Cargo.toml avec `features = ["serde"]` sur les features par
+    défaut — dont `clock`, indispensable à @chrono::Local::now — donc présente dans toutes
+    les combinaisons de features de la crate.
+  rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Engine::register_type_with_name et
+    @rhai::Engine::register_fn, derrière la feature du même nom ; seuls
+    @crate::chrono::DateTimeHandler::rhai_format et @crate::chrono::chrono_rhai_register en
+    dépendent.
+  @derive.Clone — exigé par @rhai::Engine::register_type_with_name pour enregistrer le type ;
+    @derive.Eq, @derive.PartialEq, @derive.Ord, @derive.PartialOrd, @derive.Hash et
+    @derive.Debug ne servent que la face Rust : le module ne câble aucun crochet Rhai
+    d'égalité ou de hachage de type personnalisé et n'enregistre aucune méthode associée.
+
+Exposes:
+  @crate::chrono::DateTimeHandler — structure publique d'un seul champ, type Rhai
+    personnalisé enregistré sous le nom de script `DateTimeHandler`,
+    `#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]`.
+  @crate::chrono::DateTimeHandler::date — champ `pub` de type
+    @chrono::DateTime<@chrono::Local> : instant local et son offset, figés tous deux ;
+    lecture et écriture libres côté Rust, jamais atteignables côté script.
+  @crate::chrono::DateTimeHandler::now — `pub fn now() -> Self` marquée `#[must_use]`,
+    lit l'horloge locale à chaque appel, sans cache.
+  @crate::chrono::DateTimeHandler::format — `pub fn format(&self, fmt: &str) ->`
+    @std::string::String, marquée `#[must_use]`, sans validation préalable de `fmt`.
+  @crate::chrono::DateTimeHandler::rhai_format — liaison Rhai de la méthode précédente,
+    `pub fn rhai_format(&mut self, fmt:` @std::string::String `) ->`
+    @rhai::ImmutableString, présente seulement sous la feature `rhai`.
+  @crate::chrono::chrono_rhai_register — seule fonction `pub` libre du module, sous la
+    feature `rhai` : `pub fn chrono_rhai_register(engine: &mut` @rhai::Engine `)`,
+    enregistreuse du type et de ses deux noms de script.
+  Fonction de script `date_now()` — zéro argument, retourne un
+    @crate::chrono::DateTimeHandler ; aucun constructeur nommé d'après le type
+    n'étant enregistré, `date_now` est l'unique façon d'obtenir une valeur de script.
+  Méthode de script `<DateTimeHandler>.format(fmt)` — une chaîne en argument, retourne une
+    chaîne ; @type_of d'une valeur du handler rendu vaut `DateTimeHandler`.
+
+Accepts:
+  @crate::chrono::DateTimeHandler::now — rien, et ne consulte ni argument, ni variable
+    d'environnement, ni configuration de la crate.
+  @crate::chrono::DateTimeHandler::format — un `&str` de commande de format, accepté tel
+    quel sans validation ni normalisation, chaîne vide comprise ; le contenu est
+    intégralement remis à @chrono.
+  @crate::chrono::DateTimeHandler::rhai_format — exactement une @std::string::String
+    possédée, par valeur ; @rhai ne convertit pas un entier, un booléen ou un autre scalaire
+    en chaîne pour ce paramètre.
+  @crate::chrono::chrono_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant,
+    qu'elle ne lit pas et sur lequel elle n'ajoute que le type `DateTimeHandler`, `date_now`
+    et `format`.
+
+Returns:
+  @crate::chrono::DateTimeHandler::now — un @crate::chrono::DateTimeHandler frais sur
+    l'instant lu, deux appels successifs n'ayant aucune raison de partager la même valeur.
+  @crate::chrono::DateTimeHandler::format — une @std::string::String de la concaténation des
+    items de format appliqués à @crate::chrono::DateTimeHandler::date, jamais d'option ni de
+    @crate::Result.
+  @crate::chrono::DateTimeHandler::rhai_format — un @rhai::ImmutableString portant la même
+    chaîne, vu d'un script comme le type `string`, et jamais un @crate::RhaiRes.
+  @crate::chrono::chrono_rhai_register — `()`.
+
+Raises:
+  @crate::chrono::DateTimeHandler::format et @crate::chrono::DateTimeHandler::rhai_format —
+    un panic de @std::fmt quand @chrono ne sait pas rendre un item du motif : un
+    spécificateur inconnu ou un `%` final font échouer le `Display`, et le `format!` de
+    ./chrono.rs transforme l'erreur en panic au message standard de la bibliothèque (message
+    non verrouillé par cette spec). La sortie partiellement produite avant l'item fautif est
+    perdue, sans valeur de repli ni @crate::Error.
+  @crate::chrono::DateTimeHandler::now — rien.
+  @crate::chrono::chrono_rhai_register — rien : les trois enregistrements ne peuvent
+    échouer.
+
+Handles:
+  Motif de format vide — la chaîne vide, aucun item à rendre, aucune erreur.
+  Motif sans aucun spécificateur — texte restitué à l'identique ; `%n` rend un saut de
+    ligne, `%t` une tabulation, `%%` un unique `%`.
+  Instant d'avant l'epoch — `%s` rend le nombre de secondes signé, négatif, sans padding.
+  Année hors de `0..=9999` — `%Y` rend l'année préfixée de son signe sur cinq
+    caractères minimum (`+12345`, `-0012`) ; les années courantes restent à quatre chiffres
+    et `12` rend `0012`.
+  Sous-secondes — `%+` et `%.f` n'affichent ni point ni chiffres quand la nanoseconde vaut
+    `0`, sinon `3`, `6` ou `9` chiffres selon la précision utile ; `%.3f`, `%.6f` et `%.9f`
+    forcent la largeur avec des zéros.
+  `%+` — rendu RFC 3339 avec l'offset numérique local toujours signé (`+02:00`, `+00:00`) :
+    jamais de `Z`, l'item RFC 3339 de @chrono n'autorisant pas le zulu en mise en forme ;
+    `%s` quant à lui retranche l'offset local et donne bien les secondes depuis l'epoch UTC
+    alors que les champs affichés sont locaux.
+  Changement de fuseau local en cours de vie d'un handler — sans effet sur son rendu : date
+    et offset sont gelés dans @crate::chrono::DateTimeHandler::date.
+  Passage et clonaison d'un handler dans un script — l'instant se copie avec la valeur ;
+    aucun mutateur ni opérateur n'étant enregistré, une valeur de script reste immuable.
+
+Tasks:
+  [ ] Convertir chaque Scenario de cette spec en test Rust passant. Aucun test inline
+    n'existe à ce jour dans ./chrono.rs, et aucun test de la crate n'évoque `date_now`,
+    `format` sur un handler ou @crate::chrono::DateTimeHandler hors ./engine.rs et
+    ./docs/rhai_helpers.md : les vingt-deux Scenario sont à convertir.
+  [?] Trancher le sort d'une chaîne de format invalide appelée depuis un script : le module
+    ne retourne aucun type d'erreur, @std::fmt::Error remonte donc en panic du `format!`,
+    qu'un `try` de script ne rattrape pas ; garder ce comportement, ou convertir l'échec en
+    @crate::RhaiRes, ce qui changerait la signature de
+    @crate::chrono::DateTimeHandler::rhai_format et la face publique du type.
+
+Scenario: rendu local d'un motif valide
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date est une
+    @chrono::DateTime<@chrono::Local> construite sur l'heure locale `2024-05-06 07:08:09`, sans nanoseconde
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%Y-%m-%d %H:%M:%S`
+  Then `2024-05-06 07:08:09` est retourné
+
+Scenario: le champ date est l'unique source du rendu
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date porte l'heure locale `2024-05-06 07:08:09`
+  When @crate::chrono::DateTimeHandler::format avec `%Y-%m-%d` est appelé deux fois de suite
+  Then les deux appels retournent `2024-05-06`, aucune horloge n'étant relue
+  And après remplacement de @crate::chrono::DateTimeHandler::date par l'heure locale `2025-01-02 03:04:05`, le même appel retourne `2025-01-02`
+
+Scenario: motif de format vide
+  Given un @crate::chrono::DateTimeHandler sur n'importe quel instant
+  When @crate::chrono::DateTimeHandler::format est appelé avec `""`
+  Then `""` est retourné, sans panic
+
+Scenario: littéraux, pourcentage, saut de ligne et tabulation
+  Given un @crate::chrono::DateTimeHandler sur n'importe quel instant
+  When @crate::chrono::DateTimeHandler::format est appelé avec `release/v1/`
+  Then `release/v1/` est retourné tel quel
+  And le même appel avec `%%` retourne `%`
+  And le même appel avec `%n%t` retourne un saut de ligne suivi d'une tabulation
+
+Scenario: spécificateur inconnu, panic côté Rust
+  Given un @crate::chrono::DateTimeHandler sur n'importe quel instant
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%Q`
+  Then un panic de @std::fmt est émis
+  And aucune chaîne n'est retournée, ni vide ni le motif brut
+
+Scenario: pourcentage final, panic sans sortie de secours
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date porte l'heure locale `2024-05-06 07:08:09`
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%Y-%m-%d %`
+  Then un panic de @std::fmt est émis
+  But aucune chaîne débutant par `2024-05-06 ` n'est produite, la sortie partielle étant perdue
+
+Scenario: secondes epoch réelles derrière l'affichage local
+  Given un @crate::chrono::DateTimeHandler sur un instant local quelconque, offset local inclus
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%s`
+  Then la chaîne retournée est la représentation décimale de @chrono::DateTime::timestamp de l'instant, et non le compte des secondes locales recomptées sans son offset
+
+Scenario: instant d'avant l'epoch, secondes signées
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date est construite à `-1` seconde de l'epoch
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%s`
+  Then `-1` est retourné, sans padding ni zéros
+
+Scenario: année hors du millénaire courant
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date porte l'année locale `+12345`
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%Y`
+  Then `+12345` est retourné
+  But l'année locale `12` rendue par le même motif donne `0012`, comblée à quatre chiffres
+
+Scenario: rendu RFC 3339 et sous-secondes
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date porte l'heure locale `2024-05-06 07:08:09` sans nanoseconde
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%+`
+  Then `2024-05-06T07:08:09` suivi de l'offset local signé sous la forme `+hh:mm`, `Z` n'apparaissant jamais
+  And avec `4000000` nanosecondes, la même commande rend la seconde suivie de `.004`
+  And avec `123456789` nanosecondes, elle rend la seconde suivie de `.123456789`
+  And la commande `%.3f` sur l'instant sans nanoseconde rend `.000`
+
+Scenario: noms anglais et AM/PM sans locale configurable
+  Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date porte l'heure locale du lundi `2024-05-06 07:08:09`
+  When @crate::chrono::DateTimeHandler::format est appelé avec `%A|%a|%B|%b|%p|%r`
+  Then `Monday|Mon|May|May|AM|07:08:09 AM` est retourné
+  And aucune API du module ne permet de choisir une autre langue
+
+Scenario: now gèle l'instant et relit l'horloge
+  Given un premier @crate::chrono::DateTimeHandler produit par @crate::chrono::DateTimeHandler::now
+  When un second appel de @crate::chrono::DateTimeHandler::now est effectué après une activité
+  Then la date du second handler est postérieure ou égale à celle du premier, aucun singleton n'étant mis en cache
+  And le premier handler, mis en forme deux fois avec la même commande, rend deux fois la même chaîne
+
+Scenario: API Rust vivante sans la feature rhai
+  Given la crate compilée avec `--no-default-features`
+  When la surface publique de @crate::chrono est inspectée
+  Then @crate::chrono::DateTimeHandler, @crate::chrono::DateTimeHandler::date, @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format compilent et s'appellent depuis leur module
+  But @crate::chrono::chrono_rhai_register et @crate::chrono::DateTimeHandler::rhai_format n'existent pas
+
+Scenario: le type rendu par date_now est nommé
+  Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  When un script évalue `type_of(date_now())`
+  Then `DateTimeHandler` est retourné
+
+Scenario: la date courante formatée depuis un script
+  Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  When un script évalue `let d = date_now(); d.format("%Y")`
+  Then la chaîne retournée est une année à quatre chiffres, identique à celle que rend la même commande appliquée en Rust au @crate::chrono::DateTimeHandler rendu par @crate::chrono::DateTimeHandler::now
+
+Scenario: un handler construit en Rust se met en forme depuis un script
+  Given un @crate::chrono::DateTimeHandler injecté dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register, avec l'heure locale `2024-05-06 07:08:09` sans nanoseconde
+  When un script évalue `d.format("%Y-%m-%d %H:%M:%S")` sur cette variable
+  Then `2024-05-06 07:08:09` est retourné
+
+Scenario: le champ date n'est pas accessible depuis un script
+  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  When un script évalue `d.date`
+  Then l'évaluation échoue en erreur de propriété inconnue
+  And aucune erreur de ce type ne viendrait d'un panic : @crate::chrono::DateTimeHandler::format n'est jamais appelée sur ce chemin
+
+Scenario: la méthode format ne s'applique qu'aux handlers
+  Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  When un script évalue `"2024-05-06".format("%Y")`
+  Then l'évaluation échoue en erreur de fonction inconnue, aucune fonction globale `format` n'ayant été créée pour les chaînes
+  But `d.format("%Y")` sur une variable de type @crate::chrono::DateTimeHandler réussit
+
+Scenario: un argument non chaîne n'est pas converti
+  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  When un script évalue `d.format(2024)`
+  Then l'évaluation échoue en erreur de fonction inconnue, aucune coercition scalaire vers @std::string::String n'existant pour cette méthode
+  And `d.format()` sans argument échoue de même
+
+Scenario: sans enregistrement, date_now est inconnue
+  Given un @rhai::Engine fraîchement créé, sans appel de @crate::chrono::chrono_rhai_register
+  When un script évalue `date_now().format("%Y")`
+  Then l'évaluation échoue en erreur de fonction inconnue
+  And ce refus vient du non-enregistrement, pas du module : @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format ne lèvent rien
+
+Scenario: new_bare fournit date_now et format
+  Given un @rhai::Engine construit par @Script::new_bare avec un chemin de résolution vide
+  When un script évalue `let d = date_now(); d.format("%Y-%m-%d")`
+  Then une chaîne de dix caractères de la forme `YYYY-MM-DD` est retournée
+  And le type de `d` vu par `type_of` reste `DateTimeHandler`
+
+Scenario: un motif invalide dans un script panique au lieu de devenir une erreur
+  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  When un script évalue `try { d.format("%Q") } catch (e) { "rattrape" }`
+  Then le panic de @std::fmt traverse l'évaluation au lieu d'entrer dans le bloc `catch`
+  And l'évaluation n'est rattrapable que par @std::panic::catch_unwind côté Rust, jamais par une erreur @rhai
