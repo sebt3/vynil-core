@@ -1,0 +1,396 @@
+Spec: shell
+
+Purpose:
+  Fournir à la crate et à ses scripts Rhai l'exécution de commandes shell interprétées par
+    `sh -c`, dans la limite exacte de @std::process : deux portes Rust @crate::shell::run et
+    @crate::shell::get_out qui ne diffèrent que par le sort des flux — hérités du terminal pour
+    l'une, capturés dans @std::process::Output pour l'autre — et deux noms de script `shell_run`
+    et `shell_output` branchés par @crate::shell::shell_rhai_register, collés sans logique
+    ajoutée sur @crate::shell::rhai_run et @crate::shell::rhai_get_stdout. La feature cargo
+    `shell`, éteinte par défaut et ne faisant dériver ni `rhai` ni aucune dépendance, rend la
+    capacité explicitement opt-in à la compilation ; l'exécution elle-même est sans limite, sans
+    timeout et sans bac à sable, l'échappement appartenant intégralement à `sh`, ce qui fait du
+    module la porte d'exécution de commandes assumée de la crate.
+
+Owns:
+  ./shell.rs
+
+References:
+  ./lib.rs — déclare `pub mod shell;` sous `#[cfg(feature = "shell")]` avec son
+    `#[cfg_attr(docsrs, doc(cfg(feature = "shell")))]` et ne réexporte aucun item du module : il
+    s'atteint par @crate::shell. Les trois variantes d'@crate::Error traversées sont toutes non
+    gated : @crate::Error::Stdio `#[error("Stdio error {0}")]` avec `#[from]` de
+    @std::io::Error, @crate::Error::UTF8 `#[error("UTF8 error {0}")]` avec `#[from]` de
+    @std::string::FromUtf8Error et @crate::Error::Other `#[error("Error: {0}")]`. La table de
+    features de la rustdoc racine présente `shell` par « `shell::run` / `shell::get_out` + Rhai
+    `shell_run` » et oublie `shell_output`, point ouvert en `Tasks`.
+  ./engine.rs — ./engine.rs n'existe que sous `rhai` ; son import et son appel de
+    @crate::shell::shell_rhai_register dans @Script::new_bare sont gated `shell` seuls, placés
+    après @crate::oci::oci_rhai_register et avant @Script::add_common — la condition effective
+    du câblage automatique est donc `shell` + `rhai`, ./engine.rs étant l'unique appelant du
+    registre. Nulle part ailleurs `shell_run` ou `shell_output` n'est mentionné hors rustdoc.
+  ./Cargo.toml — la feature est `shell = []` : elle ne fait dériver aucune autre feature ni
+    dépendance optionnelle, et son commentaire confirme que la face Rust `run`/`get_out` est
+    seule disponible sous `shell` nu alors que les liaisons `shell_run` et `shell_output`
+    exigent `rhai` en plus.
+  ./hbs.rs — aucun helper Handlebars `shell_*` n'existe : ./hbs.rs n'importe ni n'appelle rien
+    de @crate::shell ; ./README.md liste `shell` éteinte, sans dépendance, sans helper
+    Handlebars, sans un mot sur les risques d'exécution.
+  ../docs/rhai_helpers.md — section 10 : `shell_run(command: string)` rend un `int` avec flux
+    hérités, `shell_output(command: string)` rend une `string` et « errors if the exit code is
+    non-zero or if anything was written to stderr (even on exit 0) ». La doc ne dit rien du `sh`
+    littéral non débranché par plateforme, ni du code `0` rendu sur mort par signal, points
+    ouverts en `Tasks`.
+
+Must:
+  La table des portes est exactement : @crate::shell::run et @crate::shell::get_out sous
+    `shell` seule ; @crate::shell::rhai_run, @crate::shell::rhai_get_stdout et
+    @crate::shell::shell_rhai_register sous `shell` et `rhai` cumulés — module gated `shell`,
+    items gated `rhai` ; @Script::new_bare ne câble le registre que sous `shell`, ./engine.rs
+    étant déjà conditionné par `rhai`. ./Cargo.toml `shell = []` ne fait dériver aucune de ces
+    features d'aucune autre.
+  @crate::shell::run comme @crate::shell::get_out lancent @std::process::Command::new du
+    programme littéral `sh`, avec l'argument littéral `-c` puis la commande dans son unique
+    passage comme unique opérande d'interprétation ; aucun @std::process::Command::current_dir,
+    aucun @std::process::Command::env ni @std::process::Command::env_clear n'est appelé : le
+    fils hérite de l'environnement et du répertoire courant du père. Aucun `#[cfg(target_os)]`
+    n'existe dans ./shell.rs : `sh` est en dur sur toutes les plateformes, sans branche windows.
+  Les deux portes Rust bloquent le thread appelant jusqu'à la terminaison du fils par
+    @std::process::Command::output : aucun paramètre de timeout, d'arrêt anticipé ni
+    d'exécution asynchrone n'existe, et les deux noms de script bloquent l'évaluation de la même
+    façon.
+  @crate::shell::run pose @std::process::Stdio::inherit sur stdout et stderr : les octets du
+    fils partent directement dans les deux flux du processus père, si bien que l'@std::process::Output
+    rendu a toujours ses tableaux `stdout` et `stderr` vides et que son seul champ exploitable
+    est le status ; stdin y est le null posé par @std::process::Command::output : le fils qui
+    lit reçoit une fin immédiate.
+  @crate::shell::get_out pose @std::process::Stdio::piped sur stdout et stderr : les deux flux
+    sont capturés dans les tableaux de @std::process::Output et rien n'atteint le terminal du
+    père ; stdin y est fermé comme dans @crate::shell::run. Le delta entre les deux fonctions
+    est exactement ce inherit contre piped : programme, arguments, stdin, sémantique de status
+    et mapping d'erreur sont identiques corps pour corps.
+  Le code de sortie n'est jamais une erreur pour la face Rust : @std::process::Command::output
+    rend un @std::result::Result::Ok quel que soit le status, et la seule voie d'@crate::Error
+    des deux fonctions est le @std::result::Result::map_err en @crate::Error::Stdio sur l'échec
+    de lancement ou de lecture des pipes.
+  @crate::shell::rhai_run propage d'abord l'échec de lancement par @crate::rhai_err, puis rend
+    l'entier du @std::process::ExitStatus::code élargi de @std::primitive::i32 vers
+    @std::primitive::i64 par @std::convert::From::from, avec `0` quand le code n'est pas
+    numérique — donc la mort par signal unix, @std::option::Option::None, est rendue `0`, un
+    succès apparent que sa rustdoc assume noir sur blanc ; aucun code non nul ne produit
+    d'erreur @crate::RhaiRes ici.
+  @crate::shell::rhai_get_stdout évalue strictement dans cet ordre : échec de lancement
+    propagé en @crate::RhaiRes par @crate::rhai_err ; status non successful produit
+    @crate::Error::Other de contenu `Command failed, rc=<n>` où `<n>` est le
+    @std::process::ExitStatus::code rendu sans formatage, replace par `-1` quand aucun code
+    numérique n'existe ; sinon stderr non vide produit d'abord une conversion
+    @std::string::String::from_utf8 STRICTE du stderr — un @std::string::FromUtf8Error remonté
+    en @crate::Error::UTF8 — puis @tracing::warn! du champ `err` sans message, puis
+    @crate::Error::Other de contenu `Command had stderr : <stderr>` avec la stderr interpolée
+    brute, nouvelle de fin comprise ; sinon conversion stricte du stdout, @crate::Error::UTF8 en
+    cas d'octets invalides, sinon @std::result::Result::Ok de la stdout seule, sans rognage. Un
+    code non nul masque donc la branche stderr, et à code nul un unique octet de stderr suffit
+    à faire échouer l'appel.
+  @crate::shell::shell_rhai_register n'ajoute sur l'@rhai::Engine reçu que deux enregistrements
+    unaires sur un `string` : `shell_run` branché sur @crate::shell::rhai_run et `shell_output`
+    branché sur @crate::shell::rhai_get_stdout — le nom de script `shell_output` ne correspond
+    au nom d'aucune fonction Rust du module, seule indirection à connaître. L'engine n'est pas
+    lu autrement, un double appel ne casse rien.
+  Le module est sans état propre : aucune globale, aucun cache, aucune lecture d'environnement ;
+    les appels sont réentrants et appelables de plusieurs threads, sans interaction avec
+    l'identité client de ./client_name.rs.
+  Seuils de harnais : aucun `unsafe`, aucun @std::result::Result::unwrap,
+    @std::option::Option::expect, @std::panic, @std::todo ni @std::unimplemented — les deux
+    `unwrap_or` des lignes 35 et 66 ne sont pas des lints du harnais ; les cinq items publics
+    portent leur rustdoc, quatre avec une section `# Errors` nommant les variantes traversées ;
+    aucun `#[must_use]` n'apparaît dans ./shell.rs.
+
+Must not:
+  Traiter un code de sortie non nul comme une erreur de @crate::shell::run, de
+    @crate::shell::get_out ou de @crate::shell::rhai_run : le seul contrôle de
+    @std::process::ExitStatus::success du module est celui de @crate::shell::rhai_get_stdout.
+  Considérer comme succès, sous `shell_output`, une sortie à code `0` qui a écrit sur stderr :
+    le @tracing::warn n'y est pas cosmétique, il précède l'erreur @crate::Error::Other, et le
+    stdout déjà capturé n'est pas rendu.
+  Faire figurer le stdout, le stderr ou la commande dans le message `Command failed, rc=<n>` :
+    les deux flux capturés par @crate::shell::get_out à ce stade sont perdus pour le script,
+    seule la valeur du rc passe — point ouvert en `Tasks`.
+  Enregistrer un troisième nom, un alias (`shell`, `run`, `sh`) ou une arité autre qu'un unique
+    `string`, ni exposer une variante Rust échappée ou typée des commandes.
+  Servir un helper Handlebars depuis ce module ou consommer @crate::hbs : la surface est Rust
+    et Rhai uniquement ; ./hbs.rs ignorerait ce module et ne l'appelle pas aujourd'hui.
+  Remplacer `sh` par un autre interpréteur, ajouter une branche `#[cfg(target_os = "windows")]`
+    `cmd /C`, ou pré-échapper les guillemets de la commande : l'opérande reste opaque et
+    l'interprétation entièrement déléguée à `sh`.
+  Exposer un timeout, un kill, un répertoire courant, un environnement ou un stdin injectables :
+    l'appelant ne contrôle rien au-delà de la chaîne de commande.
+
+Depends on:
+  @std::process — @std::process::Command, @std::process::Output, @std::process::Stdio,
+    @std::process::ExitStatus : tout le moteur d'exécution, sans aucune dépendance de crate ;
+    ./Cargo.toml `shell = []` et les imports non gated du module le confirment. Les
+    comportements empruntés à @std::process::Command::output — stdin null, attente de
+    terminaison, captures de pipes — appartiennent à la bibliothèque standard.
+  @crate::Error et @crate::Result — sans condition ; @crate::RhaiRes, @crate::rhai_err et sa
+    @crate::error_chain qui plie la chaîne de @core::error::Error::source dans le texte Rhai —
+    sous `rhai`.
+  tracing — @tracing::warn! du champ `err` ; dépendance non optionnelle (`tracing = "0.1.37"`,
+    verrouillée `0.1.44` dans ./Cargo.lock), indépendante de la feature `shell`.
+  rhai — @rhai::Engine et @rhai::Engine::register_fn derrière la feature du même nom, verrouillée
+    `1.25.1` ; la feature `shell` ne la fait pas dériver, d'où la double porte des items.
+
+Exposes:
+  @crate::shell::run — signature `pub fn run(command: @std::string::String) -> @crate::Result<@std::process::Output>`,
+    porte `shell` seule, appelable sous `--no-default-features --features shell`, sans
+    `#[must_use]`.
+  @crate::shell::get_out — signature `pub fn get_out(command: @std::string::String) -> @crate::Result<@std::process::Output>`,
+    porte `shell` seule, sans `#[must_use]`.
+  @crate::shell::rhai_run — signature `pub fn rhai_run(command: @std::string::String) -> @crate::RhaiRes<@std::primitive::i64>`,
+    porte `shell` puis `rhai` ; présenté aux scripts sous le seul nom `shell_run`.
+  @crate::shell::rhai_get_stdout — signature `pub fn rhai_get_stdout(command: @std::string::String) -> @crate::RhaiRes<@std::string::String>`,
+    mêmes portes ; présenté aux scripts sous le seul nom `shell_output`.
+  @crate::shell::shell_rhai_register — signature `pub fn shell_rhai_register(engine: &mut @rhai::Engine)`,
+    mêmes portes, unique câblage automatique de ./engine.rs.
+  Rien de plus : aucun type, aucune constante, aucune réexportation à la racine de la crate.
+
+Accepts:
+  @crate::shell::run et @crate::shell::get_out — un @std::string::String par valeur, contenu
+    opaque transmis intégralement comme unique opérande de `sh -c` ; la chaîne vide est acceptée
+    et n'est jamais vidée ni pré-interprétée par le module.
+  `shell_run` et `shell_output` — exactement un `string`, reçu sous les formes que @rhai accepte
+    pour une signature @std::string::String ; un entier, un booléen, un flottant, un tableau ou
+    une @rhai::Map en cette position reste fonction inconnue, ./shell.rs ne coerce rien.
+  @crate::shell::shell_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant, appelé
+    zéro, une ou plusieurs fois, y compris avant ou après d'autres registres.
+
+Returns:
+  @crate::shell::run — un @std::result::Result::Ok d'un @std::process::Output dont `stdout` et
+    `stderr` sont des tableaux vides à chaque succès, les octets étant allés au terminal, status
+    fidèle y compris non nul ; @crate::shell::run ne rend jamais un Ok au contenu de flux non
+    vide.
+  @crate::shell::get_out — un @std::result::Result::Ok portant les deux flux capturés tels
+    quels, nouvelle de fin et octets binaires compris, le status non nul restant un
+    @std::result::Result::Ok.
+  @crate::shell::rhai_run — un @std::primitive::i64, rendu `int` par les scripts : le code
+    d'exit transposé, ou `0` quand aucun code numérique n'existe, y compris sous signal.
+  @crate::shell::rhai_get_stdout — un @std::string::String de la stdout seule, sans rognage,
+    vide quand le fils n'a rien écrit sur stdout, jamais un mélange des deux flux.
+  @crate::shell::shell_rhai_register — `()`.
+
+Raises:
+  @crate::shell::run et @crate::shell::get_out — @crate::Error::Stdio, unique erreur possible,
+    quand le programme `sh` ne se lance pas — absent du PATH sous unix, ou fork épuisé — ou
+    quand la lecture des pipes échoue ; son @std::fmt::Display commence par `Stdio error ` suivi
+    du message de @std::io::Error (sous linux typiquement
+    `No such file or directory (os error 2)`), seconde moitié runtime non verrouillée. Aucun
+    code de sortie, même `1`, `2` ou `127`, ne lève quoi que ce soit ici.
+  @crate::shell::rhai_run — une erreur @crate::RhaiRes portant le même texte
+    `Stdio error <message runtime>` via @crate::rhai_err, @crate::error_chain pliant un
+    @std::io::Error source déjà énoncé verbatim ; jamais d'erreur sur le code lui-même.
+  @crate::shell::rhai_get_stdout — le @crate::Error::Stdio ci-dessus par le même chemin ;
+    @crate::Error::Other dont l'affichage est exactement `Error: Command failed, rc=<n>`, avec
+    le code numérique rendu tel quel ou `-1` sous signal ; @crate::Error::Other dont l'affichage
+    commence par `Error: Command had stderr : ` suivi du stderr reconstruit tel quel, nouvelle
+    de fin incluse ; @crate::Error::UTF8 dont l'affichage commence par `UTF8 error ` — suite
+    portée par @std::string::FromUtf8Error, non verrouillée — quand le stderr du cas « exit 0
+    avec stderr » ou le stdout du cas de succès n'est pas UTF-8 strict.
+  @crate::shell::shell_rhai_register — rien : les deux @rhai::Engine::register_fn sont
+    infaillibles.
+
+Handles:
+  Code numérique absent sous signal unix — @crate::shell::rhai_run rend `0`, succès apparent
+    documenté par sa rustdoc, tandis que @crate::shell::rhai_get_stdout échoue en
+    `Error: Command failed, rc=-1` : la même mort de fils produit deux verdicts opposés,
+    asymétrie figée telle quelle et ouverte en `Tasks`.
+  Commande vide et fils qui lit stdin — `sh -c ''` sort `0` ; `cat` rendu sans blocage par le
+    stdin null : les deux cas retournent un succès muet plutôt qu'une erreur.
+  stderr sur sortie nulle — un avertissement écrit sur stderr sans échec du programme est une
+    erreur pour `shell_output` : @tracing::warn! du champ `err` puis refus en
+    @crate::Error::Other ; le stdout capturé n'est pas perdu en silence mais n'est pas restitué.
+  Octets non UTF-8 — refus strict en @crate::Error::UTF8, sans repli perteux, que l'octet
+    invalide soit dans le stdout du cas de succès ou dans le stderr du cas « exit 0 avec
+    stderr », l'ordre des branches donnant l'erreur @crate::Error::UTF8 avant le message
+    `Command had stderr : `.
+  Citations, pipes, redirections, variables — la chaîne partant telle quelle chez `sh`, tout le
+    langage du shell est effectif : `echo a | tr a b`, `>&2`, `$$`, `$VAR` sont interprétés par
+    le fils, non par ./shell.rs.
+  Combinaisons de portes — `shell` sans `rhai` : face Rust seule, ni glue ni ./engine.rs ;
+    `rhai` sans `shell` : ./engine.rs compile, import et appel gated, aucun des deux noms
+    n'existe sur les engines ; double feature : câblage complet par @Script::new_bare.
+  Plateforme inactive — la branche windows n'existe pas : sous windows le lancement de `sh`
+    échoue en @crate::Error::Stdio sauf `sh` présent sur le PATH, et le harnais CI linux ne peut
+    pas l'exécuter — comportement consigné comme non testable.
+
+Tasks:
+  [ ] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous
+    `#[cfg(test)]` de ./shell.rs, plus les appels de script sur un @rhai::Engine local
+    enregistré par @crate::shell::shell_rhai_register et @Script::new_bare pour le Scenario de
+    câblage ; les Scenario `cargo check` relèvent de la batterie de features. Inventaire réel :
+    ./shell.rs ne contient AUCUN `#[cfg(test)]`, le repo n'a aucun répertoire ./tests/, et hors
+    rustdoc de ./lib.rs ni @crate::shell::run, @crate::shell::get_out, `shell_run` ni
+    `shell_output` n'apparaissent dans aucun test — tout est sans test, y compris la table des
+    portes. Le Scenario de lancement impossible exige un vidage de `PATH` global au processus :
+    test à isoler en série à part, friction connue à écrire dans le test même.
+  [?] Trancher l'asymétrie du signal : @crate::shell::rhai_run, par son `unwrap_or(0)` de la
+    ligne 35, rendu documenté « `0` when not a numeric exit status », rend la mort par signal
+    identique à un succès `0`, tandis que @crate::shell::rhai_get_stdout, `unwrap_or(-1)` ligne
+    66, la rend en échec `rc=-1`. Garder les deux verdicts, les unifier, ou adopter la
+    convention shell `128 + signal`.
+  [?] Trancher l'avale des flux sur échec : le message `Command failed, rc=<n>` ne contient ni
+    la commande, ni le stdout, ni le stderr capturés — pourtant en mémoire à cette ligne —
+    tandis que la branche stderr d'à côté incruste bien son contenu. Incorporer un extrait de
+    stderr, voire de stdout, au message d'échec, ou assumer la perte et la figer en `Must not`.
+  [?] Trancher `sh` en dur sans `#[cfg(target_os)]` : sous windows l'appel échoue en
+    @crate::Error::Stdio sauf `sh` sur le PATH, alors que ../docs/rhai_helpers.md ne dit aucune
+    restriction de plateforme et que le harnais CI linux ne peut tester la branche. Assumer
+    unix-only et le dire en doc, ou introduire une branche `cmd /C`.
+  [?] Trancher l'UTF-8 strict : @crate::shell::rhai_get_stdout refuse la sortie binaire en
+    @crate::Error::UTF8 sur les deux flux ; un @std::string::String::from_utf8_lossy rendrait la
+    main au script — rigueur actuelle ou repli perteux.
+  [?] Trancher le statut de porte d'exécution de commandes : @crate::shell::run et
+    @crate::shell::get_out sont l'API publique d'une crate publiée, exécutables sans whitelist,
+    timeout ni bac à sable dès la feature activée à la compilation, sans documentation de risque
+    au-delà de « Shell command execution » dans ./README.md. Documenter le risque dans la doc de
+    crate, ou le considérer couvert par l'opt-in cargo.
+  [?] Compléter les textes qui sous-déclarent la surface : la table de features de ./lib.rs
+    omet `shell_output` alors que sa liste des aides script le cite, et la section 10 de
+    ../docs/rhai_helpers.md tait le `0` rendu sur signal par `shell_run` — corriger les deux
+    textes ou figer ce niveau de détail.
+  [?] Décider si la batterie de l'AGENTS.md ajoute des combinaisons propres à `shell` :
+    `--no-default-features --features shell` et `--no-default-features --features rhai,shell` y
+    sont absentes, contrairement aux combinaisons k8s/oci/s3 ; ./shell.rs n'est donc compilé
+    hors `--all-features` par aucune commande, et ses futurs tests ne tourneraient qu'en graphe
+    complet.
+
+Scenario: la table des portes compile la face Rust sans rhai et le câblage sous rhai plus shell
+  Given la crate compilée par `cargo check --no-default-features`
+  Then @crate::shell n'existe pas et ./engine.rs non plus
+  When la crate est compilée par `cargo check --no-default-features --features shell`
+  Then @crate::shell::run et @crate::shell::get_out compilent sans aucune dépendance @rhai dans
+    le graphe, et ni @crate::shell::rhai_run, @crate::shell::rhai_get_stdout ni
+    @crate::shell::shell_rhai_register n'existe
+  When la crate est compilée par `cargo check --no-default-features --features rhai,shell`
+  Then les cinq items compilent et @Script::new_bare câble le registre
+  But dans les graphes sans `shell`, @crate::shell est absent et un @Script::new_bare ignore les
+    deux noms, `shell = []` ne faisant dériver aucune feature
+
+Scenario: run branche les flux sur le terminal et ne capture rien
+  Given la feature `shell` activée sans `rhai`
+  When @crate::shell::run est appelée avec `echo sortie && echo alerte >&2`
+  Then un @std::result::Result::Ok est rendu
+  And les tableaux stdout et stderr de l'@std::process::Output sont tous deux vides, les octets
+    étant passés directement dans les flux du père
+  And @std::process::ExitStatus::success du status rendu vaut @std::primitive::bool::true
+  When elle est appelée avec `exit 5`
+  Then le rendu est encore @std::result::Result::Ok, status non successful dont le code est
+    @std::option::Option::Some de valeur `5`, aucune @crate::Error n'étant produite pour un code
+    de sortie
+  When elle est appelée avec `cat`
+  Then l'appel revient sans blocage, le fils recevant une fin immédiate sur son stdin null
+
+Scenario: get_out capture les deux flux et le code non nul reste un succès
+  Given la feature `shell` activée sans `rhai`
+  When @crate::shell::get_out est appelée avec `echo sortie && echo alerte >&2`
+  Then un @std::result::Result::Ok est rendu dont stdout vaut exactement `sortie` suivi d'une
+    nouvelle de ligne et stderr `alerte` suivi d'une nouvelle de ligne
+  And rien de ces deux textes n'atteint le terminal du père, contrairement à @crate::shell::run
+  When elle est appelée avec `exit 3`
+  Then le rendu est un @std::result::Result::Ok de code `3` et de deux tableaux vides
+
+Scenario: l'appel attend la terminaison du fils
+  Given un fichier de test absent au départ
+  When @crate::shell::run est appelée avec un `sleep` court suivi de `touch` de ce chemin
+  Then au retour de l'appel le fichier existe déjà : @std::process::Command::output a attendu la
+    fin du fils avant de rendre
+  And de même @crate::shell::get_out rend sa sortie après la temporisation, sans qu'aucun
+    timeout, kill ou repli asynchrone n'existe à passer
+
+Scenario: la commande vide et le fils muet sont des succès nuls
+  Given la double feature `rhai` et `shell`
+  When @crate::shell::run et @crate::shell::get_out sont appelées avec la chaîne vide
+  Then les deux rendent un @std::result::Result::Ok de code `0`, `sh -c ''` étant un no-op valide
+  When sur un engine enregistré un script évalue `shell_run("")` puis `shell_output("")`
+  Then le premier rend l'entier `0` et le second la chaîne vide
+
+Scenario: shell_run rend le code de sortie comme int
+  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  When un script évalue `shell_run("true")`
+  Then l'évaluation réussit, `type_of` rend `int`, et la valeur est `0`
+  When un script évalue `shell_run("exit 3")`
+  Then l'évaluation réussit et rend `3`, @crate::shell::rhai_run ne jugeant jamais le code : le
+    script doit le comparer lui-même
+  When un script évalue `shell_run("echo x")`
+  Then le rendu est `0` bien que la commande ait écrit, le stdout hérité étant étranger au code
+
+Scenario: la mort par signal rend 0 côté shell_run et rc=-1 côté shell_output
+  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register, sous unix
+  When un script évalue `shell_run("kill -TERM $$")`
+  Then l'évaluation réussit et rend `0`, @std::process::ExitStatus::code ayant rendu
+    @std::option::Option::None sous signal — le script ne peut distinguer ce succès d'un vrai
+    `0`, asymétrie ouverte en `Tasks`
+  When un script évalue `shell_output("kill -TERM $$")`
+  Then l'évaluation échoue en une @crate::RhaiRes portant exactement
+    `Error: Command failed, rc=-1`
+  But le harnais CI linux ne peut rien exécuter de l'autre côté : la branche windows, absente du
+    code, y demeure non testable par construction
+
+Scenario: shell_output rend la stdout seule, non rognée
+  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  When un script évalue `shell_output("printf 'ligne1\nligne2\n'")`
+  Then l'évaluation réussit, `type_of` rend `string`, et la valeur est `ligne1` suivi d'une
+    nouvelle puis `ligne2` suivi d'une nouvelle, sans aucun rognage de bord
+  And sur tout succès aucune stderr n'a été écrite : toute stderr non vide passe par la branche
+    d'erreur préalable
+
+Scenario: shell_output échoue sur tout code non nul avec son rc rendu
+  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  When un script évalue `shell_output("echo sortie && echo alerte >&2 && exit 2")`
+  Then @crate::shell::rhai_get_stdout a bien appelé @crate::shell::get_out mais juge sur le
+    status : l'évaluation échoue, rattrapable par un `try` de script
+  And le texte porté par l'@rhai::EvalAltResult est exactement `Error: Command failed, rc=2`,
+    préfixe `Error: ` de @crate::Error::Other inclus
+  But le stdout `sortie` et le stderr `alerte`, capturés en mémoire à ce moment, n'apparaissent
+    nulle part dans ce message
+
+Scenario: un filet de stderr sur sortie 0 est une erreur qui s'annonce
+  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  When un script évalue `shell_output("echo sortie && echo alerte >&2")`
+  Then l'évaluation échoue alors que le fils a réussi, portée par
+    `Error: Command had stderr : alerte` suivi de la nouvelle de ligne capturée
+  And avant le retour, un évènement @tracing::warn sans message, porteur du seul champ `err` de
+    ce contenu, a été remis au subscriber
+  And le stdout `sortie` capturé n'est pas restitué au script
+
+Scenario: la sortie non UTF-8 est refusée, pas assouplie
+  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  When un script évalue `shell_output("printf '\377'")`
+  Then l'évaluation échoue en @crate::Error::UTF8 dont l'affichage commence par `UTF8 error `, la
+    suite étant le texte de @std::string::FromUtf8Error, porté par la runtime et non verrouillé
+  When un script évalue `shell_output("printf '\377' >&2")`
+  Then l'évaluation échoue du même @crate::Error::UTF8, la branche stderr étant convertie en
+    strict avant le message `Command had stderr`, jamais atteint sur octet invalide
+  But @crate::shell::rhai_get_stdout n'emploie jamais de conversion perteuse
+
+Scenario: sh introuvable remonte Stdio error sur les deux faces
+  Given un test isolé qui vide le `PATH` du processus le temps de l'appel, rendant `sh` introuvable
+  When @crate::shell::run est appelée avec `echo`
+  Then un @crate::Error::Stdio est rendu, dont l'affichage commence par `Stdio error ` suivi du
+    message de @std::io::Error, sous linux typiquement `No such file or directory (os error 2)`,
+    texte runtime non verrouillé
+  When `shell_run("echo")` et `shell_output("echo")` sont évalués sur un engine enregistré
+  Then les deux échouent en @crate::RhaiRes portant ce même texte, @crate::error_chain n'y
+    ajoutant rien : le @std::io::Error source est déjà énoncé en entier
+  And @crate::shell::get_out, appelée dans les mêmes conditions, lève le même @crate::Error::Stdio
+
+Scenario: new_bare ne livre que deux noms, et rien d'autre
+  Given un @Script::new_bare construit avec un vecteur de chemins vide sous `rhai` seul, sans
+    `shell`
+  Then `shell_run("true")` et `shell_output("echo")` y échouent en fonction inconnue, ./engine.rs
+    n'appelant pas @crate::shell::shell_rhai_register
+  When le binaire est recompilé avec `rhai` et `shell` et le même engine rebâti
+  Then `shell_run("true")` rend `0` et `shell_output("echo hi")` rend `hi` suivi d'une nouvelle
+  When le script évalue `shell_run(12)`, `shell_output(#{})`, `shell_run("true", 1)` puis
+    `shell_output("a", "b")`
+  Then les quatre échouent en fonction inconnue : seules les deux arités unaires sur `string` existent
+  But aucun autre nom n'apparaît, ni `shell`, `sh`, `run` ni `get_out` en script, et un second
+    appel manuel de @crate::shell::shell_rhai_register laisse tout identique
