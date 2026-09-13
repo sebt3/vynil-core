@@ -60,7 +60,7 @@ Tasks:
   [x] Spec `src/password.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/s3.sdd` produite (spec-reverse) puis revue.
   [x] Spec `src/semver.sdd` produite (spec-reverse) puis revue.
-  [ ] Spec `src/shell.sdd` produite (spec-reverse) puis revue.
+  [x] Spec `src/shell.sdd` produite (spec-reverse) puis revue.
   [x] Spec `src/yaml.sdd` produite (spec-reverse) puis revue.
   [x] Purger la dette harnais stricte module par module, en coordination avec `./tooling.sdd`.
 
