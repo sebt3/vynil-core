@@ -48,7 +48,7 @@ Tasks:
   [ ] Spec `src/chrono.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/client_name.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/engine.sdd` produite (spec-reverse) puis revue.
-  [ ] Spec `src/glob.sdd` produite (spec-reverse) puis revue.
+  [x] Spec `src/glob.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/hashes.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/hbs.sdd` produite (spec-reverse) puis revue.
   [ ] Spec `src/hbs_json.sdd` produite (spec-reverse) puis revue.
