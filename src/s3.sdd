@@ -1,0 +1,317 @@
+Spec: s3
+
+Purpose:
+  Exposer deux helpers Rhai `s3_get_yaml` et `s3_list_keys` pour lire un object store
+    compatible S3 via @object_store 0.11 (avec endpoint HTTP personnalisable pour stores
+    self-hosted, en-tête du fichier), sous la seule feature `s3` qui implique `rhai`.
+    Module de la tier « Never auto-wired » : aucun des deux helpers n'atteint un script via
+    @crate::engine::Script::new_bare ; l'appelant branche la face lui-même en appelant
+    @crate::s3::s3_rhai_register sur son engine. Contrechamp notable de la documentation :
+    parmi `http`, `k8s` et `s3`, c'est le seul sans jumeau `*_mock.rs` dans ./src, les mocks
+    annoncés par la crate étant `http_mock`, `k8s_mock` et `oci_mock` — ./s3.rs est seul, la
+    voie de test déclarée est un endpoint HTTP local et non un store injectable.
+
+Owns:
+  ./s3.rs
+
+References:
+  ./lib.rs — déclarant : `#[cfg(feature = "s3")]` + `#[cfg_attr(docsrs, doc(cfg(feature = "s3")))]`
+    + `pub mod s3;` (lignes 357-360), module publiquement atteignable sous sa feature.
+    Variantes de @Error toutes NON gated : @variant-Error::Other d'affichage `Error: {0}`,
+    @variant-Error::UTF8 d'affichage `UTF8 error {0}` portant un @std::string::FromUtf8Error via
+    `#[from]`, @variant-Error::SerializationError d'affichage `SerializationError: {0}` portant
+    un @std::string::String via `#[from]` de @serde_json::Error, @variant-Error::YamlError
+    d'affichage `YamlError: {0}` portant un @std::string::String. La conversion finissante
+    vers Rhai est @crate::rhai_err (ligne 295), elle-même non gated. La rustdoc racine cite
+    `s3_*` dans l'énumération des helpers « when their feature is enabled ».
+  ./engine.rs — absence contractuelle : @crate::engine ne référence `s3` que dans son
+    en-tête (ligne 5, énumération des modules feature-gated) ; @crate::engine::Script::new_bare
+    n'appelle jamais @crate::s3::s3_rhai_register. ./hbs.rs ne référence pas non plus le
+    module : aucun helper Handlebars `s3_*` n'existe.
+  ../docs/rhai_helpers.md — section 14 : snippet de branchement
+    `#[cfg(feature = "s3")] vynil_core::s3::s3_rhai_register(&mut script.engine);` ; table des
+    deux helpers avec « All parameters are `string` », s3_get_yaml en 7 paramètres→dynamic et
+    s3_list_keys en 6→tableau de chaînes ; sémantique des chaînes vides (access_key vide =
+    default credential chain, endpoint vide = AWS, endpoint non vide = custom avec
+    allow_http). Table de tier ligne 24 : s3 « Never auto-wired — call the *_rhai_register
+    function yourself ». Lignes 51-54 : promesses de mock §`Tasks`.
+  ./Cargo.toml — `s3 = ["dep:object_store", "dep:futures", "dep:tokio", "rhai"]` (ligne 61) :
+    la feature implique `rhai`, ses types cœur sont donc toujours des API Rhai ;
+    @object_store 0.11 avec features `aws` (lock 0.11.2) ; @tokio déclaré 1.48 features
+    `macros`, `rt-multi-thread` (lock 1.53.1) ; @futures 0.3 (lock 0.3.34). @serde_yaml et
+    @serde_json sont non optionnels : la double passe YAML→JSON→@rhai::Dynamic compile sous
+    `s3`+`rhai` sans demander `hbs` ni `yaml`.
+
+Must:
+  Se compiler sous la seule porte `s3` et exister publiquement sous elle : ./lib.rs ne porte
+    que `#[cfg(feature = "s3")]`, et `s3` implique `rhai` dans ./Cargo.toml — aucun des trois
+    items `pub` n'est conditionné plus finement que le module.
+  Construire le store à chaque appel dans la fonction privée `build_store`, sans cache ni
+    injection : @object_store::aws::AmazonS3Builder::new(), puis .with_bucket_name(bucket) et
+    .with_region(region) inconditionnellement ; puis .with_access_key_id(access_key) et
+    .with_secret_access_key(secret_key) seulement si `access_key` est non vide
+    (la `secret_key` est passée telle quelle, vide compris, dès que l'access ne l'est pas) ;
+    puis .with_endpoint(endpoint).with_allow_http(true) seulement si `endpoint` est non vide ;
+    @object_store::aws::AmazonS3Builder::build() mappé en @variant-Error::Other de son
+    `e.to_string()`. Sonde mesurée sur object_store 0.11.2 : bucket vide → build Err
+    (MissingBucketName) ; region vide, aucune credential, access non vide + secret vide,
+    endpoint http y compris sans allow_http → tous build Ok — les gardes credentials et
+    schéma http_relaxé s'exercent à la requête, pas au build.
+  Lire un objet dans @crate::s3::s3_get_yaml : clé complète fabriquée par
+    `format!("{prefix}{key}")` sans séparateur interposé, jamais normalisée ; chemin en
+    @object_store::path::Path::from ; @object_store::ObjectStore::get mappé en
+    @variant-Error::Other ; @object_store::GetResult::bytes mappé en @variant-Error::Other ;
+    @std::string::String::from_utf8 mappé en @variant-Error::UTF8 ; @serde_yaml::from_str
+    mappé en @variant-Error::YamlError de `e.to_string()` ; @serde_json::to_string puis
+    @serde_json::from_str::<@rhai::Dynamic> tous deux mappés en
+    @variant-Error::SerializationError ; le tout emmailloté `.map_err(@crate::rhai_err)`.
+  Exécuter tout le corps des deux fonctions publiques dans
+    `block_in_place(|| @tokio::runtime::Handle::current().block_on(async ...))` : appelables
+    depuis un script Rhai synchrone lancé sur un runtime tokio multi-thread ; hors runtime ou
+    sur runtime current-thread, ce sont tokio qui panique (`block_in_place` et
+    `Handle::current` posent des préconditions de runtime), le module ne pose aucun garde
+    lui-même — borne discutée en `Tasks`.
+  Lister sous un préfixe dans @crate::s3::s3_list_keys : @object_store::path::Path::from(prefix),
+    @object_store::ObjectStore::list(Some(&prefix_path)), drainage par @futures::stream::Stream::next,
+    erreur d'entrée de flux mappée en @variant-Error::Other de `e.to_string()`, chaque élément
+    poussé comme `meta.location.to_string()` — location COMPLÈTE incluant le préfixe, jamais
+    rognée, jamais triée ni déduppliquée par la fonction ; pagination du flux prise en charge
+    par @object_store, pas par ce module.
+  Enregistrer exactement les deux noms dans @crate::s3::s3_rhai_register : deux
+    @rhai::Engine::register_fn directs sur les fonctions publiques, `s3_get_yaml` de 7
+    @std::string::String → @rhai::Dynamic et `s3_list_keys` de 6 @std::string::String →
+    @std::vec::Vec<@std::string::String> ; un @rhai::Engine::register_fn remplace tout
+    homonyme précédent ; aucun enregistrement de type, aucun namespace, aucun autre nom.
+  Traiter chaque paramètre comme une chaîne quelconque, vide comprise : access_key vide = pas
+    de credential explicite (default credential chain @object_store, résolue à la requête) ;
+    endpoint vide = S3 AWS ; prefix vide en listing = liste tout le bucket ; prefix vide en
+    get = clé brute.
+
+Must not:
+  Atteindre un script sans geste de l'appelant : @crate::engine::Script::new_bare
+    n'enregistre ni `s3_get_yaml` ni `s3_list_keys`, même crate compilée avec `s3` ; sous
+    `s3` sans enregistrement manuel, les deux noms sont inconnus de l'engine (erreur Rhai de
+    function-not-found à l'appel).
+  Accepter un store injectable : `build_store` est privé, cablé sur S3 seul, aucun paramètre
+    @object_store::ObjectStore public, aucun `set_store`, aucun jumeau `s3_mock` — contrairement
+    ./http.rs, ./k8s.rs et ./oci.rs qui ont chacun leur mock enregistrable sur fixtures.
+  Remonter @variant-Error::UTF8, @variant-Error::YamlError ou @variant-Error::SerializationError
+    depuis @crate::s3::s3_list_keys : le listing ne lit ni ne parse aucun octet ; le contenu
+    des objets listés est totalement indifférent (YAML invalide ou binaire non-UTF8 listent
+    sans erreur).
+  Sorter, rogner le préfixe, déduppliquer ou reformater les clés de @crate::s3::s3_list_keys :
+    l'ordre est celui que le store rend, chaque entrée est la location exacte complète.
+  Avaler une erreur en repli silencieux ou en @tracing::warn : toute anomalie remonte en
+    erreur Rhai via @crate::rhai_err — pas de motif « chaîne vide + warn » des helpers de
+    ./hbs.rs ici.
+  Insérer un `/`, une newline ou tout autre séparateur entre `prefix` et `key`, ni normaliser
+    un doubled `//`.
+  Exposer `build_store`, les imports ou le module de tests : la face `pub` du module est
+    exactement les trois items contractés plus bas.
+
+Depends on:
+  object_store — @object_store::aws::AmazonS3Builder, le trait @object_store::ObjectStore
+    (get, list), @object_store::path::Path, @object_store::Error ; 0.11.2 en lock sous feature
+    `aws` des S3. La sémantique complète du builder (validations, chaîne de credential,
+    pagination, ordre de listing) et les textes d'erreur @object_store appartiennent à la
+    dépendance et ne sont verrouillés ici que par leurs triggers, pas leurs formes.
+  tokio — @tokio::task::block_in_place, @tokio::runtime::Handle::current,
+    @tokio::runtime::Handle::block_on ; features `macros` et `rt-multi-thread` ; 1.53.1 en
+    lock. La panique runtime de ces deux premiers primitifs est le contrat tokio, assumé.
+  futures — @futures::stream::StreamExt::next pour drainer @object_store::ObjectStore::list.
+  rhai — @rhai::Engine, @rhai::Dynamic, @rhai::Engine::register_fn ; @crate::RhaiRes et
+    @crate::rhai_err de ./lib.rs. Sous-entendu par ./Cargo.toml : `s3` implique `rhai`.
+  serde_yaml + serde_json (non optionnels) — double passe @serde_yaml::from_str puis
+    @serde_json::to_string puis @serde_json::from_str::<@rhai::Dynamic>, le même motif de
+    transmutation par JSON que ./yaml.sdd de son côté ; ./yaml.rs lui-même n'est pas appelé.
+  @crate::client_name n'est ni lu ni requis : pas de User-Agent customisable par ce module.
+
+Exposes:
+  @crate::s3::s3_get_yaml — `pub fn` de 7 @std::string::String — en Rhai `bucket`, `region`,
+    `prefix`, `endpoint`, `access_key`, `secret_key`, `key` dans cet ordre — vers
+    @crate::RhaiRes<@rhai::Dynamic>, porte `s3`.
+  @crate::s3::s3_list_keys — `pub fn` de 6 @std::string::String — les mêmes six premiers du
+    précédent, sans `key` — vers @crate::RhaiRes<@std::vec::Vec<@std::string::String>> rendant
+    un tableau de chaînes en Rhai, porte `s3`.
+  @crate::s3::s3_rhai_register — `pub fn(engine: &mut @rhai::Engine)`, porte `s3`, jamais
+    appelée par le crate lui-même ; c'est le seul chemin par lequel les deux noms entrent
+    dans un engine.
+  Rien de plus : `build_store` reste privée, aucun type, aucune constante, aucun variant
+    @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe.
+
+Accepts:
+  6 ou 7 @std::string::String selon la fonction, toutes valeurs acceptées dont la chaîne
+    vide à chaque position ; la distinction sémantique des vides est celle de `build_store`
+    (access_key et endpoint) et de la concaténation (prefix).
+  En préfixe toute forme : avec ou sans `/` final (la concaténation ne corrige rien) ; en
+    listing, un prefix vide demande la liste complète du bucket.
+  En contenu d'objet (get uniquement) : tout octet UTF-8 constituant un document YAML, un
+    document YAML vide y compris, un scalaire YAML seul y compris.
+
+Returns:
+  @crate::s3::s3_get_yaml — un @rhai::Dynamic aligné sur le document : map Rhai pour une carte
+    YAML, tableau Rhai pour une liste, scalaire @rhai::Dynamic pour un scalaire, unité pour
+    document vide (@serde_yaml::Value::Null transitant par le JSON `null`) ; le tout via la
+    double passe JSON, jamais par une construction manuelle de map.
+  @crate::s3::s3_list_keys — un @std::vec::Vec<@std::string::String> dans l'ordre du flux du
+    store, locs complètes préfixe inclus ; Vec vide quand rien ne précixe.
+
+Raises:
+  Les deux fonctions publiques rendent @crate::RhaiRes, échec porté par @crate::rhai_err
+    autour de @variant-Error::Other d'affichage `Error: <texte d'erreur @object_store>` —
+    triggers : build du store (bucket vide notamment, MissingBucketName mesuré), get, bytes,
+    et chaque erreur du flux de list ; la forme interne du texte est de @object_store et
+    n'est pas verrouillée.
+  @crate::s3::s3_get_yaml — @variant-Error::UTF8 sur octets invalides (la forme @std::string::FromUtf8Error
+    appartient à @std) ; @variant-Error::YamlError `YamlError: <message>` sur YAML invalide ;
+    @variant-Error::SerializationError `SerializationError: <message @serde_json::Error>` sur
+    la double passe, branche jamais déclenchée par un document ordinaire (défensive :
+    @serde_yaml::Value vers JSON puis vers @rhai::Dynamic), aucune Scenario ne la déclenche,
+    seule cette ligne la contracte.
+  Panique tokio (pas une erreur) quand une des deux fonctions est appelée hors runtime tokio
+    ou sur runtime current-thread, via `block_in_place`/`Handle::current` — discutée en
+    `Tasks`, pas neutralisée par le module.
+
+Handles:
+  Les quatre combinaisons de configuration du store : credential explicite (access non vide →
+    les deux chaînes posées, secret vide y compris) contre default chain (access vide → secret
+    ignoré même non vide) ; endpoint custom avec allow_http activé pour stores http self-hosted
+    contre endpoint vide AWS par défaut ; les deux axes indépendants.
+  La clé distante comme concaténation brute : `prefix` + `key` sans aucune normalisation, aux
+    deux bouts de la face (`s3_get_yaml` seulement — le `prefix` du listing n'est jamais
+    retourné rogné).
+  L'asymétrie lecture listing : le listing n'ouvre aucun contenu, donc un bucket plein de
+    documents YAML cassés liste sans erreur tandis qu'un seul get sur l'un d'eux échoue.
+
+Tasks:
+  [ ] Convertir les Scenario ci-dessus en tests passants : les deux tests inline actuels
+    (lignes 119 et 140, deux `#[tokio::test(flavor = "multi_thread")]` sur
+    @object_store::memory::InMemory) ne sont PAS des tests des fonctions publiques — ils
+    rejouent inline la pipeline object_store+serde équivalente sans jamais appeler
+    @crate::s3::s3_get_yaml ni @crate::s3::s3_list_keys. Aucune des deux fonctions publiques
+    n'a de test la traversant aujourd'hui. Une partie des Scenario est testable sans seam
+    (erreurs de build Other hors réseau sur runtime multi-thread, facettes Rhai : absence
+    sans enregistrement, arités, remplacement d'homonyme, types de paramtres) ; le reste
+    (get/list réels contre un store) demande une décision préalable listée [?] : seam de
+    `build_store`, ou le mock `s3_*` que la documentation promet sans le livrer.
+
+  [?] ./docs/rhai_helpers.md lignes 51-54 promet que chacun de `http`/`k8s`/`s3` « has a
+    matching mock module », en énumérant `http_mock`, `k8s_mock`, `oci_mock` — double
+    mensonge : `s3_mock.rs` n'existe pas, et `oci` n'est même pas dans le trio cité.
+    Corriger la docs (s3 sans mock, testable par endpoint http local) ou créer ./s3_mock.rs ?
+  [?] `block_in_place` + `Handle::current` paniquent (tokio) hors runtime multi-thread : un
+    script Rhai exécuté hors tokio fait paniquer la face publique sous `s3` au lieu de rendre
+    une erreur. Accepter cette panique comme borne documentée, ou envelopper (créer un
+    runtime courant ou rendre une @variant-Error::Other) ?
+  [?] `format!("{prefix}{key}")` sans séparateur : `get_yaml("p", ..., "k")` lit `pk` si
+    `prefix` finit sans barre, et `p//k` si elle en porte deux. Garder la concaténation brute
+    ou normaliser un `/` de jointure ?
+  [?] @crate::s3::s3_list_keys ne trie pas (le test inline trie lui-même, hors fonction) et
+    rend les locations complètes préfixe inclus. Figé tel quel ou contractualiser un rendu
+    trié / rogné ?
+  [?] La garde de credential ne regarde que `access_key` : `access_key=""` + `secret_key="s"`
+    ignore silencieusement le secret. Semantics voulue (chaîne de credential par défaut) ou
+    double-garde `access_key && secret` ?
+
+Scenario: s3 reste hors de new_bare même feature activée
+  Given la crate compilée avec `s3` (donc `rhai` avec)
+  When un engine @crate::engine::Script::new_bare évalue `s3_get_yaml("", "", "", "", "", "", "")`
+  Then l'évaluation échoue en function-not-found : le nom n'a jamais été enregistré
+  When @crate::s3::s3_rhai_register est appelée manuellement sur le même engine avant le même appel
+  Then le nom résout et l'appel parvient au corps de la fonction
+
+Scenario: deux noms, deux arités, chaînes seulement
+  Given un engine de test avec @crate::s3::s3_rhai_register
+  When `s3_list_keys` est appelée avec les 6 @std::string::String contractés
+  Then l'appel résout ; avec 5 ou 7 arguments il échoue en function-not-found
+  When `s3_get_yaml` est appelée avec un nombre autre que 7
+  Then l'appel échoue de même : une seule arité par nom, pas de surcharge
+  When un argument est fourni en nombre au lieu d'une chaîne
+  Then l'appel échoue, la face Rhai ne voyant que des signatures toutes-chaînes
+
+Scenario: deux enregistrements successifs ne duppliquent pas
+  Given un engine de test
+  When @crate::s3::s3_rhai_register est appelée deux fois
+  Then chaque nom garde une résolution unique, @rhai::Engine::register_fn remplaçant
+    l'enregistrement précédent, sans erreur ni empilement
+
+Scenario: bucket vide fait parler le build
+  Given un runtime tokio multi-thread (le corps exige `block_in_place` + `Handle::current`)
+  When @crate::s3::s3_get_yaml est appelée avec `bucket=""` et le reste arbitraire, hors réseau
+    réel requis
+  Then l'échec remonte via @crate::rhai_err portant @variant-Error::Other dont le texte vient
+    de @object_store (mesuré : MissingBucketName) — trigger verrouillé, forme laissée
+  When @crate::s3::s3_list_keys est appelée avec `bucket=""`
+  Then le même @variant-Error::Other de build survient avant toute liste
+
+Scenario: region, credentials et endpoint vides construisent quand-même
+  Given un runtime tokio multi-thread, aucune credential d'environnement
+  When le build interne est exercé via les fonctions publiques avec `region=""`, sans aucune
+    credential explicite
+  Then aucune erreur de build ne survient (mesuré 0.11.2 : build Ok) — l'échec éventuel
+    appartient à la requête, pas à la configuration
+  When un `access_key=""` est passé avec un `secret_key` non vide
+  Then le secret est ignoré, la default credential chain est celle de @object_store — point
+    [?] des `Tasks`
+
+Scenario: prefix et key collent sans séparateur
+  Given un store distant de test (endpoint http local ou seam des `Tasks`)
+  When @crate::s3::s3_get_yaml est appelée avec `prefix="mybucket/"` et `key="index.yaml"`
+  Then l'objet lu est `mybucket/index.yaml`
+  When elle est appelée avec `prefix="p"` et `key="k.yaml"`
+  Then l'objet lu est `pk.yaml`, jointure crue sans barre insérée — [?] des `Tasks`
+
+Scenario: yaml valide devient Dynamic selon sa forme
+  Given un objet `index.yaml` de contenu `packages:\n  - name: mypkg\n` sur un store de test
+  When @crate::s3::s3_get_yaml est appelée dessus
+  Then le @rhai::Dynamic rendu est une map contenant la clé `packages`, via la double passe
+    @serde_yaml puis @serde_json (motif identique à ./yaml.sdd, qui n'est pas appelé)
+  When l'objet distant est un scalaire YAML `42`
+  Then le Dynamic rendu est scalaire, et un document vide rend l'unité (Null transitant `null`)
+
+Scenario: octets et YAML cassés parlent en erreurs typées
+  Given un objet de contenu UTF-8 invalide sur un store de test
+  When @crate::s3::s3_get_yaml est appelée dessus
+  Then l'échec porte @variant-Error::UTF8, sans conversion préalable
+  Given un objet de contenu YAML syntaxiquement invalide
+  When la même fonction est appelée
+  Then l'échec porte @variant-Error::YamlError d'affichage `YamlError: <message>`, le message
+    interne de @serde_yaml étant porté sans reformatage contractuel
+
+Scenario: get sur objet absent reste un Other
+  Given un store de test sans l'objet demandé
+  When @crate::s3::s3_get_yaml est appelée sur la clé absente
+  Then l'échec est @variant-Error::Other (le 404 de @object_store devient son texte) ;
+    @crate::s3 ne distingue pas absent d'injoignable
+
+Scenario: le listing rend les locations brutes sans toucher aux contenus
+  Given un store contenant `prefix/a.yaml` (YAML valide), `prefix/b.yaml` (YAML cassé) et
+    `prefix/c.yaml` (octets non-UTF8)
+  When @crate::s3::s3_list_keys est appelée avec `prefix="prefix/"`
+  Then les trois locations COMPLÈTES (préfixe inclus) sont rendues, aucun contenu lu, aucune
+    erreur malgré b.yaml et c.yaml
+  And l'ordre est celui du flux @object_store ; la fonction ne trie pas — test existant trie
+    lui-même hors fonction, [?] des `Tasks`
+
+Scenario: prefix vide liste tout, prefixe sans objet rend vide
+  Given un store non vide de clés disparates
+  When @crate::s3::s3_list_keys est appelée avec `prefix=""`
+  Then toutes les clés du bucket remontent, `Path::from("")` étant la racine
+  Given un préfixe sans objet dessous
+  When la même fonction est appelée
+  Then un Vec vide est rendu sans erreur
+
+Scenario: hors runtime multi-thread tokio tranche
+  Given un test ordinaire sans runtime tokio
+  When @crate::s3::s3_list_keys est appelée telle quelle
+  Then `block_in_place`/`Handle::current` paniquent (contrat tokio hors runtime, vérifié par
+    sonde) : c'est une
+    panique, pas une @crate::RhaiRes — borne [?] des `Tasks`
+  Given le même appel lancé depuis `#[tokio::test(flavor = "multi_thread")]`
+  Then le corps parvient jusqu'au store sans panique
+
+Scenario: sans la feature s3, rien n'existe
+  Given `cargo check --no-default-features --features rhai`
+  Then ni @crate::s3 ni ses trois items n'existent, et @object_store, @futures, @tokio restent
+    hors du graphe — la feature `rhai` seule ne les active pas, seul `s3` (et `k8s`/`oci`/
+    `http` pour tokio/futures) le fait
