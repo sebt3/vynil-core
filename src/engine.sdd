@@ -1,0 +1,475 @@
+Spec: engine
+
+Purpose:
+    Point d'entrée Rhai de la crate : @crate::engine::Script, couple d'un @rhai::Engine et
+    d'un @rhai::Scope persistant, construit par @crate::engine::Script::new_bare qui pose
+    trois réglages d'engine, REMPLACE le module resolver par une collection de
+    @rhai::module_resolvers::FileModuleResolver, puis enregistre dans un ordre figé seize
+    utilitaires communs, les modules toujours disponibles chrono/hashes/semver/yaml/glob,
+    les modules à features fs/crypto(+key)/password/oci/shell, et enfin sept shims écrits en
+    Rhai (@assert absent du nom — fonction Rhai `assert` à deux arguments, `import_run` ×3
+    arités, `import_template` ×3 arités) qui rendent silencieusement absents les modules
+    d'import introuvables. Cinq méthodes d'évaluation partagent le scope, donc les variables
+    posées survivent d'une évaluation à l'autre. `http`, `k8s`, `s3` et tous les mocks ne
+    sont JAMAIS câblés ici : les champs publics @crate::engine::Script::engine et @crate::engine::Script::ctx sont livrés à l'appelant.
+
+Owns:
+  ./engine.rs
+
+References:
+  ./lib.rs — déclarant : `#[cfg(feature = "rhai")]` + @cfg_attr docsrs + `pub mod engine;`
+    (lignes 324-327) et même porte pour le ré-export racine `pub use engine::Script;`
+    (lignes 379-381). Variantes @Error consommées : @variant-Error::RhaiError gated `rhai`
+    d'affichage `Rhai script error: {0}` — payload @rhai::EvalAltResult boxed via `#[from]` —,
+    @variant-Error::MissingScript NON gated d'affichage `Missing script {0}` portant un
+    @std::path::PathBuf, plus @variant-Error::Other, @variant-Error::Stdio,
+    @variant-Error::UTF8, @variant-Error::SerializationError, @variant-Error::Base64DecodeError.
+    @crate::rhai_err est importe ; @crate::rhai_err_str ne l'est pas.
+  ./Cargo.toml — table de ce que chaque feature ajoute à CE fichier : `rhai` compile le
+    module entier ; `fs = []` câble @crate::engine::fs_rhai_register (privée) ;
+    `shell = []` câble @crate::shell::shell_rhai_register ; `password = []` câble
+    @crate::password::password_rhai_register ; `crypto` câble
+    @crate::hashes::crypto_hashes_rhai_register puis @crate::key::key_rhai_register ; `oci`
+    câble @crate::oci::oci_rhai_register ; `k8s`/`s3`/`http` n'activent AUCUN appel
+    d'enregistrement ici mais impliquent `rhai` et donc l'existence du module. Les
+    enregistreurs @crate::http::http_rhai_register, @crate::k8s::{k8sgeneric,k8sraw,
+    k8sworkload}_rhai_register, @crate::s3::s3_rhai_register et les trois
+    @crate::*_mock_*_rhai_register ne sont appelés nulle part depuis ./engine.rs.
+  ./chrono.sdd, ./hashes.sdd, ./key.sdd, ./password.sdd, ./semver.sdd, ./yaml.sdd,
+    ./glob.sdd, ./shell.sdd, ./s3.sdd — le détail de chaque nom enregistré est la spec du
+    module appelé ./engine.rs se borne à l'appel et à l'ordre. Le quirk @crate::yaml de
+    `yaml_decode_multi` (entrée texte de cinq caractères ou moins rend un tableau vide)
+    est observable ici et verrouillé par le test de la ligne 563.
+  ./hbs.rs — ./engine.rs n'importe RIEN de @crate::hbs ni ./hbs_json.rs : le mot
+    `template` des shims désigne une fonction DE MODULE Rhai côté consommateur, sans aucun
+    rapport au @crate::hbs::HandleBars::register_template.
+  ../docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
+    section 12 contient une phrase fausse sur reqwest « dependency de base » (§`Tasks`).
+  ./lib.rs (rustdoc racine) — quickstart `new_bare(vec![...])` + `run_file(&PathBuf)` ;
+    deux mentions fausses consignées en `Tasks` : « Additional, feature-gated » pour
+    yaml/semver/glob/date_now alors qu'elles sont ALWAYS sous `rhai`, et le nom `argon_hash`
+    présenté en « Handlebars + Rhai » alors que le nom Rhai côté crypto est le trio
+    `bcrypt_hash` + type `Argon` + `new_argon`/`hash`.
+
+Must:
+  N'exister que sous la porte `rhai` : structure, méthodes, fonctions libres et ré-exports
+    @rhai de la ligne 25-29 sont tous sous `#[cfg(feature = "rhai")]` au niveau module ;
+    les features qui impliquent `rhai` (`k8s`, `oci`, `s3`, `http`, `hbs-scripting`)
+    exposent donc le module transitivement.
+  Appliquer dans @crate::engine::Script::new_bare l'ordre EXACT (lignes 172-204) :
+    @rhai::Engine::new + @rhai::Scope::new vides ; construction d'une
+    @rhai::module_resolvers::ModuleResolversCollection contenant un
+    @rhai::module_resolvers::FileModuleResolver::new_with_path par élément de `resolver_path`
+    dans l'ordre du vecteur, puis @rhai::Engine::set_module_resolver — la collection
+    REMPLACE le resolver par défaut, y compris quand le vecteur est vide ;
+    @rhai::Engine::set_max_expr_depths pose 256 (256, 128) ; @rhai::Engine::set_max_call_levels(512) ;
+    @crate::engine::core_common_rhai_register ; @crate::engine::fs_rhai_register sous `fs` ;
+    @crate::chrono::chrono_rhai_register ; @crate::hashes::hashes_rhai_register ; sous
+    `crypto` @crate::hashes::crypto_hashes_rhai_register PUIS @crate::key::key_rhai_register ;
+    @crate::password::password_rhai_register sous `password` ;
+    @crate::semver::semver_rhai_register ; @crate::yaml::yaml_rhai_register ;
+    @crate::glob::glob_rhai_register ; @crate::oci::oci_rhai_register sous `oci` ;
+    @crate::shell::shell_rhai_register sous `shell` ; @crate::engine::Script::add_common en
+    DERNIER (les shims Rhai appellent `log_debug` posé avant eux).
+  Enregistrer les seize noms communs toujours présents sous `rhai` (lignes 50-114), dont
+    les sémantiques figées : `sha256` rend le digest hex de @sha256::digest ; `log_debug`/
+    `log_info`/`log_warn`/`log_error` appellent la macro @tracing du nom et rendent l'unité ;
+    `url_encode` est @crate::engine::url_encode, percent-encode @url::form_urlencoded dont
+    l'espace devient `+` ; `sleep` reçoit un @std::primitive::i64 et ne dort
+    (@std::thread::sleep, sans plafond) que si la conversion @std::primitive::u64 reussit ET
+    la valeur est strictement positive — 0 et négatifs sont des no-op immédiats ; `get_env`
+    rend la chaîne vide quand la variable est absente ET quand elle existe mais n'est pas
+    UTF-8 (NotUnicode avalé par `unwrap_or_default`) ; `to_decimal` parse en base 8 (nom
+    mensonger : c'est un octal-decode) vers @std::primitive::u32, tout échec log un
+    @tracing::warn et rendOk(0) — l'appel ne peut échouer et le 0 d'erreur est
+    indiscernable du 0 légitime ; `base64_decode` délègue à @crate::engine::base64_decode
+    avec @crate::rhai_err ; `base64_encode` encode en alphabet STANDARD padddé et ne peut
+    échouer ; `json_encode`/`json_decode` font l'aller-retour @serde_json avec erreur
+    @crate::rhai_err de @variant-Error::SerializationError ; `json_encode_escape` rend
+    `format!("{str:?}")` de la sortie json, donc la chaîne avec ses guillemets englobants
+    echappés (JSON imbriqué d'un cran) ; `basename`/`dirname` appliquent
+    @std::path::Path::file_name et @std::path::Path::parent, tout `None` et tout non-UTF-8
+    rendant la chaîne vide.
+  Enregistrer sous `fs` (fonction PRIVÉE @crate::engine::fs_rhai_register, lignes 120-148 —
+    aucun équivalent public pour recâbler `fs` sur un engine tiers) : `file_read` en
+    @std::fs::read_to_string donc UTF-8 strict ; `file_write` en @std::fs::write donc
+    écrasement intégral et création du fichier mais AUCUNE création des dossiers parents ;
+    `file_copy` en @std::fs::copy qui écrase la destination et ne déplace pas la source ;
+    `create_dir` en @std::fs::create_dir_all récursif et idempotent ; `read_dir` en tableau
+    de chaînes des chemins complets des entrées, ordre non spécifié, chemin d'entrée non
+    UTF-8 rendu chaîne VIDE en silence ; `is_file`/`is_dir` booléens ne pouvant jamais
+    erreur. Toutes les erreurs passent par @crate::rhai_err de @variant-Error::Stdio
+    (préfixe `Stdio error `).
+  Injecter dans @crate::engine::Script::add_common exactement sept blocs de code RHAÏ (pas
+    du Rust) via @crate::engine::Script::add_code (lignes 212-337) : `assert(cond, mess)` à
+    l'unique arité 2 qui `throw mess` — la VALEUR `mess` est jetée telle quelle, pas forcée
+    en chaîne ; `import_run` aux arités 4, 3 et 2 — `name, instance, context, args`,
+    `name, instance, context`, `name, args` — qui `import name as imp` puis appellent
+    `imp::run(...)` aux arguments correspondants ; `import_template` aux trois mêmes arités
+    appelant `imp::template(...)` d'abord. Le rattrapage est Littéral :
+    `type_of(e) == "map" && "error" in e && e.error == "ErrorModuleNotFound"` →
+    `log_debug("No ${name} module, skipping.")` puis RETOUR IMPLICITE (le shim ne `return`
+    pas : ce que rend le chemin de skip — unité ou undefined — est un détail du prête-interprète
+    @rhai non contracté) ; `"ErrorFunctionNotFound"` → pour `import_run` même log_debug de
+    skip, pour `import_template` FALLBACK re-import + `imp::run(...)` et si run manque
+    encore, log_debug et skip ; toute AUTRE erreur est relancée par `throw`/`throw ;` — la
+    forme `throw ;` avec espace est celle du premier shim. Ce rattrapage dépend de la
+    matérialisation @rhai de ces deux erreurs en cartes portant un champ `error` — contrat
+    interne @rhai jamais verrouillé par un test ici, §`Tasks`.
+  Ne fournir lui-même AUCUN module ni aucune fonction `template`/`run` côté Rhai : c'est le
+    consommateur qui dépose les modules dans les répertoires passés à `resolver_path` ;
+    sans chemins, la collection vide fait échouer tout import et les shims ne font que
+    log_debug + skip — `import_run` sur un `new_bare(vec![])` ne produit JAMAIS d'erreur.
+  Avaler les erreurs de @crate::engine::Script::add_code (lignes 341-355) : échec de
+    @rhai::Engine::compile → @tracing::error! « Loading {code} failed with : {e:} » ; échec
+    de @rhai::Module::eval_ast_as_new → @tracing::error! « Parsing {code} failed with :
+    {e:} » — les libellés SONT permutés par rapport à l'opération réelle — et dans les deux
+    cas aucune propagation ; corollaire contractuel : si un shim d'`add_common` ne
+    compilait plus, `new_bare` ne le signaler pas (trace `error` seule).
+  Évaluer le module de @crate::engine::Script::add_code sur une COPIE du scope
+    (`self.ctx.clone()`, ligne 343) : un @crate::engine::Script::set_dynamic postérieur ne
+    nourrit pas les modules déjà globalisés, un antérieur les feconde à l'enregistrement ;
+    puis @rhai::Engine::register_global_module.
+  Poser @crate::engine::Script::set_dynamic (lignes 362-374) sans canal d'erreur :
+    aller-retour @serde_json::to_string puis `from_str::<@rhai::Dynamic>` ; au succès
+    @rhai::Scope::set_or_push (remplace l'homonyme existant sinon l'ajoute) ; à l'échec
+    @tracing::error! « cannot convert {name} ... » et scope intact — la méthode ne panique
+    jamais et ne signale rien.
+  Évaluer avec le SCOPE PERSISTANT partagé (&mut self.ctx sur les cinq méthodes) : un `let`
+    de niveau supérieur posé dans une évaluation reste visible des évaluations suivantes,
+    y compris d'un script à l'autre ; les variables d'entrée se posent par `set_dynamic` ou
+    en manipulant le champ public @crate::engine::Script::ctx.
+  Mapper les erreurs d'évaluation BRUTES, sans error_chain ni contexte : les cinq méthodes
+    @crate::engine::Script::run_file, @crate::engine::Script::eval,
+    @crate::engine::Script::eval_truth, @crate::engine::Script::eval_map_string,
+    @crate::engine::Script::eval_map_json rendent @variant-Error::RhaiError par simple
+    `map_err` — contrairement aux erreurs internes des helpers passées par
+    @crate::rhai_err ; l'affichage final `Rhai script error: {0}` vient de @Error racine.
+  Ordonner les gardes de @crate::engine::Script::run_file (lignes 382-398) : d'abord
+    @std::path::Path::is_file — chemin absent OU repertoire →
+    @variant-Error::MissingScript(file.clone()) ; ensuite @std::ffi::OsStr::to_str du
+    chemin — non-UTF-8 → @variant-Error::Other de suffixe `: path is not valid UTF-8` ; puis @rhai::Engine::compile_file et
+    @rhai::Engine::eval_ast_with_scope::<@rhai::Dynamic> ; le test puis la compilation
+    n'étant pas atomiques, un fichier disparu entre les deux remonte en
+    @variant-Error::RhaiError de compilation, pas en MissingScript.
+  Encadrer de @tracing::debug « START: / END: » avec le script brut uniquement les deux
+    méthodes @crate::engine::Script::eval_truth et @crate::engine::Script::eval_map_string —
+    ni `eval` ni `eval_map_json` ni `run_file`.
+  Publier deux fonctions Rust libres en plus du type : @crate::engine::base64_decode
+    (`pub fn base64_decode(input: &str) -> @crate::Result<@std::string::String>`, alphabet
+    @base64 STANDARD, échec → @variant-Error::Base64DecodeError puis non-UTF-8 →
+    @variant-Error::UTF8) et @crate::engine::url_encode (`#[must_use] pub fn`, forme URL
+    identique au nom script). Ces deux items NE SONT documentés nulle part hors du module.
+  Maintenir la discipline de harnais : un seul @core::default::Default#allow en production,
+    l. 211 `#[allow(clippy::too_many_lines)]` avec commentaire citant ./vyvil-core.sdd ;
+    `#[must_use]` l. 45 et 170 ; aucun `unwrap`/`expect`/`panic!`/`todo!`/
+    `unimplemented!`/`dbg!`/`println!` de production — les replis non lints sont les
+    `unwrap_or_else`/`unwrap_or_default`/`unwrap_or` des lignes 69, 101, 103, 109, 111, 142 ;
+    les tests vivent sous l'exemption racine `#![cfg_attr(test, allow(...))]`.
+
+Must not:
+  Cabler même features activées un enregistreur `http`, `k8s` (les trois), `s3` ou un
+    `_mock_rhai_register` : avec `oci` actif c'est le VRAI @crate::oci::Registry qui entre
+    dans l'engine, jamais @crate::oci_mock — la tier « Never auto-wired » est un contrat de
+    ./engine.rs, pas seulement des modules.
+  Lire quoi que ce soit de @crate::client_name : ./engine.rs ne l'importe ni ne l'appelle
+    (le nom y a zéro occurrence) ; aucun contexte réseau, client name oucwd n'est injecté.
+  Enrichir une erreur @rhai d'évaluation par @crate::rhai_err ou une chaîne de contexte :
+    la voie publique des cinq méthodes est `map_err(RhaiError)` nue.
+  Refuser un double appel de @crate::engine::Script::add_common ou un usage direct de
+    @crate::engine::Script::add_code : les deux sont `pub`, re-appelables, et leurs échecs
+    restent des log uniquement.
+  Créer un module global par un autre canal que @rhai::Engine::register_global_module dans
+    `add_code`, ni enregistrer un dix-septième nom commun, ni déléguer à ./hbs.rs.
+  Convertir les erreurs @rhai internes des shims : `assert` jette une VALEUR, un `eval`
+    englobant un throw non rattrapé dans le shim retourne une
+    @variant-Error::RhaiError ordinairement.
+  Accepter autre chose que le pattern textualisé `type_of(e) == "map" && "error" in e`
+    pour distinguer les erreurs d'import : un module dont `run` lève une erreur interne
+    relance (`throw`) l'erreur — le skip ne couvre QUE les deux codes nommés.
+
+Depends on:
+  rhai — @rhai::Engine (réglages `set_max_expr_depths`/`set_max_call_levels`,
+    `compile`, `compile_file`, `eval_with_scope`, `eval_ast_with_scope`,
+    `register_global_module`), @rhai::Scope + `set_or_push`, @rhai::Module +
+    `eval_ast_as_new`, @rhai::module_resolvers (collection + resolver fichier), @rhai::Map,
+    @rhai::Dynamic, @rhai::Array, @rhai::ImmutableString ; la materialisation des erreurs
+    `ErrorModuleNotFound`/`ErrorFunctionNotFound` en cartes `{error}` appartient à @rhai.
+  std — @std::thread::sleep/@std::time::Duration, @std::env::var, @std::path::Path/PathBuf,
+    @std::fs sous `fs`, @std::ffi::OsStr.
+  base64/url/sha256/serde_json/tracing — tous non optionnels : @base64 (STANDARD),
+    @url::form_urlencoded, @sha256::digest, @serde_json, @tracing (warn/error/debug).
+  Modules des specs soeurs appelés par `new_bare` — @crate::chrono, @crate::hashes
+    (hashes + crypto selon porte), @crate::key, @crate::password, @crate::semver,
+    @crate::yaml, @crate::glob, @crate::shell, @crate::oci ; @crate::error_chain est
+    atteint indirectement par @crate::rhai_err sans être nommé ici.
+
+Exposes:
+  @crate::engine::Script — `pub struct` dérivant @core::fmt::Debug SEULEMENT (ni Clone, ni
+    Default), deux champs publics : @crate::engine::Script::engine : @rhai::Engine (destiné
+    aux enregistrements supplémentaires du consommateur) et @crate::engine::Script::ctx :
+    @rhai::Scope<'static>. Réexporté à la racine comme @crate::Script sous `rhai`.
+  @crate::engine::Script::new_bare — `#[must_use] pub fn` prenant un
+    @std::vec::Vec<@std::string::String> de répertoires et rendant @crate::engine::Script,
+    porte `rhai`, porteur
+    d'un doctest verrou (lignes 165-169 : `sha256("hello")` hex exact) tournant sous
+    `cargo test` aux features par défaut.
+  @crate::engine::Script::add_common — `pub fn add_common(&mut self)` : rappelable, ne rend
+    rien, ne propage jamais rien.
+  @crate::engine::Script::add_code — `pub fn add_code(&mut self, code: &str)` : compile,
+    globalise ou log seulement.
+  @crate::engine::Script::set_dynamic — `pub fn` prenant un nom `&str` et un
+    &@serde_json::Value ; pas de canal d'erreur, jamais de panique.
+  @crate::engine::Script::run_file — `pub fn` prenant un &@std::path::PathBuf et rendant
+    @crate::Result<@rhai::Dynamic, @crate::Error> — le paramètre est bien un `&PathBuf`, le
+    README s'y conforme.
+  Les quatre évaluations de chaîne : @crate::engine::Script::eval rend le
+    @rhai::Dynamic brut ; @crate::engine::Script::eval_truth le @std::primitive::bool ;
+    @crate::engine::Script::eval_map_string la chaîne JSON compacte d'une @rhai::Map ;
+    @crate::engine::Script::eval_map_json le @serde_json::Value d'une @rhai::Map.
+  @crate::engine::base64_decode et @crate::engine::url_encode — API Rust libres décrites au
+    `Must` ; jamais citées hors du module par la doc de la crate (dette consignée).
+  Ré-exports purs @rhai (lignes 25-29) via le chemin @crate::engine::{AST, ASTNode, Array,
+    Dynamic, Engine, Expr, ImmutableString, Map, Module, ParseError, Scope, Stmt,
+    FileModuleResolver, ModuleResolversCollection, to_dynamic} — porte `rhai`, atteignables
+    sans dépendre de @rhai directement (dont @crate::engine::to_dynamic jamais appelé ici).
+  Rien de plus : @crate::engine::fs_rhai_register et @crate::engine::core_common_rhai_register
+    demeurent PRIVEES — il n'existe aucun point d'entrée public pour recâbler seul `fs` ou
+    les communs sur un engine étranger.
+
+Accepts:
+  `resolver_path` : tout vecteur de chaînes de répertoires, vide compris ; les chemins ne
+    sont pas validés à la construction — un répertoire inexistant ne produit que des échecs
+    d'import tardifs (masqués par les shims).
+  Les méthodes d'évaluation : toute chaîne Rhai ; `run_file` tout @std::path::PathBuf
+    (relatif au cwd du processus — l'engine ne définit jamais de cwd propre).
+  Les noms script, aux signatures posées : chaînes pour `sha256`, `url_encode`, les `log_*`,
+    `get_env`, `to_decimal`, les `base64_*`, `json_decode`, `basename`, `dirname`, les
+    `file_*` et les deux arguments texte de `file_write`/`file_copy` ; @std::primitive::i64
+    pour `sleep` ; n'importe quel @rhai::Dynamic pour `json_encode`/`json_encode_escape` ;
+    deux arguments pour `assert`. ./engine.rs ne coercit rien : un argument d'autre chose
+    reste « fonction inconnue » à @rhai.
+
+Returns:
+  @crate::engine::Script::new_bare — un Script au ctx VIDE et l'engine peuplé selon la tier
+    de features (table du `Must`).
+  @crate::engine::Script::eval — le @rhai::Dynamic de la dernière expression ; `run_file`
+    même forme pour un fichier ; les typées rendent bool / chaîne JSON compacte /
+    @serde_json::Value.
+  Les méthodes sans `Result` (`add_common`, `add_code`, `set_dynamic`) rendent l'unité en
+    tout état de cause.
+  Les shims `import_run`/`import_template` sur chemin de skip rendent la valeur
+    d'absence @rhai (unité/undefined, non verrouillé) ; sur chemin de succès, ce que rend
+    `imp::run`/`imp::template`.
+
+Raises:
+  @crate::engine::Script::run_file — @variant-Error::MissingScript (chemin absent ou
+    répertoire, affichage `Missing script <chemin>`) ; @variant-Error::Other de suffixe
+    `: path is not valid UTF-8` ; @variant-Error::RhaiError sur compilation ou évaluation
+    ratées — la TOCTOU du test `is_file` rend le fichier disparu en RhaiError et non en
+    MissingScript.
+  @crate::engine::Script::eval / `eval_truth` / `eval_map_string` / `eval_map_json` —
+    @variant-Error::RhaiError sur parse, évaluation OU conversion de résultat inadmissible
+    (non-bool pour `eval_truth`, non-Map pour les deux `eval_map_*`) ; `eval_map_string` et
+    `eval_map_json` ajoutent @variant-Error::SerializationError si la (dé)sérialisation
+    finale échoue.
+  @crate::engine::base64_decode — @variant-Error::Base64DecodeError (texte de préfixe `Base64 decode error`) puis @variant-Error::UTF8 (`UTF8 error {0}`).
+  Côté script, les fonctions natives : base64_decode/json_encode/json_decode échouent en
+    erreurs textuelles portant le Display @Error via @crate::rhai_err ; les sept noms de
+    shims ne remontent QUE les erreurs relancées (`throw`), jamais les deux codes skipés ;
+    `sleep(3600)` dort une heure sans plafond ni erreur — borne contractuelle, pas un
+    échec.
+
+Handles:
+  Le triple cas de l'absence de module d'import : module introuvable → skip silencieux ;
+    module présent sans `run` → skip silencieux (`import_run`) ou fallback `run`
+    (`import_template`) ; module/`run` présents mais lançant eux-mêmes → relance de
+    l'erreur. Le tout sans configuration : c'est le comportement par défaut, seul
+    @tracing::debug trace les skips.
+  La persistance entre évaluations d'un même Script : données d'entrée par `set_dynamic`
+    (nom homonyme écrasé via `set_or_push`), variables `let` de scripts précédents visibles
+    des suivants, snapshot figé du ctx pour les modules `add_code`.
+  La neutralité du client name : @crate::set_client_name reste sans effet sur ./engine.rs ;
+    les modules câblés qui l'exigent (`http`, `k8s`) ne sont justement pas câblés ici.
+
+Tasks:
+  [ ] Convertir les Scenario en tests passants : ./engine.rs porte déjà 23 `#[test]` inline
+    (tous par la face publique `new_bare` + `eval`, helper `make_script` ligne 462) qui
+    verrouillent yaml (11 dont le quirk des 5 caractères ligne 563), json (2), base64 (2
+    dont le padding `aGVsbG8=` ligne 612), semver (3), sha256/to_decimal/url_encode/sleep
+    (5) — mais JAMAIS exercés par aucun test : `assert`, `import_run`, `import_template`,
+    `add_code` direct, `set_dynamic`, `run_file`, `eval_truth`, `eval_map_string`,
+    `eval_map_json`, `get_env`, `json_encode_escape`, `basename`, `dirname`, les `log_*`,
+    `to_decimal` invalide, et TOUT le chemin feature-gate depuis la porte script (`file_*`,
+    bcrypt/argon/gen_private_key, `gen_password*`, `shell_*`, `Registry`) — les unités Rust
+    des modules existent, le trajet « script via `new_bare` » n'est testé pour aucune
+    feature.
+
+  [?] @crate::engine::Script::add_code avale les échecs de compilation/évaluation des
+    shims — un shim cassé ne laisse qu'un @tracing::error aux libellés `Loading`/`Parsing`
+    d'ailleurs permutés (lignes 348/352) : propager (retour Result), tester au moins la
+    compilation des sept blocs, ou assumer le silence ?
+  [?] `new_bare(vec![])` REMPLACE le resolver par défaut par une collection vide : `import`
+    est totalement désactivé sans chemins. Désiré (fail-closed) ou fallback @FileModuleResolver
+    par défaut attendu ?
+  [?] `to_decimal` invalide rend Ok(0) indiscernable du 0 légitime (nom « decimal » qui
+    plus est pour de l'octal) : erreur explicite à la place ?
+  [?] L'UTF-8 est traité par trois poids différents : `get_env` avale NotUnicode comme une
+    absence, `read_dir` pousse une chaîne vide pour un chemin non-UTF-8, `file_read` lui est
+    strict : harmoniser, et dans quel sens ?
+  [?] Shims à arités fermées : `assert` sans variante 1-argument, `import_run`/
+    `import_template` sans variante 1-argument — figé ou manque à combler ?
+  [?] Le snapshot `self.ctx.clone()` de `add_code` (ligne 343) contracte un module froid :
+    intentional (reproductibilité) ou doit-il voir le ctx vire ?
+  [?] Rustdoc ./lib.rs — « Additional, feature-gated » pour yaml/semver/glob/date_now
+    (FAUX : always sous `rhai`) et le nom `argon_hash` présenté en Rhai (INEXISTANT côté
+    script) : corriger les textes ? (aussi ./docs/rhai_helpers.md section 12 et sa phrase
+    sur reqwest « dependency de base ».)
+  [?] La batterie AGENTS.md ne compile JAMAIS `rhai,fs`, `rhai,shell`, `rhai,password`,
+    `rhai,crypto` seuls : les branches gated de `new_bare` ne tournent que sous
+    `--all-features` — ajouter des commandes de matrice dédiées ?
+
+Scenario: sans rhai le module n'existe pas
+  Given la crate compilée `--no-default-features` (sans `rhai`)
+  Then ni @crate::engine ni le réexport @crate::Script n'existent
+  Given chacune des features `k8s`, `oci`, `s3`, `http`
+  Then chacune impliquant `rhai` dans ./Cargo.toml, le module est compile y transite — un
+    consommateur `s3`-seul a donc l'engine public dans son graphe
+
+Scenario: la tier des noms suit les features
+  Given un @crate::engine::Script construit par `new_bare(vec![])` aux features par défaut
+  Then les seize noms communs, les noms chrono/hashes(crc32)/semver/yaml/glob et les shims
+    se résolvent tous par `eval`
+  Given la crate compilée sans `crypto` ni `password` ni `oci` ni `shell` ni `fs`
+  When le script appelle `bcrypt_hash`, `gen_private_key`, `gen_password`, `shell_run`,
+    `file_read` ou un `new_registry`
+  Then chacun est une fonction-inconnue — les noms gated n'existent pas sans leur branche
+  And `new_argon`, `Argon`, `to_decimal`, `sha256`, `to_decimal`, les `log_*` eux restent :
+    la tier always couvre chrono, hashes-crc32, semver, yaml, glob, communs ET les shims
+
+Scenario: resolver vide ferme les imports et les shims masquent
+  Given un `new_bare(vec![])`
+  When un script évalue `import_run("absent", #{}, #{}, #[])`
+  Then l'évaluation réussit avec skip silencieux : la collection vide fait
+    ErrorModuleNotFound, capturé en `log_debug` — aucune erreur jamais
+  When le même script tente un `import "absent"` direct hors shim
+  Then là l'appel échoue bien en @variant-Error::RhaiError de module-introuvable — le shim
+    seul avale
+
+Scenario: import_run et import_template avec module présent
+  Given un répertoire de résolution passé à `resolver_path` contenant un module dont `run`
+    rend une valeur
+  When `import_run(name, instance, context, args)` rend
+  Then la valeur de `imp::run(...)` est rendue telle quelle par le shim
+  Given un module pourvu de `run` mais PAS de `template`
+  When `import_template(name, instance, context)` rend
+  Then le fallback prend : `imp::run(...)` est appelé avec les mêmes arguments — c'est la
+    valeur de run qui sort
+  Given un module dont `run` lance `throw "interne"`
+  When un shim l'appelle
+  Then l'erreur est relancée (`throw`) et remonte en @variant-Error::RhaiError : le skip ne
+    couvre que les deux codes d'absence nommés
+
+Scenario: assert jette la valeur recue
+  Given un `new_bare(vec![])`
+  When un script évalue `assert(false, "boom")` hors try
+  Then l'évaluation échoue et la valeur jetée est la chaîne porteuse du message — `mess`
+    est jetée telle quelle
+  When le même script fait `try { assert(false, 42) } catch (e) { e }`
+  Then le catch voit la valeur jetée (42, non forcée en chaîne) et l'évaluation réussit
+  When un script appelle `assert(true)` à un seul argument
+  Then c'est une fonction-inconnue : seule l'arité 2 existe
+
+Scenario: le scope survit aux évaluations
+  Given un Script et un `set_dynamic("donnee", json)`
+  Then l'`eval("donnee.clé")` des appels suivants voit la valeur
+  When un premier `eval("let x = 1;")` puis un second `eval("x")` sur le MÊME Script
+  Then le second rend 1 : le Scope public est partagé par toutes les méthodes d'évaluation
+  When `set_dynamic` est rappelé avec le même nom
+  Then `set_or_push` remplace la variable existante au lieu d'en dupliquer une seconde
+  Given la conversion serde d'un Dynamic non sérialisable (valeur fonction)
+  When `set_dynamic` l'essuie
+  Then le scope reste intact et seul un @tracing::error! paraît — aucun canal d'erreur
+
+Scenario: les cinq voies d'évaluation et leurs types
+  Given un Script de test
+  When `eval_truth("1 + 1")` rend — le script n'est pas un booléen convertible
+  Then @variant-Error::RhaiError, la conversion @rhai d'un résultat inadmissible est une
+    erreur de cette méthode (le texte interne appartient à @rhai)
+  When `eval_map_string` reçoit un script retournant une Map
+  Then la chaîne est la sérialisation @serde_json compacte de la Map ; un script retournant
+    un scalaire échoue en RhaiError
+  When `eval_map_json` retourne une Map valide
+  Then le @serde_json::Value correspondant sort ; seule `eval_truth` ET `eval_map_string`
+    sont bruitées `START:`/`END:` en @tracing::debug
+
+Scenario: run_file garde ses trois portes
+  Given un chemin inexistant OU un repertoire
+  When @crate::engine::Script::run_file l'appelle
+  Then @variant-Error::MissingScript rend l'affichage `Missing script <chemin>` — le test
+    `is_file` couvre le repertoire comme l'absent
+  Given un chemin dont l'OsStr n'est pas UTF-8
+  Then @variant-Error::Other porte le suffixe `: path is not valid UTF-8`
+  Given un fichier `.rhai` de syntaxe invalide
+  Then @variant-Error::RhaiError de compilation ; d'un fichier valide, le @rhai::Dynamic de
+    la dernière expression, évalué dans le scope persistant
+
+Scenario: add_code avale tout y compris les libellés permutés
+  Given un Script vivant
+  When @crate::engine::Script::add_code reçoit du code syntaxiquement invalide
+  Then le Script évalue normal ensuite, et le seul signe est un @tracing::error! au texte
+    « Loading ... failed » — l'opération qui a échoué est la COMPILATION, libellé permuté —
+    sans aucun retour d'erreur : point [?] des `Tasks`
+  Given du code qui compile mais dont l'évaluation de module lève
+  Then même mutisme, libellé « Parsing ... failed » cette fois (inversé aussi)
+  When @crate::engine::Script::add_common est rappelé manuellement
+  Then les sept shims se recompilent et se réenregistrent sans erreur visible (sémantique
+    @rhai de coexistence de globaux identiques laissée à la dépendance)
+
+Scenario: les utilitaires verrouillent leurs valeurs
+  Given un Script de test (les verrous existants inline lignes 592-699)
+  Then `sha256("hello")` est le digest hex 2cf24db...9824, `base64_encode("hello")` est
+    `aGVsbG8=` et l'aller-retour base64 réussit, `url_encode("hello world")` rend
+    `hello+world` (espace en `+`, JAMAIS `%20`), `to_decimal("755")` rend 493 en base 8
+  When `to_decimal("8")` est évalué — chaîne valide, parse octal raté
+  Then l'appel REND Ok 0 avec @tracing::warn [?] des `Tasks`
+  When `get_env("ABSENTE")` rend — et une variable existante mais non-UTF-8 rendrait idem
+  Then la chaîne vide, les deux cas indiscernables [?] des `Tasks`
+  When `sleep(0); sleep(-3)` rend
+  Then l'évaluation est immédiate (moins de 250 ms verrouillés) ; `sleep(1)` bloque au
+    moins 900 ms et `sleep(3600)` dormirait une heure sans plafond [?] des `Tasks`
+  And `json_encode_escape(#{})` rend la chaîne avec guillemets englobants échappés (JSON
+    imbriqué) et `basename("/a/")` rend `a` là où `dirname("/")` rend la chaîne vide
+
+Scenario: fs sous sa double porte (fs && rhai)
+  Given la crate compilée `--features fs` (donc engine présent)
+  When `file_write("dir/f", "x")` sans parent existant échoue
+  Then l'erreur est @variant-Error::Stdio préfixée `Stdio error ` : les parents ne sont
+    JAMAIS créés (seul `create_dir` fait du `create_dir_all` idempotent)
+  When `file_write` sur un fichier existant passe
+  Then le contenu est intégralement écrasé (write, pas append)
+  When `read_dir` traverse un nom de fichier non-UTF-8 quand il existe
+  Then l'élément correspondant est la chaîne vide en silence [?] des `Tasks`, pendant qu'une
+    erreur `read_dir` lui remonte en Stdio
+  And `is_file`/`is_dir` sur chemin brisé rendent `false` sans erreur aucune — et `fs` sans
+    `rhai` n'enregistre rien : `file_read` reste inconnu à un engine
+
+Scenario: never-auto-wired même portes ouvertes
+  Given la crate compilée avec `http`, `k8s`, `s3` et `oci` ensemble
+  When un `new_bare(vec![])` évalue `s3_get_yaml(...)`, une construction `RestClient` ou
+    n'importe quel `k8s_*`
+  Then chaque nom est fonction-inconnue — ces quatre enregistreurs ne sont appelés depuis
+    AUCUNE ligne de ./engine.rs
+  But avec `oci` actif, `new_registry` RESOUT : c'est le VRAI @crate::oci::Registry câblé,
+    l'@crate::oci_mock ne l'est jamais implicitement — la docs tier confirme et ./oci.sdd
+    (à venir) le reprendra
+
+Scenario: les communs privés et la face Rust
+  Given le module sous `rhai`
+  Then @crate::engine::base64_decode et @crate::engine::url_encode sont appelables depuis
+    le Rust public — ce sont les mêmes impls que les noms script homonymes
+  But @crate::engine::core_common_rhai_register et @crate::engine::fs_rhai_register sont
+    privées : recâbler seul les communs ou `fs` sur un engine vierge est IMPOSSIBLE par la
+    face publique — contrairement aux `*_rhai_register` publics des modules specs soeurs
+  And les ré-exports @rhai (dont @crate::engine::to_dynamic et la paire de resolveurs de
+    module) sont atteignables sans que le consommateur dépende de @rhai nommément
