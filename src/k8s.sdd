@@ -1,0 +1,577 @@
+Spec: k8s
+
+Purpose:
+    Contrat groupé de ./k8s.rs et ./k8s_mock.rs (règle source+mock d'un seul contrat,
+    tâche nommée de ./vyvil-core.sdd) : la façade Kubernetes de la crate — 4 providers
+    injectés en @core::cell::OnceLock (@crate::k8s::set_get_client, @crate::k8s::set_get_labels,
+    @crate::k8s::set_get_owner, @crate::k8s::set_get_owner_ns, « premier appel gagne »),
+    3 LazyLock qui PANIQUENT sans câblage (@crate::k8s::CLIENT, @crate::k8s::RAW_CLIENT,
+    @crate::k8s::CACHE dont le premier accès déclenche une discovery dont la réussite est un
+    @core::result::Result::expect), une écriture unique Server-Side Apply avec `force` et le
+    client_name comme fieldManager, des watches @kube::runtime::wait partout, et une résolution
+    de ressources par le CACHE de discovery (jamais d'erreur de résolution : un handle non
+    résolu rend @variant-Error::UnsupportedMethod à l'usage). Le module N'EST PAS auto-wired
+    en script : trois enregistreurs distincts (@crate::k8s::k8sgeneric_rhai_register,
+    @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register) à rappeler par
+    l'hôte. @crate::k8s_mock est le mock le plus fidèle de la crate en SURFACE (aucun nom
+    manquant, contrairement à ./http_mock) ; les trahisons sont SÉMANTIQUES : kind sensible à
+    la casse là où le vrai est insensible et pluriel, `list` figé au snapshot de construction,
+    `get_meta` renvoyant l'objet complet, `exist` toujours vrai, `created` recevant une vue
+    fusionnée que `patch` ne remplit jamais.
+
+Owns:
+  ./k8s.rs
+  ./k8s_mock.rs
+
+References:
+  ./lib.rs — déclarant : `#[cfg(feature = "k8s")]` + @cfg_attr docsrs pour `pub mod k8s;` et
+    `pub mod k8s_mock;` (lignes 362-369 — mock sous la MÊME porte, pas de feature séparée)
+    plus le ré-export racine @crate::update_cache (lignes 386-388, le seul module ré-exporté
+    en propre à la racine). Variantes @Error : @variant-Error::KubeError gated `k8s`
+    d'affichage `K8s error: {0}`, @variant-Error::KubeWaitError gated `k8s` d'affichage
+    `K8s wait error: {0}`, @variant-Error::Elapsed gated `k8s` d'affichage
+    `Elapsed wait error: {0}` — le Display interne de @kubeError n'est JAMAIS contracté, seul
+    le PRÉFIXE `K8s error: ` ; @variant-Error::RawHTTP NON gated d'affichage
+    `RAW api error {0}`, @variant-Error::UnsupportedMethod NON gated `Unsupported method`,
+    @variant-Error::SerializationError. Consommés aussi @crate::rhai_err, @crate::rhai_err_str,
+    @crate::RhaiRes, @crate::get_client_name (panic documentée ./client_name.sdd si unset).
+  ./engine.rs — frontière : ./engine.rs n'appelle AUCUN des trois enregistreurs k8s
+    (./engine.sdd Must not) — un script obtient `k8s_resource` UNIQUEMENT si l'hôte câble.
+  ./client_name.sdd — @crate::get_client_name lu À CHAQUE @crate::k8s::K8sGeneric::patch et
+    @crate::k8s::K8sGeneric::apply comme fieldManager : panic sans @crate::set_client_name,
+    en PRODUCTION comme en runtime Rhai (la panic n'est pas convertie en erreur Rhai).
+  ./Cargo.toml — `k8s = ["dep:kube", "dep:k8s-openapi", "dep:futures", "dep:tokio", "rhai"]`
+    (ligne 55) implique `rhai`. @kube 3.1.0 `["runtime","client","derive"]` (lock 3.1.0,
+    déclaré = verrouillé : pas de dérive ici, contrairement à @rhai/@handlebars) ;
+    @k8s_openapi 0.27.1 `["latest","schemars"]` default-features false (0.27.1 lock) ;
+    @futures déclaré par la feature mais JAMAIS importé dans les deux fichiers [?] ;
+    @tokio 1.48 déclaré `["macros","rt-multi-thread"]` SANS `time` alors que
+    @tokio::time::timeout est utilisé (./k8s.rs 161) — ne tient QUE par l'unification de
+    features de @kube [?]. Aucun @cfg interne : les deux fichiers s'éteignent/allument en bloc.
+  ../docs/rhai_helpers.md — section k8s : la doc ment sur `new_global` (« the resource's
+    actual scope » — le code rend all-namespaces pour les ressources namespaced, voir `Must`) ;
+    `get_deamonset` (typo) y est documentée telle quelle : le doc assume, le contrat freeze.
+  ../docs/mocking.md — section k8s_mock : table fidèle sur les noms ; silencieuse sur les
+    trahisons sémantiques (kind exact/sensible à la casse du mock, snapshot du `list`,
+    `get_meta` objet complet, `created` vs `mocks`) — [?] de campagne docs.
+  ./tooling.sdd — harnais : ./k8s.rs compte 18 @allow (16 `needless_pass_by_value` + 2
+    `expect_used` commentés « panic by design ») et 14 @core::marker::must_use ;
+    ./k8s_mock.rs 7 @allow + 10 @core::marker::must_use ; deux `#[macro_export]` pub sur
+    macros @crate::register_k8s_object/@crate::register_k8s_generic/@crate::register_k8s_raw
+    — surface publique de crates.io servant aussi au mock.
+
+Must:
+  N'exister tous deux que sous la porte `k8s` (./lib.rs 362-369).
+  Recevoir les quatre providers par @crate::k8s::set_get_client (factory async de
+    @kube::Client), @crate::k8s::set_get_labels (→ @core::option::Option de @serde_json::Value),
+    @crate::k8s::set_get_owner (même forme), @crate::k8s::set_get_owner_ns (→ @core::option::Option
+    de chaîne) : @core::cell::OnceLock::set + `.ok()` — le PREMIER appel gagne, tout re-réglage
+    est SILENCIEUSEMENT ignoré (pas de remplacement possible) ; @crate::k8s::context_is_wired
+    n'est vrai qu'avec les QUATRE posées ET @crate::client_name_is_set.
+  Bâtir @crate::k8s::CLIENT (@std::sync::LazyLock de @kubeClient) et @crate::k8s::RAW_CLIENT
+    (autre @std::sync::LazyLock indépendant) par la même factory via @crate::k8s::build_client :
+    @core::cell::OnceLock::get de GET_CLIENT avec @core::result::Result::expect de
+    `k8s context not initialized` (PANIC documentée, @allow `expect_used`), puis @tokio::task::block_in_place
+    + @tokio::runtime::Handle::current().@tokio::runtime::Handle::block_on sur la factory
+    async — le premier touch de CHAQUE static appelle la factory (deux clients possibles, jamais
+    mutualisés) ; aucuns @kube::Config::incluster/@kube::Config::default dans la crate : la
+    config vient de l'hôte (frontière contractée par ./client_name.sdd pour l'identité).
+  Peupler @crate::k8s::CACHE (@std::sync::LazyLock<@tokio::sync::RwLock<@kube::discovery::Discovery>>
+    — la lecture du cache est un pont @tokio::task::block_in_place partout où le Rhai appelle)
+    au PREMIER accès via @crate::k8s::populate_cache : @core::result::Result::expect de
+    `create discovery (excluding api-services)` — un échec de discovery PANIQUE le premier
+    appelant, puis le `LazyLock` paniquera tout accessoire (poison) ; la discovery
+    @kube::discovery::Discovery::new().@kube::discovery::Discovery::run() EXCLUT les APIServices
+    agrégés (@crate::k8s::aggregated_apiservice_group : @core::option::Option::Some seulement si
+    `spec.service` présent et non-null ET `spec.group` chaîne non vide ; service nul/absent ou
+    groupe vide = service LOCAL, GARDÉ) ; l'échec du LISTAGE des APIServices est un NON-fatal :
+    warn `E_DISCOVERY_WARN: cannot list APIServices ({e}), proceeding without exclusions` puis
+    exclusion vide, la discovery continue SANS exclusion.
+  Rafraîchir le cache par @crate::k8s::update_cache (libre, ré-exportée @crate::update_cache,
+    exposée en script sous `update_k8s_crd_cache` par le registre generic) : @tokio::time::timeout
+    de @std::time::Duration::from_mins(1) (60 s RÉELLES) autour d'une nouvelle discovery ;
+    succès → REMPLACE le contenu du @tokio::sync::RwLock ; timeout ou échec → le VANCIEN cache
+    est GARDÉ et SEUL UN warn trace (`E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 30s` —
+    le texte du message dit 30 s, l'implémentation timeout 60 s [?] ; warn d'échec
+    `E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache`) ; ne retourne rien.
+  Résoudre une ressource par le CACHE SEULEMENT (@crate::k8s::K8sGeneric::new à partir de 479,
+    @crate::k8s::K8sGeneric::new_api_version à 528) : parcourir @kube::discovery::Discovery::groups
+    × @kube::discovery::ApiGroupDiscovery::resources_by_stability, matcher `name` par
+    @core::cmp::PartialEq::eq_ignore_ascii_case SUR `kind` OU `plural` (insensible à la casse,
+    pluriel ou singulier accepté, SANS conversion pluriel maison), départager l'ambiguïté
+    multi-groupes par la MIN-LEXICOGRAPHIQUE du nom de groupe (`min_by_key` — le groupe cœur
+    gagne par construction) ; la construction ne FAIT JAMAIS d'appel API et ne rate JAMAIS :
+    non résolu = handle @core::option::Option::None rendu muet (§UnsupportedMethod) ; le scope
+    retenu : @kube::api::Scope::Cluster OU ns absent → @kube::api::Api::all_with /
+    @kube::api::Api::all_with — soit TOUTES les namespaces pour une ressource namespaced sans ns
+    (la doc qui promet « the resource's actual scope » est FAUSSE ; [?] de contrat), sinon
+    @kube::api::Api::namespaced_with ; la branche @kube::api::Api::default_namespaced_with est
+    INATTEIGNABLE (ns toujours @core::option::Option::Some dans ce branchement) [?].
+  Exposer les trois constructeurs script sur ce resolveur (`k8s_resource` surchargé par
+    arité, le VRAI contrat) : @crate::k8s::K8sGeneric::new_global (1 chaîne → ns @core::option::Option::None
+    → TOUJOURS all-namespaces même pour namespaced), @crate::k8s::K8sGeneric::new_ns (2 chaînes),
+    @crate::k8s::K8sGeneric::new_group_ns (3 chaînes ; `api_version` splitté sur `/` : avec
+    groupe → résolution exacte group+version+name, SANS `/` → retombe sur la résolution simple
+    en ignorant SILENCIEUSEMENT la version fournit — `k8s_resource("v1", "mod", "ns")` marche
+    mais ne vérifie pas que mod est en v1 [?]).
+  Réduire toute méthode sur non-résolu à @variant-Error::UnsupportedMethod rendu en erreur
+    Rhai (11 sites) ; @crate::k8s::K8sGeneric::exist (@core::primitive::bool) et son
+    wrapper `exist` script (un @rhai::Dynamic booléen) signifient UNIQUEMENT « la discovery a
+    résolu ce kind au moment de la construction » — l'existence de l'OBJET n'est JAMAIS testée ;
+    `scope` script rend la chaîne `namespace` ou `cluster` selon @kube::api::Scope.
+  Traiter le 404 comme ERREUR partout : @crate::k8s::K8sGeneric::get (low-level
+    @kube::api::Api::get → @crate::Result de @variant-Error::KubeError) et
+    @crate::k8s::K8sGeneric::rhai_get rendent `K8s error: ` + Display @kube (jamais de
+    repli @core::option::Option::None, jamais de booléen found) ; `get_meta`/`list_meta` sur
+    @kube::api::PartialObjectMeta ; `list`/`list_labels` en @kube::api::ListParams::default
+    (SANS limit ni pagination [?] — un cluster volumineux rend un objet TRONQUÉ `continue` en
+    silence, la crate ne poursuit jamais) avec le sélecteur de labels passé CHAÎNE EXACTE au
+    serveur (invalide → erreur serveur, pas de validation locale) ; les `rhai_*` rendent le
+    DOCOBJET complet ou la LISTE ENTIÈRE (apiVersion/kind/metadata/items inclus) convertis en
+    @rhai::Dynamic par double passe @serde_json.
+  Injecter `metadata.labels` (map du provider GET_LABELS, une map JSON non-object est ignorée
+    en silence) et `metadata.ownerReferences` (unique owner du provider GET_OWNER, uniquement
+    si GET_OWNER_NS @core::option::Option::Some et ÉGALE au ns du handle ET le ns du handle est
+    @core::option::Option::Some — sinon AUCUN ownerRéf, silent) dans TOUTES les écritures
+    (@crate::k8s::prepare_handle, shared par create/replace/patch/apply) ; l'owner est APPENDU à
+    l'array `ownerReferences` existante (doublon possible au re-apply [?]) ; une valeur déjà
+    présente non-array est REMPLACÉE par le tableau d'un seul owner.
+  Écrire en apply forcé uniquement : @crate::k8s::K8sGeneric::patch et
+    @crate::k8s::K8sGeneric::apply construisent @kube::api::PatchParams::apply (fieldManager =
+    @crate::get_client_name — panic sans identité, ./client_name.sdd) + @core::default::Default::force()
+    + @kube::api::Patch::Patch::Apply(handle) [le VRAI type @kube::api::Patch::Apply] : aucun
+    MergePatch/JSONPatch/StrategicMerge n'existe dans le module ; `replace` en
+    @kube::api::Put-Put via @kube::api::PostParams::default SANS prélecture du `resourceVersion`
+    (conflit 409 remonté tel quel) ; `delete` en @kube::api::DeleteParams::foreground (seule
+    propagation connue) ; toutes les écritures low-level prennent @serde_json::Map (côté Rust)
+    et les `rhai_*` convertissent le @rhai::Dynamic en @serde_json::Map (échec → erreur Rhai).
+  Contracter le repli immuable du @crate::k8s::K8sGeneric::apply : après échec de l'apply SSA,
+    SI `kind` du CORPS est exactement `Job` (lecture dans le data fourni, PAS du kind résolu,
+    sensible à la casse) ET l'erreur @kube porte en sous-chaîne `immutable` ET un GET frais du
+    même nom passe @crate::k8s::job_is_completed (@core::primitive::bool vrai si
+    `status.succeeded` > 0 OU `status.completionTime` présent — SANS regarder les conditions),
+    ALORS debug-log + RETOURNER l'objet courant au lieu de l'erreur ; toute autre erreur reste
+    @variant-Error::KubeError. Le `wait_done` du workload `Job` utilise lui
+    @kube::runtime::wait::conditions::is_job_completed (condition `Completed` de kube) —
+    DEUX définitions de « terminé » coexistent dans ./k8s.rs [?].
+  Exposer le handle d'objet @crate::k8s::K8sObject (tupple @core::clone::Clone/@core::fmt::Debug,
+    champs PUBS `api`, `obj` en @kube::api::PartialObjectMeta, `kind` chaîne RÉSOLUE au
+    moment de get_obj) : `metadata` (getter via @serde_json), `kind` (celui des TYPES runtime de
+    l'objet, repli chaîne VIDE si absent [?]), `original_kind` (le kind résolu à la
+    construction — les deux peuvent diverger, [?] de contrat), `delete` en Foreground, et la
+    famille de waits en @crate::RhaiRes sur @kube::runtime::wait::await_condition :
+    `wait_condition` (status.conditions[type=cond].status == `True`), `wait_status`
+    (`status.<prop>` @core::primitive::bool vrai), `wait_status_prop` (prop non-bool :
+    valeur @core::primitive::bool), `wait_status_string` (prop chaîne égale), `wait_deleted`
+    (@kube::runtime::wait::conditions::is_deleted de l'uid — uid absent → erreur chaîne locale
+    `cannot wait for deletion of {:}: uid is missing` — LA SEULE erreur à chaîne fabriquée dans
+    ./k8s.rs hors mocks), `wait_for` (FnPtr évalué à CHAQUE evenement du watch sur l'objet
+    complet converti ; une Erreur de predicate ARCHIVÉE en @core::cell::RefCell (first-wins) est
+    RETOURNÉE À LA FIN MÊME SI un event ultérieur a satisfait le predicate [?] — un watch qui
+    « finit vrai » après une exception du predicate ÉCHOUE).
+  Quantifier TOUTES les waits via @crate::k8s::timeout_duration : l'i64 est en SECONDES via
+    @std::time::Duration::from_secs(u64::try_from().unwrap_or(0)) — une valeur NÉGATIVE devient
+    0 s (timeout immédiat), JAMAIS d'erreur d'argument ; dépassement → @variant-Error::Elapsed,
+    erreur de watch → @variant-Error::KubeWaitError, enrobés @crate::rhai_err.
+  Exposer côté Rust (hors Rhai) les builders de condition @core::marker::must_use
+    @crate::k8s::K8sObject::is_condition/@crate::k8s::K8sObject::is_status/@crate::k8s::K8sObject::have_status/
+    @crate::k8s::K8sObject::have_status_value (impl @kube::runtime::wait::Condition pour
+    l'hôte qui compose son propre watch [?]) et la surface low-level
+    @crate::Result typée de @crate::k8s::K8sGeneric (list/list_labels/list_meta/get/get_meta/
+    delete/create/replace/patch/apply), miroirs NON-registrés des `rhai_*`.
+  Exposer @crate::k8s::K8sRaw : @crate::k8s::K8sRaw::new (clone de @crate::k8s::RAW_CLIENT) ;
+    @crate::k8s::K8sRaw::get_url GET SEULEMENT sur URL passe VERBATIM (relatif résolu par
+    @kube::Client, absolu accepté tel quel [?]) via @kube::Client::request, rend le CORPS JSON
+    seul — un non-2xx fait perdre le corps d'erreur @kube::core::status qui devient l'erreur
+    elle-même (le code de statut n'est JAMAIS rendu au script [?]) ;
+    @crate::k8s::K8sRaw::get_url_as_disco ajoute l'en-tête Accept Discovery (les DEUX versions
+    apidiscovery v2+v2beta1 verbatim, ./k8s.rs 1171-1176) ;
+    @crate::k8s::K8sRaw::get_api_version = GET de `/version` ; @crate::k8s::K8sRaw::get_api_resources
+    = GET de `/apis` BRUT (le CACHE n'est PAS consulté, rien n'est filtré ni aplati), en-tête
+    Discovery ; le registre raw RENOMME `get_cluster_version` sur la méthode d'API version (le
+    nom `get_api_version` n'existe PAS en script [?]) ; les wrappers `rhai_*` refont un
+    double @serde_json round trip identity (coût sans gain [?]).
+  Enregistrer en Rhai exactement : `k8sgeneric_rhai_register` = type @kube::api::DynamicObject
+    (getter `data` CLONANT le map data) + macros sur @crate::k8s::K8sObject ("K8sObject" : 3
+    getters `kind`/`original_kind`/`metadata`, 7 méthodes `delete`/`wait_condition`/`wait_status`/
+    `wait_status_prop`/`wait_status_string`/`wait_for`/`wait_deleted`) et @crate::k8s::K8sGeneric
+    ("K8sGeneric" : 23 méthodes `k8s_resource`×3-rités, `list`×2, `update_k8s_crd_cache`,
+    `list_meta`, `get`, `get_meta`, `get_obj` (→ K8sObject), `delete`, `create`, `replace`,
+    `patch`, `apply`, `exist` + getter `scope`) ; `k8sraw_rhai_register` = "K8sRaw" + 4 noms
+    `new_k8s_raw`/`get_url`/`get_cluster_version`/`get_api_resources` ; `k8sworkload_rhai_register`
+    = 4 types `K8sDeploy`/`K8sDaemonSet`/`K8sStatefulSet`/`K8sJob`, chacun 1 constructeur
+    (`get_deployment`/`get_deamonset` TYPO verrouillée/`get_statefulset`/`get_job`, ns+name
+    obligatoires, AUCUN namespace `default` par défaut) + 3 getters `metadata`/`spec`/`status`
+    + `wait_available` ou `wait_done` (Job) ; les trois constructeurs workload construisent
+    l'@core::default::Api DEUX FOIS (bug de style sans effet [?]) et l'objet typé
+    @k8s_openapi est PORTÉ par le handle, getter via string round-trip @core::primitive::str →
+    @serde_json → @rhai::Dynamic, `spec`/`status` absent → @rhai::Dynamic::UNIT.
+  Exposer les conditions workload typées @core::marker::must_use (Rust-only, non script) :
+    DaemonSet `desired_number_scheduled == number_available` avec repli @core::primitive::bool
+    sur les deux (absence = faux), StatefulSet `spec.replicas.unwrap_or(0) == available_replicas`
+    — wait disponible avec replicas absent compte 0, PAS `default` kube 1 [?], Deployment : la
+    PREMIÈRE condition `Available` trouvée dans `status.conditions` (le premier matching gagne,
+    pas le plus récent).
+  Simuler côté mock sans AUCUN @tokio (zéro pont, zéro panic runtime) une table de noms
+    IDENTIQUE (mêmes macros @crate::register_k8s_object/@crate::register_k8s_generic/
+    @crate::register_k8s_raw rejouées + closures workload) sur @crate::k8s_mock::K8sGenericMock/
+    @crate::k8s_mock::K8sObjectMock/@crate::k8s_mock::K8sRawMock/@crate::k8s_mock::K8sWorkloadMock
+    portés par DEUX @std::sync::Arc<@std::sync::Mutex<@std::vec::Vec de @rhai::Dynamic>>> —
+    base de mocks et journal `created` — PARTAGÉS entre tous les handles par @core::clone::Clone
+    (le clone d'un handle clone l'état partagé, pas les données) ; 13 sites de lock tolèrent
+    l'empoisonnement @std::sync::PoisonError::into_inner (un panic sous lock ne contamine pas le
+    mock) ; fixtures filtrées À LA CONSTRUCTION du handle generique (`my_mocks`) sur
+    `kind == name` EXACT et SENSIBLE À LA CASSE (le vrai accepte pods/Pod/POD — le mock veut le
+    kind EXACT ; incompatibilité piège [?]) ; `scope` du mock TOUJOURS `namespace` ; `exist`
+    TOUJOURS @core::primitive::bool vrai ; `list`/`list_meta` rendent TOUJOURS le snapshot
+    figé à la construction (les écritures ultérieures n'y entrent JAMAIS — seul `get`
+    retombe sur la base VIVANTE), forme `{"items": [...]}` sans metadata de liste ; `get_meta`
+    renvoie l'OBJET COMPLET (la rustdoc l'admet, la table d'incompat [?]) ; `get` manquant →
+    erreur chaîne `Failed to find {:} {:} in the Mock database` (une 2ᵉ variante pour la
+    search par namespace) ; write : `kind` backfill, `patch` N'ÉCRIT JAMAIS dans `created` —
+    upsert deep-merge dans les mocks SEULEMENT [docs mocking.md dit le contraire [?]] — alors
+    que `create`/`replace`/`apply` écrivent DANS `created` la vue FUSIONNÉE avec l'existant ;
+    `apply` seul remplit `metadata.namespace` (et seulement si `metadata` EXISTE comme map),
+    `create`/`replace` ne touchent pas au namespace du contenu ; waits du mock (workloads ET
+    K8sObjectMock) = @core::result::Result::Ok(() immédiat ; K8sObjectMock::wait_for évalue le
+    predicate UNE FOIS et rend la longue erreur chaîne
+    `wait_for: predicate returned false for mocked {:} (the mock evaluates the predicate once... never polls)`
+    si faux ; `update_k8s_crd_cache` du mock est un
+    no-op qui NE RÉÉCRIT PAS le cache (la correction du vrai module par `update_cache` passe
+    UNIQUEMENT parce que @crate::k8s_mock::k8s_mock_rhai_register réenregistre par-dessus —
+    ordre fragile [?]) ; K8sObjectMock::get_metadata → erreur chaîne
+    `Failed to extract metadata from a {:}` quand `obj` n'est pas une map ou que `metadata`
+    manque.
+  Maintenir le harnais : aucun `unwrap`/`expect` de production hors les deux @expect_used
+    documentés (§Must LazyLock) + les tests ; les `unwrap_or` contractés ci-dessus
+    (`uid`, `timeout_duration`, conditions unwrap_or(0)/false) sont des replis, pas des panic.
+
+Must not:
+  Auto-wire quoi que ce soit dans @crate::engine::Script::new_bare (les trois enregistreurs
+    sont à rappeler par l'hôte, ./engine.sdd) ni choisir un registre pour l'autre (generic, raw,
+    workload et mock sont des appels séparés et cumulables).
+  Construire une config kube (@kube::Config::incluster ou @kube::Config::default) : la factory
+    GET_CLIENT est LA source du @kube::Client ; sans elle, tout premier touch panique — c'est
+    le contrat d'erreur, pas une erreur à convertir.
+  Traiter un objet 404 comme un état normal : get/get_meta/delete sur absent → @variant-Error::KubeError ;
+    `exist` ne dit RIEN de l'objet.
+  Pager les listes, borner les tailles, retry sur 429/timeout : @kube::api::ListParams::default
+    nu, le `continue` d'@kube::api::ListParams est JETÉ.
+  Offrir une alternative d'écriture au SSA forcé, un namespace par défaut, une arborescence de
+    statut HTTP dans `K8sRaw`, un body non-JSON dans `get_url` (le round trip passe par
+    @serde_json — un body texte casse en erreur @variant-Error::RawHTTP/@variant-Error::KubeError plutôt
+    que de sortir en chaîne), ni un `get_api_version` en script (renommé `get_cluster_version`).
+  Convertir les panics (@crate::get_client_name unset, ponts @tokio::task::block_in_place hors
+    runtime multi-thread, LazyLock non wired, discovery initiale ratée) en erreurs Rhai : la
+    panic se propage traverse Rhai ; borne [?] ouvertes partagées avec ./s3.sdd, ./oci.sdd et
+    ./http.rs.
+  Figer la sémantique de @kube::discovery sur les agrégations (le tri `spec.service`/`spec.group`
+    est un contrat INTERNE local sur données JSON, verrouillé par tests inline) sans promettre la
+    behaviorance des versions futures de @kube.
+
+Depends on:
+  kube — @kube::Client (request, get_url/patch/create/replace, discovery()), @kube::api::Api
+    (all_with/namespaced_with/default_namespaced_with [mort], typed variants pour les 4 workloads),
+    @kube::api::DynamicObject/@kube::api::PartialObjectMeta/@kube::api::ObjectList, @kube::api::ListParams/
+    @kube::api::PostParams/@kube::api::DeleteParams/@kube::api::PatchParams/@kube::api::Patch/@kube::api::PostParams,
+    @kube::discovery::Discovery/@kube::discovery::ApiGroupDiscovery/@kube::discovery::ApiResourceDiscovery
+    (@kube::discovery::ApiResourceDiscovery scope/kind/plural/version, groups()/resources_by_stability()),
+    @kube::runtime::wait (await_condition, conditions::is_deleted/@kube::runtime::wait::conditions::is_job_completed,
+    @kube::runtime::wait::Condition), @kubeError (Display jamais contracté) ; 3.1.0 lock.
+  k8s-openapi — @k8s_openapi::api::apps::v1::{@k8s_openapi::api::apps::v1::DaemonSet, @k8s_openapi::api::apps::v1::Deployment,
+    @k8s_openapi::api::apps::v1::StatefulSet}, @k8s_openapi::api::batch::v1::Job : structure du corps
+    rendue sans filtering (champs et optionnalités appartiennent à la dépendance, version latest) ;
+    @kube::CustomResource pour le typage API des workloads.
+  tokio — @tokio::task::block_in_place + @tokio::runtime::Handle::current (prérequis runtime multi-thread,
+    PANIQUE sinon, borne partagée [?]) ; @tokio::time::timeout SANS feature `time` déclarée
+    (empruntée à @kube via unification [?]) ; @tokio::sync::RwLock du CACHE.
+  rhai / crate — @rhai::Engine/@rhai::Dynamic/@rhai::FnPtr/@rhai::NativeCallContext/Map via
+    @reexport-surface de ./engine.rs, @crate::rhai_err/@crate::rhai_err_str/@crate::error_chain,
+    @crate::get_client_name, @crate::RhaiRes ; macros `#[macro_export]` pub @crate::register_k8s_object/
+    @crate::register_k8s_generic/@crate::register_k8s_raw publiées avec le crate (contrat :
+    stables enough for downstream custom types [?]).
+  serde_json — conversions Map↔Dynamic partout (write side) et double passe lecture ; @http
+    (transitif @kube) : @variant-Error::RawHTTP via le @http::Request builder de `K8sRaw`.
+  cosign/binary — RIEN : aucune dépendance externe ici (la signature est l'affaire de ./oci.rs).
+
+Exposes:
+  @crate::k8s::set_get_client/set_get_labels/set_get_owner/set_get_owner_ns, @crate::k8s::context_is_wired,
+    @crate::k8s::update_cache (ré-export @crate::update_cache), @crate::k8s::k8sgeneric_rhai_register,
+    @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register,
+    @crate::register_k8s_object/@crate::register_k8s_generic/@crate::register_k8s_raw (`#[macro_export]`).
+  @crate::k8s::GET_CLIENT/@crate::k8s::GET_LABELS/@crate::k8s::GET_OWNER/@crate::k8s::GET_OWNER_NS
+    (pub static @core::cell::OnceLock), @crate::k8s::CLIENT/@crate::k8s::RAW_CLIENT (pub
+    @std::sync::LazyLock @kubeClient), @crate::k8s::CACHE (pub LazyLock @tokio::sync::RwLock<@kube::discovery::Discovery>).
+  @crate::k8s::K8sObject pub `#[derive(Clone, Debug)]` (champs `api`/`obj`/`kind` PUBS) —
+    méthodes §Purpose ; @crate::k8s::K8sObject::is_condition/@crate::k8s::K8sObject::is_status/
+    @crate::k8s::K8sObject::have_status/@crate::k8s::K8sObject::have_status_value (`#[must_use]`,
+    Rust-only).
+  @crate::k8s::K8sGeneric pub `#[derive(Clone, Debug)]` (champs `api`/`ns`/`kind`/`scope` PUBS) :
+    @crate::k8s::K8sGeneric::new/@crate::k8s::K8sGeneric::new_api_version (Rust, ns Option)
+    + @crate::k8s::K8sGeneric::new_global/@crate::k8s::K8sGeneric::new_ns/@crate::k8s::K8sGeneric::new_group_ns
+    (Rhai) ; surface low-level @crate::Result : list/list_labels/list_meta/get/get_meta/delete/
+    create/replace/patch/apply/ exist + les `rhai_*` (exist/get_obj inclus ; `get_obj` rend
+    @crate::k8s::K8sObject).
+  @crate::k8s::K8sRaw pub `#[derive(Clone)] pub struct` : new + async get_url/get_url_as_disco/
+    get_api_version/get_api_resources (@crate::Result<@serde_json::Value>) + les 3 `rhai_*`.
+  @crate::k8s::K8sDaemonSet/@crate::k8s::K8sStatefulSet/@crate::k8s::K8sDeploy/@crate::k8s::K8sJob
+    pub structs typés @k8s_openapi (champs `api`/`obj` PUBS) : constructeur pub (`get_deamonset`
+    typo assortie côté Rust aussi), async low-level get + wait, getters `metadata`/`spec`/`status`
+    en @crate::RhaiRes, conditions @core::marker::must_use (Rust-only), `wait_available`/`wait_done`.
+  @crate::k8s_mock::k8s_mock_rhai_register, @crate::k8s_mock::K8sGenericMock/
+    @crate::k8s_mock::K8sObjectMock (pub `obj` @rhai::Dynamic + pub `kind`)/@crate::k8s_mock::K8sRawMock/
+    @crate::k8s_mock::K8sWorkloadMock (pub fields §mock), constructeurs pub mirror (`new_global`/`new_ns`/
+    `new_group_ns` recevant les Arc), K8sObjectMock::get_metadata pub, getters pub.
+  Aucun type privé contracté (excluded_apiservice_groups, async_populate_cache, populate_cache,
+    prepare_handle, job_is_completed, find_workload_mock, upsert_in_list, merge_with_existing sont
+    internes — seuls leurs EFFETS sont contractés).
+
+Accepts:
+  Des noms de ressources en kind OU plural, casse indifférente (vrai) — en kind EXACT casse
+    exacte (mock `my_mocks` filter) ; des ns chaîne quelconque (aucun pattern, aucun défaut) ;
+    `api_version` avec ou sans `/` (le sans-`/` ignore silencieusement la version).
+  Des bodies d'écriture : tout @rhai::Dynamic convertible en map JSON (sinon erreur de
+    conversion Rhai) ; `metadata.labels`/`ownerReferences` existants sont FUSIONNÉS/REPLACÉS
+    selon §Must ; aucun schéma @k8s_openapi n'est appliqué aux DynamicObject (le serveur tranche).
+  Des timeouts de wait en secondes i64 — négatif = immédiat (clamp 0), zero = immédiat.
+  `get_url` : n'importe quel URL (relatif ou absolu) ; des watches FnPtr Rhai retournant tout
+    @rhai::Dynamic (truthiness via @core::convert::TryInto<@core::primitive::bool>).
+  Le mock : fixtures maps @rhai::Dynamic avec `kind`/`metadata.name` (+ namespace si handle ns) ;
+    les fixtures sans `kind` matchable ne servent qu'aux `get` par nom sur la base vivaante.
+
+Returns:
+  `list`/`list_meta`/`get`/`get_meta`/`create`/`replace`/`patch`/`apply` (rhai) :
+    @rhai::Dynamic de l'objet ou de la liste COMPLÈTE (docobjet kube : apiVersion/kind/metadata/
+    spec/status) — jamais le `data` nu (le getter `data` est réservé au type "DynamicObject" du
+    CACHE et aux données de l'objet lui-même) ; `get_obj` : handle @crate::k8s::K8sObject ;
+    `delete` : unité (@core::result::Result unit) avec suppression Foreground ; `exist` :
+    @rhai::Dynamic booléen (résolution du CACHE uniquement) ; `scope` : chaîne `namespace`/`cluster`.
+  Workloads (rhai) : `metadata`/`spec`/`status` en @rhai::Dynamic (round-trip chaîne),
+    absent → @rhai::Dynamic::UNIT ; `wait_available`/`wait_done` : unité au succès.
+  Rust low-level : types @kube typés (@kube::api::ObjectList<@kube::api::DynamicObject>, @kube::api::DynamicObject,
+    @kube::api::PartialObjectMeta, @k8s_openapi typés pour les workloads).
+  @crate::k8s::CACHE/client statics : accès directs contractés (mutabilité du @tokio::sync::RwLock
+    incluse — l'hôte peut écrire son @kube::discovery::Discovery).
+
+Raises:
+  @variant-Error::KubeError (préfixe `K8s error: ` + Display @kube interne jamais contracté) :
+    tout appel API non-2xx et tout échec de transport ; @variant-Error::SerializationError :
+    échec @serde_json dans les deux sens (read side double passe et write side from_dynamic/map)
+    côté low-level (@variant-Error::Stdio jamais ici) ; @variant-Error::UnsupportedMethod : méthode sur
+    handle non-résolu (11 sites) ; @variant-Error::RawHTTP : @http::Request builder de `K8sRaw` ;
+    @variant-Error::Elapsed (dépassement) et @variant-Error::KubeWaitError (watch cassé) sur les waits.
+  Erreurs à chaîne locale (Rhai uniquement, @crate::rhai_err_str) : l'unique chaîne fabriquée
+    du vrai `cannot wait for deletion of {:}: uid is missing` (wait_deleted sans uid) ;
+    côté mock : §mock (Failed to find ×2, Failed
+    to extract metadata, wait_for predicate long message).
+  PANIQUES documentées, jamais converties : @core::result::Result::expect
+    `k8s context not initialized` (touch CLIENT/RAW_CLIENT sans provider) ; l'autre expect
+    `create discovery (excluding api-services)` (premier accès CACHE raté — LazyLock empoisonné,
+    panic permanente) ; ponts @tokio hors runtime multi-thread ; @crate::get_client_name unset
+    sur patch/apply (./client_name.sdd).
+
+Handles:
+  Providers « premier gagne » (@core::cell::OnceLock) jamais réécrasables — une réinitialisation
+    de contexte en process est IMPOSSIBLE par design [?].
+  @std::sync::LazyLock + @tokio::sync::RwLock : l'init discovery panique au premier touch ;
+    @crate::k8s::update_cache est la SEULE voie douce de rattrapage (ancien cache gardé, le panic
+    du premier touch EST définitif pour ce static — un host doit garantir que le premier appel
+    réussit [?]).
+  @std::sync::PoisonError::into_inner (mock) : un panic sous Mutex rend la data quand même.
+  @core::cell::RefCell dans wait_for : l'erreur du predicate survit au watch (first-wins).
+  @k8s_openapi structs : champs inconnus du serveur traversent sans filtering (DynamicObject) ou
+    sont perdus silencieusement (workloads typés) [?].
+
+Tasks:
+  [ ] Convertir les Scenario sans test en tests passants. ./k8s.rs a 28 tests inline (résolution
+    APIService agrégé, job_is_completed ×5, prepare_handle ×7, conditions ×15) et ./k8s_mock.rs 8
+    (wait_for once + registers compilent + update_cache noop) : couverts par les Scenario ci-dessus
+    via ces tests ; NON COUVERTS faute de seam : les LazyLock panic (messages), update_cache
+    timeout et garde de cache (besoin d'un @kube::Client mock — @tower-test est en dev-deps),
+    la résolution par CACHE (kind/plural/ambiguïté — même besoin), les `rhai_*` face API
+    (get/list/404, SSA params, injection labels/owner en script), K8sRaw (url verbatim, corps
+    JSON, renomme `get_cluster_version`), workloads (typo, 2×Api, replis spec.status), et cotes
+    du mock : get_meta objet complet, list snapshot, created/mocks divergence patch, kind
+    casse-exact, ns backfill apply-seul, PoisonError.
+
+  [?] Timeout de @crate::k8s::update_cache : le message warn dit `30s`, @std::time::Duration est
+    `from_mins(1)`. Corriger le texte en 60s ? (docs/rhai_helpers.md dit 60s.)
+  [?] @crate::k8s::K8sGeneric::new_global (et `new` sans ns) = all-namespaces (Api::all_with) y
+    compris pour ressources namespaced : figé « toutes namespaces » ou exiger ns / @core::option::Option::Some ?
+  [?] Liste sans pagination : @kube::api::ListParams::default, le `continue` est jeté — un gros
+    cluster rend TRONQUÉ en silence : paginer, ou documenter que c'est l'hôte qui borne ?
+  [?] Deux « terminé de Job » : @crate::k8s::job_is_completed (apply fallback : succeeded>0 OU
+    completionTime) vs @kube::runtime::wait::conditions::is_job_completed (wait_done : condition Completed) — harmoniser ?
+  [?] wait_for du vrai : une exception du predicate ARCHIVÉE fait ÉCHOUER un watch qui finit vrai ;
+    le mock évalue UNE fois et ne retry jamais : aligner la doc, ou changer ?
+  [?] @crate::k8s::K8sObject::get_kind (repli chaîne vide, types runtime) vs `original_kind` (kind
+    résolu) : les deux exposés = contrat voulu, ou repli @core::option::Option::Option ?
+  [?] @crate::k8s::K8sRaw::get_url : non-2xx perd le corps d'erreur (code statut absent au script)
+    et le body non-JSON casse : exposer status+text, ou réserver `get_url` au JSON sûr ?
+  [?] Renommage script `get_cluster_version` vs méthode `get_api_version` : alias manquant volontaire ?
+  [?] Workload StatefulSet disponible : `spec.replicas.unwrap_or(0)` — Kubernetes defaulte à 1 :
+    aligner 0/1 ?
+  [?] @k8s feature `futures` importée nulle part, @tokio feature `time` non déclarée (emprunt
+    @kube) : nettoyer le Cargo.toml (rupture possible pour le downstream compilé
+    `--no-default-features` + `--features k8s` si @kube change ses propres features [?]).
+  [?] Mock : `get_meta` = objet complet, `list` snapshot mort aux écritures, `created` jamais par
+    `patch`, `apply` seul remplit ns — trahir ASSUMÉ (mocking.md muet) à documenter, ou aligner sur le vrai ?
+  [?] `update_k8s_crd_cache` mock : no-op par sur-réenregistrement d'ordre — le réenregistrer
+    avant le VRAI dans mocking.md ou le retirer ?
+  [?] Macros `#[macro_export]` exportées (register_k8s_object/generic/raw) : contrat de compat crates.io
+    (stables pour types custom downstream) ou en interne ?
+
+Scenario: k8s en feature off, tout s'éteint en bloc
+  Given le crate compilé `--no-default-features` (k8s n'est PAS dans default, ./README l.34)
+  Then ni @crate::k8s ni @crate::k8s_mock ni @crate::update_cache n'existent ; `k8s_resource`
+    est un nom inconnu de tout engine (jamais auto-wired, ./engine.sdd)
+
+Scenario: provider premier gagne, context_is_wired complet seul suffit
+  Given @crate::k8s::set_get_client(f1) puis @crate::k8s::set_get_client(f2)
+  Then f2 est SILENCIEUSEMENT ignorée (OnceLock::set().ok())
+  Given les 4 providers + @crate::client_name_is_set
+  Then @crate::k8s::context_is_wired vrai ; sans l'UN SEUL des cinq, faux
+
+Scenario: sans provider, chaque premier touch panique avec son message
+  Given un process sans set_* et un runtime tokio multi-thread
+  When @crate::k8s::CLIENT est touché le premier
+  Then panic `k8s context not initialized` (expect + @allow expect_used)
+  When @crate::k8s::CACHE est touché ET que la discovery rate
+  Then panic `create discovery (excluding api-services)` — définitive (LazyLock poison) [?]
+
+Scenario: discovery exclut les agrégés, survit au listage APIService
+  Given un cluster avec un APIService `spec.service` présent + `spec.group` rempli et un autre
+    `spec.service: null`
+  Then la discovery N'EXCLUT que le premier (agrégé) ; le service LOCAL reste INCLUS — verrouillé
+    par tests inline (aggregated_apiservice_group)
+  Given un listing d'APIServices qui rate
+  Then SEULEMENT un warn `E_DISCOVERY_WARN: cannot list APIServices ({e}) ...` et discovery
+    SANS exclusions, sans échec
+
+Scenario: update_cache timeout 60s garde l'ancien, text dit 30s
+  Given un CACHE peuplé puis @crate::update_cache avec une discovery éternellement lente
+  Then au bout de 60s : warn `E_DISCOVERY_TIMEOUT: ... exceeded 30s ...` [?] et l'ANCIEN cache
+    intact, AUCUNE panic — @tokio::time::timeout(from_mins(1)) [seam tower-test, Tasks]
+
+Scenario: new_ns insensible et pluriel, min-lexicographique tranche, zéro appel
+  Given un CACHE artificiel avec `pods` en group cœur ("" ) et un CRD `Pod`/`pods` en `acme.io`
+  When @crate::k8s::K8sGeneric::new de `PODS`, `Pod`, `pods` avec ns `app`
+  Then les trois résolvent ; l'ambiguïté cœur vs acme.io part au cœur (min_by_key lexicographique)
+  And AUCUN appel API n'a lieu (CACHE seul), aucun ns `default` jamais posé
+  Given une resource en @core::option::Option::None de résolution
+  Then le handle @core::option::Option::None ne RATE pas la construction : `get(...)` → erreur
+    `Unsupported method` à l'usage, non à la construction
+
+Scenario: new_global = toutes les namespaces (la doc ment)
+  Given la resource `pods` (namespaced) en cache
+  When `k8s_resource("pods")` (1 chaîne) alors `list()`
+  Then @kube::api::Api::all_with : le résultat couvre TOUTES les namespaces (la doc rhai_helpers
+    « the resource's actual scope » est FAUSSE [?])
+  And `scope` rend `namespace` (le scope de la RESOURCE, pas celui de la query)
+  Given `k8s_resource("v1", "mod", "ns")` (sans `/`)
+  Then résolution simple SILENCIEUSEMENT sans check de version [?]
+
+Scenario: 404 est une erreur, exist est un ouï-dire du cache
+  Given @crate::k8s::K8sGeneric résolu pour pods et ns app
+  When `get("absent")` puis `get_meta("absent")` puis `delete("absent")`
+  Then les TROIS en erreur chaîne commençant par `K8s error: ` (préfixe seul contracté)
+  When `exist()` sur un handle où AUCUN objet de ce type n'existe
+  Then vrai SI la discovery a résolu la resource — l'objet n'est jamais regardé ; sur handle
+    non-résolu `exist` rend faux SANS erreur (jamais UnsupportedMethod)
+
+Scenario: labels et ownerReferences injectés à chaque écriture
+  Given providers labels `@core::default::map {app=web}` et owner avec ownerNs == ns du handle
+  When `create(data)` dont metadata.labels porte `app=mine`
+  Then l'apply parti au serveur porte labels FUSIONNÉS : clés existantes GARDÉES, absentes
+    ajoutées ; ownerReferences = existantes + owner APPENDU en fin d'array
+  Given un owner dont GET_OWNER_NS diffère du ns du handle (ou handle global)
+  Then ownerReferences ABSENT — silent ; labels TOUJOURS — tests inline prepare_handle
+
+Scenario: patch et apply = SSA forcé fieldManager client_name ; replace = PUT nu
+  Given @crate::set_client_name("my-app.example.com") et un handle résolu
+  When `patch("n", data)`
+  Then @kube::api::PatchParams::apply(my-app.example.com).force() + @kube::api::Patch::Apply —
+    JAMAIS de MergePatch/JSONPatch, `force:true` pose les conflits en écrasant
+  When @crate::k8s::K8sGeneric::replace sans resourceVersion sur objet concurrent
+  Then conflit 409 `K8s error:` remonté nu (aucune prélecture, aucun retry)
+  Given @crate::set_client_name JAMAIS appelé et un patch en script
+  Then LA PANIC client_name.rs traverse l'engine (non convertie en erreur Rhai)
+
+Scenario: apply replie un Job immuable déjà complet, pas un autre
+  Given un apply corps `kind: Job` sur un Job dont l'apply rate sur erreur contenant `immutable`
+    et dont `status.succeeded: 3`
+  Then RETOUR Ok de l'objet GET actuel (pas la version envoyée) [seam needed]
+  Given le même mais `status.conditions Completed=false` sans completionTime
+  Then l'erreur @variant-Error::KubeError reste telle quelle — @crate::k8s::job_is_completed
+    ne ment pas [test inline job_is_completed ×5]
+  Given un corps `kind: job` minuscule
+  Then PAS de repli (comparaison exacte, sensible à la casse)
+
+Scenario: waits — secondesclamp, Elapsed puis KubeWaitError, uid seul message local
+  Given un handle K8sObject
+  When `wait_deleted(-5)` sur objet sans uid
+  Then erreur chaîne `cannot wait for deletion of name: uid is missing` AVANT timeout (clamp
+    irrelevant ici) ; le `-5` seul devient timeout `0 s` immédiat @variant-Error::Elapsed
+  Given un watch qui meurt (API injoignable) en `wait_condition("Ready", 30)` (condition True
+    stricte de status.conditions)
+  Then @variant-Error::KubeWaitError via rhai_err
+
+Scenario: wait_for archive l'erreur du predicate même si la suite réussit
+  Given un predicate qui lève au 1er event puis retourne vrai au 2ᵉ
+  When `wait_for(fn, 0)` sur le VRAI K8sObject
+  Then l'ARCHIVÉE @core::cell::RefCell (first-wins) est RETOURNÉE COMME ERREUR malgré la fin
+    vraie [?] des Tasks
+  Given le même sur @crate::k8s_mock::K8sObjectMock
+  Then évaluation UNE fois ; faux → texte long exact (mock evaluates the predicate once...)
+
+Scenario: K8sRaw passe l'URL verbatim et ne rend que le corps JSON
+  Given un @crate::k8s::K8sRaw
+  When `get_cluster_version("/version")` en script
+  Then @crate::k8s::K8sRaw::get_api_version GET `/version`, RENDU du corps JSON SEUL (le nom
+    d'API version en script N'EST PAS `get_api_version` [?])
+  Given une réponse 404 du serveur
+  Then erreur (l'extrait du corps de statut est PERDU [?])
+  Given une réponse corps texte
+  Then cassure @serde_json en erreur, jamais une chaîne de body
+
+Scenario: workloads — ns/name obligatoires, typo get_deamonset, spec/ status absents UNIT
+  Given `k8sworkload_rhai_register` sur un engine
+  Then `get_deamonset("ns","d")` EXISTE typo verrouillée (docs l'assument) et `get_deployment`
+    avec ns "" → namespace VIDE passé tel quel [?] (aucun default)
+  Given un objet sans status du tout
+  When `.status` getter
+  Then @rhai::Dynamic::UNIT (round-trip chaîne spec/status absent — tests à écrire) ; l'objet
+    typé est porté par le handle (get_deamonset a construit le Api DEUX fois — sans effet [?])
+  Given un StatefulSet sans .spec.replicas et availableReplicas 0
+  When `wait_available(0)` → la condition compares replicas unwrap_or(0) == available : VRAI ici ;
+    un pod spec kube defaulte pourtant 1 [?]
+
+Scenario: les trois registres, surface verrouillée par macro
+  Given @crate::k8s::k8sgeneric_rhai_register seul sur un engine
+  Then 3 types (DynamicObject data-getter, K8sObject 3 getters + 7 méthodes, K8sGeneric 23 méthodes
+    y compris `update_k8s_crd_cache` et `get_obj`) ; `new_k8s_raw`/`get_deployment` ABSENTS
+  Given @crate::k8s::k8sraw_rhai_register
+  Then les 4 noms dont le RENOMMÉ `get_cluster_version` ; Given workload register → 4 types, chaque
+    1 constructeur + 3 getters + wait ; les trois cumulables, `is_condition` JAMAIS en script
+
+Scenario: mock 1:1 en surface, traître sémantiquement
+  Given @crate::k8s_mock::k8s_mock_rhai_register(engine, mocksArc, createdArc) sur un moteur
+  Then MÊME surface de noms que les trois registres vrais (macros rejouées, closures workload)
+    sans AUCUN trou (contrairement à ./http_mock [?]) ; sans `@tokio` : appelable du main nu
+  Given fixtures [{kind:"pods", metadata:{name:a,namespace:app}}] et handle k8s_resource("Pod","app")
+    (casse différente)
+  Then `list()` = `{"items":[]}` — le snapshot filtre kind == `Pod` EXACT SENSIBLE À LA CASSE
+    (le vrai aurait accepté pods/Pod/POD [?])
+  Given un `get("a")` puis `create(newObj)` sur le même handle
+  Then `get("a")` trouve (snapshot OU base vivante) ; `list()` ne voit PAS le create (snapshot
+    figé) ; `created` porte la VUE FUSIONNÉE du create ; un `patch()` N'ÉCRIT PAS dans `created` ;
+    `get_meta("a")` rend l'OBJET COMPLET [?]
+
+Scenario: mock waits exist et no-op updates
+  Given n'importe quel @crate::k8s_mock::K8sGenericMock
+  Then `exist()` TOUJOURS vrai, `scope` TOUJOURS `namespace` ; `wait_condition`/`wait_status`/...
+    du mock = @core::result::Result::Ok immédiat SANS predicate ni watch ; `delete(name)` no-op Ok
+  When `update_k8s_crd_cache()` du mock
+  Then AUCUN touch de provider, AUCUNE panic même sans set_get_client — la correction tient
+    seulement à l'ordre de réenregistrement [?] ; Given @crate::k8s_mock::K8sRawMock
+  Then les trois rendent une map VIDE figée
