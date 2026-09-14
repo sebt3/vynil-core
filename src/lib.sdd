@@ -1,0 +1,268 @@
+Spec: lib
+
+Purpose:
+    Contrat de la racine de crate (./lib.rs) : la façade publique — @variant-Error et ses
+    Display gelés (source de vérité des textes d'erreur vus par les consommateurs et les
+    scripts), @fn-error_chain qui remonte les chaînes @source(), les deux fabriques
+    d'erreurs Rhai (@fn-rhai_err, @fn-rhai_err_str), les alias @type-Result et
+    @type-RhaiRes, les 19 déclarations de modules qui fixent la carte des features, les 9
+    ré-exports racine, et l'exemption `cfg(test)` du harnais clippy — celle-ci déjà
+    contractualisée par ./tooling.sdd, référencée ici sans être re-contractualisée.
+
+Owns:
+  ./lib.rs
+
+References:
+  ./vyvil-core.sdd — graphe de features (`k8s`/`oci`/`s3`/`http` impliquent `rhai`,
+    `hbs-scripting` isolable), frontières de crate (aucun client_name par défaut, aucune
+    CRD, aucune dépendance à vynil/kuberest/kydah) ;
+  ./tooling.sdd — harnais `[lints]` de ../Cargo.toml et l'exemption `cfg(test)` portée par
+    la racine (l.93-107) ;
+  ./client_name.sdd — les trois fonctions ré-exportées @fn-set_client_name, @fn-get_client_name,
+    @fn-client_name_is_set VIVENT là-bas, pas ici ;
+  ./semver.sdd — @struct-Semver ré-exporté ; ./engine.sdd — @struct-Script ; ./hbs.sdd —
+    @struct-HandleBars et le module privé ./hbs_json ; ./k8s.sdd — @fn-update_cache ;
+  ./chrono.sdd, ./hashes.sdd, ./password.sdd, ./yaml.sdd, ./key.sdd, ./glob.sdd, ./http.sdd
+    (avec son mock ./http_mock.sdd via ./http.sdd), ./oci.sdd, ./s3.sdd, ./shell.sdd — tous
+    déclarés ici ;
+  ../Cargo.toml — l.50 `default` = http/crypto/rhai/hbs/hbs-scripting ; 11 features au
+    total, la table de doc des features (l.14-26) les énumère toutes avec le même statut
+    default que le manifest.
+
+Must:
+  Dériver @variant-Error de @thiserror (import @use l.110) et de @core::fmt::Debug
+    seulement : AUCUN impl manuel de @core::fmt::Display ni de @core::error::Error — tout
+    texte vient des attributs `#[error(...)]`, et @core::error::Error::source est alimenté
+    par les seuls `#[from]`/`#[source]`. L'enum compile et reste stable à
+    `--no-default-features`.
+  28 variantes tuple, champs publics accessibles par déstructuration : 15 non gated, 13
+    gated chacune avec `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`.
+  Display exacts, contrats caractère par caractère — variantes NON gated (compilées même
+    sans aucune feature) :
+    @variant-Error::SerializationError — `#[from]` @serde_json::Error — `SerializationError: {0}` ;
+    @variant-Error::YamlError — @std::string::String posé manuellement, pas de @core::convert::From
+      — `YamlError: {0}` ;
+    @variant-Error::JsonError — `#[source]` @serde_json::Error SEULEMENT, jamais converti —
+      `Json decoding error: {0}` — le @core::convert::From de @serde_json::Error est UNIQUEMENT
+      celui de @variant-Error::SerializationError, d'où construction manuelle de JsonError en
+      amont (./http.sdd) avec @core::error::Error::source disponible ;
+    @variant-Error::MethodFailed — trois champs (méthode, statut, corps) mais Display
+      `{0} query failed: {1}` : le 3ᵉ champ (corps de réponse) n'est JAMAIS affiché et
+      n'a aucun accesseur, visible par la seule déstructuration [?] ;
+    @variant-Error::UnsupportedMethod — unité — `Unsupported method` ;
+    @variant-Error::MissingScript — @std::path::PathBuf — `Missing script {0}` ;
+    @variant-Error::UTF8 — `#[from]` @std::string::FromUtf8Error — `UTF8 error {0}` ;
+    @variant-Error::Semver — `#[from]` @semver::Error — `Semver error {0}` ;
+    @variant-Error::Stdio — `#[from]` @std::io::Error — `Stdio error {0}` ;
+    @variant-Error::Base64DecodeError — `#[from]` @base64::DecodeError — `Base64 decode error {0}` ;
+    @variant-Error::RawHTTP — `#[from]` @http::Error du CRATE `http` (dépendance non
+      optionnelle), NON gate par la feature `http` (reqwest) — `RAW api error {0}` ;
+      deux « http » de sens différents coexistent dans l'enum, documenté comme tel [?] ;
+    @variant-Error::ParseInt — `#[from]` @std::num::ParseIntError — `ParseIntError {0}` ;
+    @variant-Error::UnsupportedKeyAlgorithm — @std::string::String — le texte
+      `KEY-ALGO-001 Unsupported key algorithm: {0}` ;
+    @variant-Error::PasswordSpec — @std::string::String — affiché BRUT sans préfixe : `{0}` ;
+    @variant-Error::Other — @std::string::String — fourre-tout — `Error: {0}`.
+  Display exacts des 13 variantes gated (feature → variantes → texte) :
+    `hbs` → @variant-Error::HbsTemplateError `Registering template failed with error: {0}`,
+      @variant-Error::HbsRenderError `Renderer error: {0}` ;
+    `rhai` → @variant-Error::RhaiError portant @std::boxed::Box de @rhai::EvalAltResult —
+      `Rhai script error: {0}` ;
+    `http` → @variant-Error::ReqwestError — `Reqwest error: {0}` (le Display qui embrique
+      déjà sa source, motif que @fn-error_chain déduplique) ;
+    `crypto` → @variant-Error::Argon2hash `Argon2 password_hash error {0}`,
+      @variant-Error::BcryptError `Bcrypt hash error {0}`, @variant-Error::OpenSSL
+      `KEY-OPENSSL-001 OpenSSL error {0}` ;
+    `oci` → @variant-Error::OCIDistrib `OCI jukebox error {0}`, @variant-Error::OCIParseError
+      `OCI parse error {0}` ;
+    `k8s` → @variant-Error::KubeError `K8s error: {0}`, @variant-Error::KubeWaitError
+      `K8s wait error: {0}`, @variant-Error::Elapsed `Elapsed wait error: {0}`,
+      @variant-Error::FinalizerError `Finalizer error: {0}` — récursive : porte un
+      @std::boxed::Box de @kube::runtime::finalizer::Error paramétré par @variant-Error elle-même.
+  Deux textes embarquent un code brut sans constante : `KEY-ALGO-001` (non gated) et
+    `KEY-OPENSSL-001` (crypto) — gelés dans le Display [?].
+  @fn-error_chain (non gated) : part de l'@core::fmt::Display de l'erreur extérieure, puis
+    remonte @core::error::Error::source de l'extérieur vers la racine en joignant chaque
+    niveau par le séparateur `": "` (jamais avant le premier) ; la dédup est un test de
+    SOUS-CHAÎNE sur tout l'accumulé (`acc.contains`), pas l'égalité verbatim avec
+    l'ancêtre immédiat que la doc promet : un message de source déjà contenu n'importe où
+    en amont est effacé [?] ; aucune borne de profondeur ni garde anti-cycle [?] ; totale :
+    ne panique jamais, ne retourne jamais d'erreur ; sans @core::marker::must_use (contraire
+    des deux fabriques [?]).
+  @fn-rhai_err (gate `rhai`, @core::marker::must_use) : consomme @variant-Error PAR VALEUR
+    (le rappel `map_err` l'impose ; seul `#[allow]` de production de la racine, justifié en
+    une ligne, conforme ./tooling.sdd) et retourne `error_chain(&e).into()` : le message vu
+    par le script est la chaîne complète enrichie.
+  @fn-rhai_err_str (gate `rhai`, @core::marker::must_use) : conversion directe
+    @std::string::String → @std::boxed::Box de @rhai::EvalAltResult, sans chaîne.
+  Déclarations de modules, 19 au total, exactement deux familles. Sans gate (toujours
+    compilés) : @mod @crate::chrono, @crate::client_name, @crate::hashes, @crate::password,
+    @crate::semver, @crate::yaml. Gated, chacune avec sa clause `doc(cfg)` : @crate::key
+    (`crypto`) ; @crate::engine et @crate::glob (`rhai` — gate `rhai`, PAS `fs`) ;
+    @crate::hbs (`hbs`) et @crate::hbs_json (`hbs`, PRIVÉ, seule déclaration sans doc ni
+    `doc(cfg)`) ; @crate::http et @crate::http_mock (`http`) ; @crate::oci et @crate::oci_mock
+    (`oci`) ; @crate::s3 (`s3`, seul des trois gros modules sans mock déclaré ici) ;
+    @crate::k8s et @crate::k8s_mock (`k8s`) ; @crate::shell (`shell`).
+  Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : livrés aux tests des
+    consommateurs [?].
+  Le module @crate::password est compilé SANS la feature `password` : la feature n'opte que
+    les enregistrements Rhai/Handlebars (enregistrements Rhai/Handlebars, ./engine.sdd et ./hbs.sdd).
+  Ré-exports racine : 9 symboles en 5 énoncés — @fn-client_name_is_set, @fn-get_client_name,
+    @fn-set_client_name et @struct-Semver sans gate ; @struct-Script gate `rhai` ;
+    @struct-HandleBars gate `hbs` ; @fn-update_cache gate `k8s` — SEUL symbole k8s qui monte
+    à la racine, tout le reste reste sous @crate::k8s::.
+  Alias : @type-Result sans gate avec @variant-Error par défaut pour `E` ; @type-RhaiRes
+    gate `rhai` = @core::result::Result paramétré par @std::boxed::Box de @rhai::EvalAltResult.
+  Attributs de crate : `#![cfg_attr(docsrs, feature(doc_cfg))]` apparié au
+    `[package.metadata.docs.rs]` de ../Cargo.toml ; l'exemption `cfg(test)` (10 lints de la
+    famille panic/unwrap/print/arithmétique, l.93-107) — mécanisme contractualisé par
+    ./tooling.sdd, référencé ici.
+  La doc de crate est la carte du crate : statut API instable avant 1.0, table des 11
+    features miroir exact du manifest, doctest « Client identity » en fence `rust` NON gate
+    (compile sans aucune feature) qui exige les ré-exports @fn-set_client_name et
+    @fn-client_name_is_set racine, et doctest « Quick start » exécuté seulement sous
+    `rhai`+`hbs`, qui dépend de l'export racine @variant-Error pour son
+    doctest terminal `Ok::<(), vynil_core::Error>`.
+
+Must not:
+  Définir ici @fn-set_client_name, @struct-Script, @struct-HandleBars, @struct-Semver ou
+    @fn-update_cache : la racine ne fait que les ré-exporter.
+  Construire une @variant-Error hors son module de tests : la production des variantes
+    appartient aux modules émetteurs (ex. @variant-Error::MethodFailed et @variant-Error::JsonError
+    sont façonnés par ./http.sdd).
+  Introduire un @macro_use, un @macro_export ou une @macro_rules : aucune macro ne naît ni
+    n'entre par la racine (les macros `#[macro_export]` de ./k8s.sdd vivent sous leur module).
+  Re-contractualiser le harnais `[lints]` ni le mécanisme d'exemption `cfg(test)` —
+    ./tooling.sdd les détient.
+  Encoder un gate croisé `cfg(all(feature = ...))` dans une déclaration : la seule
+    occurrence est dans la fence du doctest Quick start ; les implications
+    `k8s`/`oci`/`s3`/`http` ⇒ `rhai` sont portées par ../Cargo.toml seul.
+  Aucun `unwrap`/`expect`/`panic!`/`todo!`/`println!` de production dans ./lib.rs (les
+    lints deny le garantissent, aucun `#[allow]` de la famille n'y figure hors de
+    l'exemption test).
+
+Depends on:
+  @thiserror (non optionnel, version 2 déclarée) ; les dépendances non optionnelles des
+    variantes non gated : @serde_json, @semver (features `serde`), @base64, le crate `http`
+    1.1 ; les dépendances gated des 13 variantes gated collent feature par feature au
+    manifest (rhai, handlebars, reqwest, openssl/argon2/bcrypt, oci-client, kube et
+    @tokio::time par unification — borne partagée avec ./k8s.sdd) ; @std seul pour
+    @fn-error_chain.
+
+Exposes:
+  API racine sous features par défaut : @variant-Error (28 variantes, dont 15 sans gate),
+    @type-Result, @type-RhaiRes (rhai), @fn-error_chain, @fn-rhai_err, @fn-rhai_err_str
+    (rhai), @fn-client_name_is_set, @fn-get_client_name, @fn-set_client_name,
+    @struct-Semver, @struct-Script (rhai), @struct-HandleBars (hbs) ; + @fn-update_cache
+    seulement sous `k8s`.
+  18 modules publics (6 sans gate + 12 gated), dont les trois mock http_mock/oci_mock/
+    k8s_mock publics hors `cfg(test)` ; seul @crate::hbs_json est privé.
+
+Accepts:
+  @fn-error_chain — un @core::error::Error derrière `dyn` : accepte TOUT type
+    d'erreur, y compris hors @variant-Error (chaque erreur std d'un consommateur) ;
+  @fn-rhai_err — un @variant-Error consommé par valeur ;
+  @fn-rhai_err_str — un @std::string::String consommé ;
+  @type-Result — type `T` et optionnellement `E` (@variant-Error par défaut) ;
+    @type-RhaiRes — `T` seulement.
+
+Returns:
+  @fn-error_chain — @std::string::String de la chaîne complète, toujours non vide (au moins
+    le Display extérieur), jamais de préfixe ni de séparateur orphelin ;
+  @fn-rhai_err et @fn-rhai_err_str — @std::boxed::Box de @rhai::EvalAltResult portant la
+    chaîne (l'enrichie pour le premier) ;
+  chaque @variant-Error — son texte Display figé au Must.
+
+Raises:
+  Les trois fonctions sont totales : aucun chemin d'erreur, sans IO ni arithmétique.
+  @variant-Error ne lève rien : il transporte ; les chemins d'erreur des modules émetteurs sont
+    contractés chez eux.
+
+Handles:
+  Rien à la racine : pas de catch, pas de conversion implicite au-delà des 20
+    @core::convert::From dérivés par thiserror (7 non gated, 13 gated).
+
+Tasks:
+  [ ] Convertir les Scenario sans test en tests passants. ./lib.rs porte 3 tests inline
+    (error_chain : chaîne pleine 3 niveaux, effondrement du doublon verbatim, feuille seule)
+    qui verrouillent déjà trois Scenario ; NON COUVERTS faute de seam : les 28 Display
+    (assertions de texte par feature), la surface compilable à `--no-default-features`,
+    le 3ᵉ champ caché de @variant-Error::MethodFailed, l'enrichissement de chaîne par
+    @fn-rhai_err, la visibilité de @fn-update_cache sous `k8s` seul.
+  [?] @variant-Error::MethodFailed : le corps (3ᵉ champ) hors Display et sans accesseur —
+    omission voulue (ne pas fuir des corps dans les logs) ou accessoiriser ?
+  [?] @fn-error_chain : dédup par sous-chaîne de l'accumulé (faux positifs sur messages
+    courts inclus ailleurs, ex. « timeout ») vs égalité verbatim avec l'ancêtre, comme la
+    doc le promet ?
+  [?] @fn-error_chain sans gate et sans @core::marker::must_use (asymétrie avec ses deux
+    fabriques) : utilitaire std générique assumé ?
+  [?] @fn-error_chain sans borne de profondeur ni garde anti-cycle : hypothèse d'acyclicité
+    des source() actée à vie, ou sécuriser ?
+  [?] Codes `KEY-ALGO-001`/`KEY-OPENSSL-001` gelés dans des Display sans constante :
+    contrat d'API stable pour les consommateurs qui les matchent en texte ?
+  [?] Les mock `http_mock`/`oci_mock`/`k8s_mock` publics hors `cfg(test)` : façade livrée
+    volontairement ou fuite d'outils de test ?
+  [?] Le module @crate::password compilation hors feature `password` (opt-in = enregistrement
+    seul) : figer ou gate le module ?
+  [?] Le gate de @crate::glob est `rhai` (non `fs`) : intention figée, à noter dans la doc
+    du module pour éviter la lecture « fs » ?
+
+Scenario: error_chain remonte la source de l'extérieur vers la racine
+  Given une erreur à trois niveaux calquée sur un échec DNS reqwest
+  When @fn-error_chain la rend
+  Then concaténation extérieure → racine jointe par le séparateur « : » , texte exact verrouillé
+    par le test inline des trois messages (url, dns, temporary failure)
+
+Scenario: error_chain effondre la source doublon verbatim
+  Given une erreur extérieure dont le message contient DÉJÀ mot pour mot celui de sa source
+    (motif @variant-Error::ReqwestError)
+  When @fn-error_chain la rend
+  Then le texte de l'accumulé reste le message extérieur, sans seconde occurrence ; et une
+    feuille sans source reste inchangée (aucun séparateur ajouté)
+
+Scenario: error_chain feuille seule
+  Given une erreur simple sans source (message « boom »)
+  When @fn-error_chain la rend
+  Then le message seul, sans séparateur ni suffixe
+
+Scenario: surface compilable sans aucune feature
+  Given un build `--no-default-features`
+  Then @fn-error_chain, @type-Result, @fn-set_client_name, @fn-get_client_name,
+    @fn-client_name_is_set, @struct-Semver et les modules chrono/client_name/hashes/
+    password/semver/yaml compilent ; @struct-Script, @struct-HandleBars, @type-RhaiRes,
+    @fn-rhai_err, @fn-update_cache et les 13 variantes gated n'existent pas
+
+Scenario: RawHTTP et UnsupportedMethod survivent sans la feature http
+  Given un build `--no-default-features` (la feature reqwest `http` éteinte)
+  When le crate `http` (non optionnel) convertit via son @core::convert::From
+  Then @variant-Error::RawHTTP compile et s'affiche `RAW api error {0}` ; @variant-Error::UnsupportedMethod
+    reste `Unsupported method` — les deux « http » de l'enum restent distincts
+
+Scenario: MethodFailed cache son corps de réponse
+  Given @variant-Error::MethodFailed("GET", 503, "body")
+  When affiché en @core::fmt::Display
+  Then `GET query failed: 503` — le 3ᵉ champ « body » est absent du texte, accessible
+    seulement par déstructuration du variant
+
+Scenario: JsonError n'a pas de From
+  Given une @serde_json::Error à convertir avec `?`
+  Then elle devient TOUJOURS @variant-Error::SerializationError (seul @core::convert::From de ce
+    type) ; @variant-Error::JsonError se construit à la main et conserve sa source accessible
+    par @core::error::Error::source (textes `SerializationError: ` vs `Json decoding error: `)
+
+Scenario: PasswordSpec affiche son message brut
+  Given @variant-Error::PasswordSpec("minimum length 8")
+  When affiché
+  Then `minimum length 8` sans aucun préfixe — seul variant sans habillage
+
+Scenario: rhai_err enrichit la chaîne visible du script
+  Given (feature `rhai`) un @variant-Error dont la source porte la vraie cause
+  When @fn-rhai_err le convertit pour le moteur
+  Then le @std::boxed::Box de @rhai::EvalAltResult porte la chaîne complète jointe par `: `
+    (comportement @fn-error_chain) alors que @fn-rhai_err_str rend la chaîne d'entrée telle quelle
+
+Scenario: update_cache ne monte à la racine que sous k8s
+  Given un build sans la feature `k8s`
+  When une référence écrite @fn-update_cache est compilée
+  Then elle échoue à la compilation ; sous `k8s` elle pointe vers @crate::k8s::update_cache,
+    seul remontant k8s de toute la racine
