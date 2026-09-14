@@ -1,0 +1,527 @@
+Spec: http
+
+Purpose:
+    Contrat groupé de ./http.rs et ./http_mock.rs (règle source+mock d'un seul contrat,
+    tâche nommée de ./vyvil-core.sdd) : @crate::http::RestClient, client HTTP sur @reqwest
+    0.12 en blocage-sync, à trois étages par verbe (@crate::http::RestClient::http_*
+    renvoyant @reqwest::Response brut, @crate::http::RestClient::body_* le texte,
+    @crate::http::RestClient::json_* un @serde_json::Value), 5 faces @crate::http::RestClient::obj_*
+    sur énum de verbes, 8 méthodes Rhai rendant une map figée {code, headers, body, json},
+    plus les libres @crate::http::http_get_yaml (GET authentifié YAML-vers-Dynamic façon
+    scan), @crate::http::headers_get et @crate::http::headers_has. Module JAMAIS auto-wired
+    (frontière ./engine.rs contractée par ./engine.sdd) alors que `http` EST dans `default` —
+    seul des cinq modules réseau activé par défaut. Le groupe inclut @crate::http_mock::RestClientMock,
+    double sur fixtures : première entrée (méthode, path) gagnante, retourne le
+    @crate::http_mock::HttpMockItem.return_obj cloné, nom de type Rhai IDENTIQUE au vrai.
+
+Owns:
+  ./http.rs
+  ./http_mock.rs
+
+References:
+  ./lib.rs — déclarant : `#[cfg(feature = "http")]` + @cfg_attr docsrs pour `pub mod http;`
+    ET `pub mod http_mock;` (lignes 339-346) — le mock est livré dans la lib à chaque build
+    avec `http`, il n'est gated NI par `test` NI par une feature de mock. Variantes @Error
+    consommées : @variant-Error::ReqwestError SEULE variante gated `http` (lignes 144-148,
+    @core::convert::From de @reqwest::Error, affichage `Reqwest error: {0}`), et trois variantes
+    NON gated créées presque uniquement ici : @variant-Error::JsonError d'affichage
+    `Json decoding error: {0}`, @variant-Error::MethodFailed de tuple (String, u16, String)
+    d'affichage `{0} query failed: {1}` — le TROISIÈME champ (excerpt du corps) est jeté par
+    le Display, et @variant-Error::UnsupportedMethod d'affichage `Unsupported method`.
+  ./engine.rs — frontière seule : ./engine.rs n'appelle NI @crate::http::http_rhai_register
+    NI @crate::httpmock_rhai_register ; `http` dans `default` active le type et les API Rust,
+    jamais le câblage script (./engine.sdd Must).
+  ./client_name.sdd — @crate::get_client_name est lu À CHAQUE @crate::http::RestClient::get_client,
+    donc à chaque requête : panic attendue si @crate::set_client_name n'a jamais été appelé —
+    la rustdoc d'exemple du module (lignes 73-75) le montre explicitement.
+  ./Cargo.toml — `default = ["http", "crypto", "rhai", "hbs", "hbs-scripting"]` (ligne 50) :
+    `http` est LE module réseau par défaut, contrairement à `oci`/`s3`/`k8s` ;
+    `http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai"]` (ligne 75) implique `rhai`.
+    @reqwest déclaré optionnel `0.12.24` avec features `["rustls-tls"]` SEULEMENT — les
+    features par défaut de @reqwest (default-tls, donc native-tls) ne sont PAS désactivées :
+    deux piles TLS coexistent dans le graphe ; lock 0.12.28 (drift de patch mineur, même
+    pattern que @rhai 1.20/1.25). @schemars pulled par la feature, consommé pour @schemars::JsonSchema
+    des quatre énum @crate::http::obj ; @tokio pour les ponts.
+  ../docs/rhai_helpers.md — table HTTP fidèle sur les formes (`.head` rend map {code, headers},
+    `.post_form` « drops any Content-Type header ») ; MAIS sa phrase centrée (~ligne 228)
+    « No Cargo feature gates this (`reqwest` is a base dependency) » est FAUSSE : `http`
+    gate le module et @reqwest est optionnel — consignée en `Tasks` avec la phrase 51-54
+    déjà [?] par ./s3.sdd et ./oci.sdd.
+  ../docs/mocking.md — section 1 « http_mock » : la docs fidèle — signature exacte de
+    @crate::http_mock::httpmock_rhai_register avec fixtures, exemple d'appel gated `http`,
+    table nommant explicitement que `.post_form` partage les fixtures POST et
+    `.delete_with_body` les DELETE, corps ignorés, clone des fixtures par client.
+  ./engine.sdd, ./s3.sdd, ./oci.sdd — tier : les ponts @tokio::task::block_in_place sans
+    runtime multi-thread et leur panique sont la borne ouverte commune des trois modules
+    (28 occurrences dans ./http.rs) ; la même question [?] est reprise en `Tasks`.
+  ./tooling.sdd — harnais : 25 @allow(clippy::needless_pass_by_value) (17 ./http.rs,
+    8 ./http_mock.rs) sous DEUX variantes de commentaire citant ./vyvil-core.sdd (« signature
+    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 3 @core::marker::must_use.
+
+Must:
+  N'exister tous deux que sous la porte `http`, avec @cfg_attr docsrs, `http` inclus dans
+    `default` (./Cargo.toml 50, ./lib.rs 339-346) — le mock est compilé pour tout le monde.
+  Construire @crate::http::RestClient (`#[derive(Clone, Debug)]`, cinq champs PRIVÉS :
+    `baseurl`, `headers` en @rhai::Map, `server_ca`/`client_key`/`client_cert` en
+    @std::option::Option<@std::string::String>) par @crate::http::RestClient::new (`#[must_use]`
+    ligne 76) ; `baseurl` (chaînable) + @crate::http::RestClient::baseurl_rhai (void Rhai) et
+    @crate::http::RestClient::headers_reset (chaînable, vide la map) +
+    @crate::http::RestClient::headers_reset_rhai (void) en deux variantes chacun.
+  Stocker SANS AUCUNE validation les PEM dans @crate::http::RestClient::set_server_ca (une
+    chaîne) et @crate::http::RestClient::set_mtls (`cert`, `key` dans CET ordre dans la
+    signature, nom script `set_mtls_cert_key`) : un PEM invalide ne rate qu'à la PREMIÈRE
+    requête, à la construction du client.
+  Remplacer par insertion @rhai::Map dans @crate::http::RestClient::add_header : le même nom
+    revisité GARDE LA DERNIÈRE VALEUR — la rustdoc « repeated names are kept » est fausse [?] ;
+    @crate::http::RestClient::add_header_rhai = wrapper void de deux chaînes ; aucun
+    nom d'header normalisé ni validé (minuscule ≠ majuscule, deux entrées distinctes).
+  Rendre idempotents @crate::http::RestClient::add_header_json_content et
+    @crate::http::RestClient::add_header_json_accept sur la présence de la clé ÉGALE
+    `Content-Type` / `Accept` au sens STRICT `==` (une entrée `content-type` en minuscules
+    ne les arrête pas → en-tête en double [?]) ; @crate::http::RestClient::add_header_json_accept
+    LOGGE À CHAQUE APPEL tous les en-têtes courants au niveau debug, `Authorization`
+    porteur de token compris [?] ; @crate::http::RestClient::add_header_json = content puis
+    accept, void ; @crate::http::RestClient::add_header_bearer pose `Authorization: Bearer <token>`
+    ; @crate::http::RestClient::add_header_basic pose Basic + base64 STANDARD de
+    `username:password`.
+  Rebâtir un @reqwest::Client PAR REQUÊTE dans @crate::http::RestClient::get_client (privé,
+    28 ponts block_in_place dans le fichier) : @reqwest::ClientBuilder::user_agent de
+    @crate::get_client_name (PANIC si unset — ./client_name.sdd), @reqwest::ClientBuilder::timeout
+    de @std::time::Duration::from_mins(5) dans une variable nommée `five_sec` [?] ;
+    `server_ca` → @reqwest::ClientBuilder::add_root_certificate + @reqwest::ClientBuilder::use_rustls_tls ;
+    (key, cert) → @reqwest::Identity::from_pem de `key` PUIS `\n` PUIS `cert` +
+    @reqwest::ClientBuilder::use_rustls_tls (ordre key-avant-cert dans le PEM concaténé,
+    signature de setter cert-avant-key) ; erreur de build rendue BRUTE en @reqwest::Error sur
+    @crate::http::RestClient::http_get/@crate::http::RestClient::http_head (avec
+    @core::println_stderr de log `warn!("CLIENT: {e:?}")` lignes 213/333 SEULES occurrences),
+    et enveloppée @variant-Error::ReqwestError pour les six autres `http_*` SANS log malgré
+    leurs rustdocs qui promettent le warn [?].
+  Concaténer l'URL LITTÉRALEMENT `baseurl` + `/` + `path` (un path ouvrant par `/` produit
+    un double slash ; aucun contrôle de schéma sur baseurl) ; réappliquer À CHAQUE requête
+    une CLONE de la map d'en-têtes via @reqwest::RequestBuilder::header sur chaque paire —
+    ajout et non remplacement côté requête.
+  Contracter trois étages par verbe (labels @variant-Error::MethodFailed figés, verbe capitalisé) :
+    `http_*` → @reqwest::Response (@crate::http::RestClient::http_get/http_head : @std::result::Result<@reqwest::Response,@reqwest::Error>
+    BRUT ; @crate::http::RestClient::http_patch/http_put/http_post/http_delete/http_post_form/http_delete_with_body :
+    @crate::Result, @variant-Error::ReqwestError) ; `body_*` → texte, non-2xx →
+    @variant-Error::MethodFailed(VERBE, code, corps sous le texte exact `The server returned the error: {status} {reason} | {text}`),
+    avec labels exactement `Get`/`Patch`/`Put`/`Post`/`Delete` ;
+    @crate::http::RestClient::body_delete et @crate::http::RestClient::body_delete_with_body
+    traitent le 404 COMME UN SUCCÈS (rendu du texte tel quel).
+  Distinguer DEUX politiques JSON : @crate::http::RestClient::json_get, @crate::http::RestClient::json_post,
+    @crate::http::RestClient::json_put, @crate::http::RestClient::json_patch STRICTES (corps
+    non-JSON → @variant-Error::JsonError DES DEUX CÔTÉS — sérialisation de l'input et parsing de
+    la réponse) ; @crate::http::RestClient::json_delete et @crate::http::RestClient::json_delete_with_body
+    ENROBANTES : corps non-JSON rendu `{"body": <texte>}`.
+  Rendre les huit méthodes Rhai (@crate::http::RestClient::rhai_get/rhai_patch/rhai_put/rhai_post/rhai_post_form/rhai_delete/rhai_delete_with_body
+    + @crate::http::RestClient::rhai_head) avec ce gabarit FIGÉ : `code` =
+    @std::primitive::u16 de status passé par @std::string::ToString/@std::primitive::str::parse::<@std::primitive::i64>()
+    puis `unwrap_or(0)` ; `headers` = vecteur de tuples (nom, valeur) avec
+    @reqwest::header::HeaderValue::to_str repliée en chaîne VIDE sur non-UTF-8 ; `body` = texte
+    brut ; `json` = @serde_json::from_str du corps `unwrap_or(json!({}))` — corps invalide →
+    map vide SILENCIEUSE ; TOUT statut hors 2xx reste `Ok(map)` ; échec de
+    @reqwest::Response::text → Erreur avec le texte `Error reading response body: {e}` alors
+    même que la map contient déjà une insertion `body` de bourrage — insertion ABANDONNÉE [?] ;
+    échec transport → @core::result::Result::Err(@crate::error_chain(&e).into()) — chaîne de
+    causes aplaties, PAS @variant-Error::ReqwestError ; @crate::http::RestClient::rhai_head
+    ne fabrique QUE {code, headers}.
+  Sérialiser le corps des quatre verbes à corps (@crate::http::RestClient::rhai_post/rhai_patch/rhai_put/rhai_delete_with_body) :
+    @rhai::Dynamic chaîne → @std::string::ToString Brut (pas de JSON), sinon @serde_json::to_string
+    de @rhai::Dynamic, échec → @core::result::Result::Err de `Failed to serialize body: {e}`.
+  Convertir @rhai::Map de @crate::http::RestClient::rhai_post_form en paires
+    `(k.to_string(), v.to_string())` — valeurs non-chaînes en @core::fmt::Display — POSTé par
+    @reqwest::RequestBuilder::form (`application/x-www-form-urlencoded`) ; l'en-tête nommé
+    EXACTEMENT `Content-Type` est SAUTÉ à l'application des en-têtes (§ case-sensitive [?]).
+  Contracter la face Rust NON-enregistrée : @crate::http::RestClient::header_head ÉMET UN VRAI
+    GET (rustdoc l'avoue, label `Get`) et rend les paires sans lire le corps ; les cinq
+    @crate::http::RestClient::obj_* (@crate::http::RestClient::obj_read/obj_create/obj_update/obj_delete/obj_delete_with_body)
+    sur @crate::http::ReadMethod/@crate::http::CreateMethod/@crate::http::UpdateMethod/@crate::http::DeleteMethod :
+    chemin complet = `path` puis `/<key>` si key non vide, avec SLASH FINAL SUPPLÉMENTAIRE pour
+    @crate::http::obj_update quand `use_slash` est vrai ; @crate::http::UpdateMethod::None ÉCHOE
+    l'input AUCUNE REQUÊTE ; CHAQUE branche est épuisée par l'énum → @variant-Error::UnsupportedMethod
+    y est INATTEIGNABLE en type-system [?] ; les quatre énum portent @serde::Serialize/
+    @serde::Serialize/@serde::Deserialize/@schemars::JsonSchema/@core::default::Default
+    (premier variant), @crate::http::UpdateMethod::None est le seul variant sans requête.
+  Contracter @crate::http::http_get_yaml (libre, url COMPLET sans baseurl, pont block_in_place) :
+    `auth_type` exactement `bearer` (→ `Bearer {credential}`) ou `basic` (→ Basic + base64
+    STANDARD du credential BRUT `user:pass` en entier), TOUTE AUTRE VALEUR (dont `Bearer` ou
+    `Basic` capitalisés) = requête ANONYME SILENCIEUSE ; credential non parsable en en-tête →
+    @variant-Error::Other `invalid bearer credential: {e}` / `invalid basic credential: {e}` ;
+    @reqwest::Client tout neuf, avec @reqwest::ClientBuilder::default_headers + timeout 5 min,
+    User-Agent de @reqwest par DÉFAUT — @crate::get_client_name contourné, aucune panique
+    d'identité [?] ; non-2xx → @variant-Error::Other `SCAN-HTTP-001: HTTP {status} for {url}` ;
+    corps → @serde_yaml::from_str (@variant-Error::YamlError de chaîne) →
+    @serde_json::to_string → @serde_json::from_str::<@rhai::Dynamic> (double @variant-Error::SerializationError) ;
+    l'ensemble coiffé par @crate::rhai_err.
+  Contracter les libres d'en-têtes : @crate::http::headers_get premier gain case-insensitive
+    (`eq_ignore_ascii_case`) sinon @rhai::Dynamic::UNIT ; @crate::http::headers_has présence
+    case-insensitive (`#[must_use]` ; @crate::http::headers_get ne l'a pas, asymétrie clippy
+    sans effet script) ; les deux consistent avec le `headers` vecteur-de-tuples rendu par
+    les `rhai_*`.
+  Enregistrer dans @crate::http::http_rhai_register : type @rhai::Engine::register_type_with_name
+    `"RestClient"` et VINGT-HUIT noms exactement : `new_http_client` ET `new_client`
+    (jumeaux vers @crate::http::RestClient::new), `headers_reset`, `set_baseurl`,
+    `set_server_ca`, `set_mtls_cert_key`, `add_header` (2 chaînes), `add_header_json`,
+    `add_header_bearer`, `add_header_basic`, les six verbes à double alias `get`/`http_get`,
+    `delete`/`http_delete`, `delete_with_body`/`http_delete_with_body`, `patch`/`http_patch`,
+    `post`/`http_post`, `put`/`http_put`, `post_form`/`http_post_form`, `head` sans alias
+    `http_head`[?], et les libres `http_get_yaml`, `headers_get`, `headers_has`. AUCUN
+    `body_*`/`json_*`/`obj_*`/`header_head` n'existe en script.
+  Simuler dans @crate::http_mock::RestClientMock (`#[derive(Clone, Debug)]`, champs PRIVÉS
+    `baseurl` — stocké JAMAIS LU — et `mocks` @std::vec::Vec de @crate::http_mock::HttpMockItem) :
+    @crate::http_mock::RestClientMock::new (`#[must_use]`) reçoit base + fixtures ; les huit
+    méthodes de verbes filtrent `method` égal + `path` @std::string::String égal au path PASSÉ
+    (baseurl ignoré, aucun prefixage) et rendent `found[0].clone().return_obj` — première
+    entrée gagnante, fixtures non filtrables par ordre d'ajout ultérieur ; absence →
+    @core::result::Result::Err Rhai au texte EXACT `Failed to find {VERBE} {path} in the Mock database`,
+    avec VERBE ∈ {GET, HEAD, PATCH, PUT, POST, DELETE} ; `post_form` marque `POST` et
+    `delete_with_body` marque `DELETE` (indistinguables de leurs jumeaux) ; TOUS les setters et add_* sont des no-op
+    `(_arg)` ; @core::default::Default::default jamais ; les corps `_val` sont ignorés.
+  Enregistrer dans @crate::httpmock_rhai_register (fixtures @std::vec::Vec capturées par la
+    closure de construction, CLONÉES dans chaque nouveau client) : le MÊME nom de type Littéral
+    `"RestClient"` que le vrai, VINGT-SIX noms — même table que le vrai SAUF `new_client`
+    ABSENT (les scripts l'utilisant CASSENT à la substitution [?]) et `http_get_yaml` ABSENTE
+    [?], avec `headers_get`/`headers_has` réenregistrés depuis le VRAI ./http.rs.
+  Maintenir le harnais : 25 @allow(clippy::needless_pass_by_value) (§References), 3
+    @core::marker::must_use (@crate::http::RestClient::new 76, @crate::http::headers_has 1250,
+    @crate::http_mock::RestClientMock::new 47) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
+    dans les deux fichiers — les `unwrap_or(0)`/`unwrap_or_default` contractés ci-dessus sont
+    des replis, non des panic.
+
+Must not:
+  Câbler @crate::http::http_rhai_register ou @crate::httpmock_rhai_register dans
+    @crate::engine::Script::new_bare, même sous `http` actif par défaut : le host appelle
+    l'enregistreur qu'il veut, ou aucun (./engine.sdd).
+  Faire du statut HTTP une erreur côté script : un 500 ou un 404 sur `rhai_*` rend `Ok(map)`
+    avec son `code` — seule l'erreure transport ou la lecture de corps échoue.
+  Envelopper @reqwest::Error dans @crate::http::RestClient::http_get/@crate::http::RestClient::http_head :
+    les deux rendent l'erreur @reqwest BRUTE (@std::result::Result explicite), les six autres
+    `http_*` l'enveloppent @variant-Error::ReqwestError — asymétrie contractée telle quelle.
+  Valider un PEM, une URL, un schéma, un nom d'header ou un verbe à l'entrée des setters :
+    toute validation échouée est différée à la première requête, ou n'a jamais lieu.
+  Toucher le réseau ou @tokio dans ./http_mock.rs : zéro @reqwest, zéro @tokio, zéro panic
+    hors runtime là où le vrai panique ; le mock ne peut ni échouer sur transport ni loguer.
+  Identifier le traffic de @crate::http::http_get_yaml avec @crate::get_client_name :
+    cette libre utilise le User-Agent de @reqwest et ne panique pas sans identité — asymétrie
+    interne au module contractée [?].
+  Promettre au mock la table du vrai au complet : `new_client` et `http_get_yaml` lui manquent,
+    ses setters sont mutes, son matching ignore baseurl/body/ordre de priorité autre que
+    premier-gagné — la substitution ne vaut que pour les 26 noms communs en mode nominal.
+
+Depends on:
+  reqwest — @reqwest::Client/@reqwest::ClientBuilder (timeout, user_agent,
+    add_root_certificate, identity, use_rustls_tls, default_headers, form, get/put/post/patch/delete),
+    @reqwest::Response (@reqwest::Response::status/@reqwest::Response::headers/@reqwest::Response::text),
+    @reqwest::StatusCode (is_success, @reqwest::StatusCode::as_str/@reqwest::StatusCode::canonical_reason
+    `unwrap_or("unknown")`) ; 0.12.24 déclaré, lock 0.12.28 ; features déclarées `["rustls-tls"]`
+    SANS désactiver default-tls → native-tls aussi dans le graphe [?]. Le comportement réseau réel
+    (redirects, pool, timeouts fins) appartient à la dépendance.
+  tokio — @tokio::task::block_in_place + @tokio::runtime::Handle::current : précondition
+    runtime multi-thread sous les 28 ponts, sinon PANIQUE tokio (tous `rhai_*`, tous `body_*`,
+    tous `http_*` non get/head, @crate::http::http_get_yaml) — borne [?] ouverte, la troisième
+    après ./s3.sdd et ./oci.sdd ; features `macros`+`rt-multi-thread`.
+  serde_json / serde_yaml / base64 — non optionnels : parsing/enrobage JSON, double passe de
+    @crate::http::http_get_yaml, base64 STANDARD des deux basic.
+  schemars / serde — @schemars::JsonSchema + @serde::Serialize/@serde::Deserialize des quatre énum de verbes (les rend
+    importables d'un config par @serde::Deserialize) ; raison d'être de `dep:schemars` dans
+    la feature `http`.
+  rhai / crate — @rhai::Engine/@rhai::Dynamic/@rhai::Map, @rhai::Engine::register_type_with_name/@rhai::Engine::register_fn,
+    @crate::RhaiRes, @crate::rhai_err, @crate::error_chain, @crate::get_client_name. Le mock
+    ne tient qu'à @rhai + @crate::RhaiRes (+ @serde::Deserialize de @crate::http_mock::HttpMockItem
+    pour les fixtures sérialisées façon mocking.md).
+  wiremock — dev-dependency 0.6 : seul témoin des 8 tests inline ; aucune interface de seam
+    autre que l'URL du serveur.
+
+Exposes:
+  @crate::http::RestClient — `#[derive(Clone, Debug)] pub struct` cinq champs PRIVÉS, porte
+    `http` ; en Rhai le type `"RestClient"` côté vrai ET côté mock (mêmes noms littéraux).
+  Constructeurs/builders publics : @crate::http::RestClient::new (`#[must_use]`),
+    @crate::http::RestClient::baseurl/@crate::http::RestClient::baseurl_rhai,
+    @crate::http::RestClient::headers_reset/@crate::http::RestClient::headers_reset_rhai,
+    @crate::http::RestClient::set_server_ca, @crate::http::RestClient::set_mtls,
+    @crate::http::RestClient::add_header/@crate::http::RestClient::add_header_rhai,
+    @crate::http::RestClient::add_header_json_content/@crate::http::RestClient::add_header_json_accept
+    (les deux chaînables, NON enregistrées en script), @crate::http::RestClient::add_header_json,
+    @crate::http::RestClient::add_header_bearer, @crate::http::RestClient::add_header_basic.
+  Étages par verbe — `http_get`, `http_head` (signatures @reqwest::Error brutes),
+    `http_patch/http_put/http_post/http_delete` + @crate::http::RestClient::http_post_form
+    (@std::primitive::slice de paires) + @crate::http::RestClient::http_delete_with_body ;
+    `body_get/body_patch/body_put/body_post/body_delete` + @crate::http::RestClient::body_delete_with_body ;
+    `json_get/json_patch/json_put/json_post/json_delete` + @crate::http::RestClient::json_delete_with_body ;
+    @crate::http::RestClient::header_head (face paires, vrai GET).
+  Objets : @crate::http::RestClient::obj_read (2 args + énum, key suffixée),
+    @crate::http::RestClient::obj_create, @crate::http::RestClient::obj_update (flag `use_slash`),
+    @crate::http::RestClient::obj_delete, @crate::http::RestClient::obj_delete_with_body — tous les quatre
+    sous @allow « signature publique exposée sur crates.io ».
+  Rhai : @crate::http::RestClient::rhai_get/rhai_head (une chaîne),
+    @crate::http::RestClient::rhai_patch/rhai_put/rhai_post/rhai_delete_with_body (@rhai::Dynamic),
+    @crate::http::RestClient::rhai_post_form (@rhai::Map), @crate::http::RestClient::rhai_delete (une chaîne).
+  Énum publics : @crate::http::ReadMethod (Get seul), @crate::http::CreateMethod (Post défaut, Put),
+    @crate::http::UpdateMethod (Patch défaut, Put, Post, None), @crate::http::DeleteMethod (Delete seul).
+  Libres : @crate::http::headers_get, @crate::http::headers_has (`#[must_use]`),
+    @crate::http::http_get_yaml, @crate::http::http_rhai_register.
+  @crate::http_mock::HttpMethod — `pub enum` à dérive @serde::Serialize/@serde::Deserialize/
+    @core::default::Default (Get défaut) : Get, Head, Delete, Patch, Post, Put ;
+    @crate::http_mock::HttpMockItem — `pub struct` à dérive Serde sur trois champs PUBLICS
+    `path`/`method`/`return_obj` (fixtures importables d'un config).
+  @crate::http_mock::RestClientMock — `#[derive(Clone, Debug)] pub struct` deux champs PRIVÉS ;
+    @crate::http_mock::RestClientMock::new (`#[must_use]`), setters/add_* no-op publics, @crate::http_mock::RestClientMock::baseurl
+    (stocke), huit verbes miroirs de noms script.
+  @crate::http_mock::httpmock_rhai_register — `pub fn(engine, mocks)` ; seul point d'entrée mock.
+  Rien de plus dans les deux fichiers (le `fn get_client` de ./http.rs est PRIVÉ).
+
+Accepts:
+  Baseurl et path : chaînes quelconques sans contrôle — `http://h` contre `h` (schéma =
+    contrat de @reqwest::Client::get), path ouvrant par `/` accepte le double slash.
+  Corps Rhai : toute @core::primitive::str passe Brute ; tout autre @rhai::Dynamic part en
+    @serde_json (un nombre → son nombre, un map/tableau → leur JSON, une fonction → échec
+    de sérialisation) ; @rhai::Map post_form rend chaque valeur en @core::fmt::Display (`1`
+    devient `1`, un `#{}` devient `#{...}` [?]).
+  En-têtes : noms non-normalisés, la casse distingue les entrées de la map (et rate
+    l'idempotence `Content-Type`/`Accept` comme le skip de post_form) ; valeurs non-UTF-8
+    lues côté réponse en chaînes vides.
+  @crate::http::obj_* : énum par valeur, `key` vide = pas de suffixe, `use_slash` flag ; côté
+    mock les mêmes arguments ignorent corps et baseurl.
+  @crate::http::http_get_yaml : url absolu n'importe où (le module n'a aucune notion de
+    baseurl pour cette libre), auth_type hors `bearer`/`basic` = anon, credential basic =
+    CHAÎNE `user:pass` intégrale, encodée par la crate.
+  Mock : fixtures construites en Rust ou via @serde::Deserialize (chemins comparés TELS QUELS
+    au string égal, pas de normalisation d'URL).
+
+Returns:
+  Étage `http_*` : @reqwest::Response vivant à consommer (lecture de corps bloquante) ;
+    étage `body_*` : @std::string::String du corps (404 inclus sur delete/delete_with_body) ;
+    étage `json_*` : @serde_json::Value, enrobé `{"body": texte}` pour les deux delete.
+  Les sept `rhai_*` à corps : map @rhai::Map {`code` i64, `headers` tableau de tuples
+    (chaîne, chaîne), `body` chaîne, `json` valeur @rhai ou map vide} ; @crate::http::RestClient::rhai_head
+    et le mock `head` : {code, headers} ou return_obj seul.
+  @crate::http::headers_get : @rhai::Dynamic chaîne ou @rhai::Dynamic::UNIT ; @crate::http::headers_has :
+    @std::primitive::bool ; @crate::http::http_get_yaml : le @rhai::Dynamic du YAML converti
+    en JSON ; @crate::http::RestClient::obj_update : `Ok(input.clone())` sans requête sur None.
+  Mock : @rhai::Map cloné de la fixture ; setters du mock : unité muette.
+  Les deux registres d'engine : unité.
+
+Raises:
+  Côté script (@crate::RhaiRes, erreurs chaînes ou @crate::rhai_err) : transport
+    `get`/`head`/etc. → @core::result::Result de @crate::error_chain (le test inline ligne 1351
+    verrouille la présence de la cause @std::io::Error « Connection refused ») ; corps
+    @rhai::Dynamic non sérialisable → `Failed to serialize body: {e}` ; lecture de réponse
+    qui rate → `Error reading response body: {e}` ; @crate::http::http_get_yaml entier coiffé
+    @crate::rhai_err (sources aplaties) sur @variant-Error::Other (credential, builder,
+    `SCAN-HTTP-001`), @variant-Error::ReqwestError, @variant-Error::YamlError,
+    @variant-Error::SerializationError ; mock : `Failed to find {VERBE} {path} in the Mock database`.
+  Côté Rust (@crate::Result typé) : @variant-Error::ReqwestError (six `http_*` + lectures de
+    corps `body_*`), @reqwest::Error BRUT (deux exceptions get/head), @variant-Error::MethodFailed
+    (sept `body_*` + @crate::http::RestClient::header_head — Display tronquant l'excerpt),
+    @variant-Error::JsonError (quatre `json_*` stricts + sérialisation input),
+    @variant-Error::UnsupportedMethod (branches @crate::http::obj_* mortes §Must [?]).
+  Panique (PAS erreur) : @crate::get_client_name sans @crate::set_client_name, puis les
+    ponts @tokio::task::block_in_place/@tokio::runtime::Handle::current hors runtime
+    multi-thread — le mock, lui, ne panique jamais ni ne requiert de runtime.
+
+Handles:
+  La pile TLS à trois régimes : base sans CA = piles de @reqwest (native-tls ET rustls co-déclarées
+    [?]) ; CA présente = @reqwest::ClientBuilder::use_rustls_tls forcé ; mTLS = identité PEM key+`\n`+cert ;
+    le PEM ne parle qu'à la première requête.
+  Le triptyque statut→valeur : `body_*` d'un 4xx/5xx en @variant-Error::MethodFailed (sauf delete
+    sur 404 = succès), `rhai_*` d'un 4xx/5xx en `Ok(map)`, mock d'un trou de fixture en
+    chaîne d'erreur — trois traitements du « pas content », contractés séparément.
+  Les trois politiques d'auth : builder (`Bearer` marquant par concat, Basic par b64 de
+    `user:pass` concaténé), @crate::http::http_get_yaml (match exact `bearer`/`basic`, b64 du
+    credential entier), mock (muet) — et le header en-tête `Authorization` que le
+    builder logue en debug [?].
+  La coexistence vrai/mock dans un engine : mêmes noms, même type `"RestClient"`, le dernier
+    enregistreur gagne à co-enregistrement (mécanisme @rhai, conduite mocking.md = un seul
+    monde par engine) ; @crate::http::headers_get/@crate::http::headers_has partagés littéralement.
+  La lecture des en-têtes de réponse : les `rhai_*` rendent des tuples, le public
+    @crate::http::headers_get/@crate::http::headers_has les interroge case-insensitively — le
+    seul endroit du module où la casse d'en-tête est tolérée (§ case-sensitivity [?]).
+
+Tasks:
+  [ ] Convertir les Scenario en tests passants. Aujourd'hui ./http.rs : 8 tests inline
+    (rhai_get_on_connection_failure ligne 1351 avec @wiremock-like server local,
+    @crate::http::http_get_yaml ok/404/bearer/basic lignes 1375-1449, headers_get
+    case-insensitive/missing-unit et headers_has lignes 1451+) — RIEN d'autre : aucun test
+    pour les builders TLS, l'idempotence des setters, le 404-delete, les deux politiques
+    JSON, sept des huit `rhai_*`, les `obj_*`, @crate::http::RestClient::header_head, la surface des 28
+    noms, ni un seul des ponts @tokio hors runtime ; ./http_mock.rs : ZÉRO test (pas même
+    first-match ni le texte d'erreur). Les Scenario réseau de bas de fichier se verrouillent
+    en @wiremock.
+
+  [?] @crate::http::RestClient::add_header : la rustdoc promet « repeated names are kept », la map
+    @rhai les REMPLACE — que fige-t-on, et la map doit-elle un jour accepter le multivoque ?
+  [?] Sensible à la casse partout ailleurs que headers_get/has : idempotence
+    `Content-Type`/`Accept` au sens strict et skip post_form du seul `Content-Type` exact →
+    un `content-type` manuel double l'en-tête sur les formes urlencoded [?].
+  [?] @crate::http::RestClient::add_header_json_accept logue TOUS les en-têtes en debug — token
+    `Authorization` compris : garder (debug assumé) ou purger les valeurs sensibles ?
+  [?] Timeout de 5 minutes (variable `five_sec`, trompeuse) : valeur figée, configurable,
+    et nom honeste ?
+  [?] Erreurs des `http_*` : @reqwest::Error brut (get/head) contre @variant-Error::ReqwestError
+    (six autres) + les rustdocs qui promettent un warn de build là où SEULS get/head loguent —
+    harmoniser ?
+  [?] `rhai_*` : statut jamais erreur (500 → Ok), `code` par round-trip string-parse
+    `unwrap_or(0)`, `json` de corps invalide en map vide silencieuse, insertion `body`
+    abandonnée quand le texte rate — tout ça est le contrat voulu du tier script ?
+  [?] @crate::http::http_get_yaml : auth_type inconnu = anonyme SILENCIEUX, User-Agent par défaut
+    @reqwest (client_name contourné — la seule API du module qui échappe à l'identité),
+    message métier `SCAN-HTTP-001` venu d'ailleurs : expliciter l'auth, câbler l'UA, renommer ?
+  [?] @crate::http::obj_* : @variant-Error::UnsupportedMethod et @crate::http::UpdateMethod::None — None-echo
+    est-il un util vyvil durable ou un reliquat, et les branches mortes sur énum complètes
+    tombent-elles si un variant futur est oublié ? Face Rust jamais enregistrée, jamais testée :
+    assumée publique (crates.io) ?
+  [?] @crate::http::RestClient::header_head fait un GET : verrouillé « par économie » (le HEAD des
+    serveurs réels ne répond parfois pas) ou à redresser — et lui ajouter un alias script
+    manquant, `http_head` absent pour `head` : jumeau à créer ou asymétrie figée ?
+  [?] Mock : `new_client` et `http_get_yaml` absents (scripts qui cassent à la substitution),
+    setters mutes, matching ignorant baseurl/corps, livré dans la lib à chaque build `http` :
+    combler les trous, les documenter, ou gated le mock ?
+  [?] @reqwest 0.12.24 déclaré / 0.12.28 lock + features sans désactiver default-tls :
+    double pile TLS subie native-tls+rustls — désactiver les défauts (rupture d'API
+    transitive) ou documenter ? § drift @rhai/@handlebars déjà ouverts ailleurs.
+  [?] ../docs/rhai_helpers.md ~ligne 228 « No Cargo feature gates this (reqwest is a base
+    dependency) » : corriger la docs (le module EST gated, @reqwest optionnel) — même
+    section docs que les [?] 51-54 de ./s3.sdd et ./oci.sdd.
+  [?] Ponts @tokio hors runtime multi-thread = panique (troisième occurrence après s3/oci) :
+    trancher UNE fois pour les trois modules — envelopper en erreur ou assumer.
+
+Scenario: http par défaut mais jamais auto-wired
+  Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un
+    @crate::engine::Script::new_bare
+  Then aucun nom `new_http_client` et aucun type "RestClient" n'existent en script —
+    ./engine.rs n'appelle pas @crate::http::http_rhai_register (./engine.sdd)
+  Given une feature-off `--no-default-features --features rhai`
+  Then ni @crate::http ni @crate::http_mock n'existent, @reqwest/@tokio/@schemars sont absents
+    du graphe activé
+
+Scenario: sans identité client, chaque requête panique
+  Given un @crate::http::RestClient avec baseurl valide et @crate::set_client_name JAMAIS appelé
+  When @crate::http::RestClient::body_get est appelé dans un runtime multi-thread
+  Then PANIQUE via @crate::get_client_name (./client_name.sdd) — avant toute connection
+  Given la même instance après @crate::set_client_name("x.example")
+  When la requête atteint un @wiremock de test
+  Then le User-Agent capturé est `x.example` (UA posé à chaque @crate::http::RestClient::get_client)
+
+Scenario: add_header remplace, la casse duplique — la rustdoc ment
+  Given un client, add_header("X-A", "1"), add_header("X-A", "2")
+  When une requête part vers un @wiremock
+  Then UNE seule paire `X-A: 2` — @rhai::Map::insert remplace [?] vs rustdoc « kept »
+  Given add_header("content-type", "text/plain") puis @crate::http::RestClient::add_header_json
+  Then DEUX en-têtes Content-Type partent — l'idempotence ne reconnaît que la casse exacte
+
+Scenario: PEM au setter, la fureur à la requête
+  Given @crate::http::RestClient::set_server_ca("pas-un-pem")
+  Then le setter rend unité, RIEN ne valide (§Must)
+  When @crate::http::RestClient::http_get est appelé
+  Then l'échec @reqwest::Certificate::from_pem ressort en @reqwest::Error BRUT +
+    `warn!("CLIENT: …")` (seules lignes 213/333 à loguer)
+  Given (key, cert) invalides via @crate::http::RestClient::set_mtls(cert, key)
+  Then @reqwest::Identity::from_pem de `key` puis `\n` puis `cert` rate à la requête, pas au setter
+
+Scenario: étages Get et Delete, deux poids JSON
+  Given un @wiremock servant 200 sur `/x` et 500 sur `/y`
+  Then @crate::http::RestClient::body_get("/y") rate @variant-Error::MethodFailed, Display exactement
+    `Get query failed: 500`, l'excerpt du corps absent de l'affichage
+  Given un 404 sur `/d`
+  Then @crate::http::RestClient::body_delete("/d") rend Ok (404 = succès, lignes 902-917)
+  Given un corps `du texte` non-JSON
+  Then @crate::http::RestClient::json_get rate @variant-Error::JsonError ; @crate::http::RestClient::json_delete rend
+    `{"body": du texte}` [?] des deux politiques
+
+Scenario: rhai_get ne pleure jamais un statut
+  Given un @wiremock servant 404, corps `pas-du-json`, un en-tête `X-U` à valeur non-UTF-8
+    (si @wiremock permet d'en servir une)]
+  When `get("/x")` en script (ou @crate::http::RestClient::rhai_get en direct)
+  Then `Ok(map)` : `code`=404 (i64 via round-trip string), `body`=texte brut, `json`=`#{}`
+    silencieusement, la valeur d'en-tête non-UTF-8 en chaîne vide
+  Given un serveur absent du réseau (port fermé)
+  Then l'erreur en porte la CAUSE @std::io::Error « Connection refused » aplatie par
+    @crate::error_chain — verrouillée par le test inline ligne 1351
+
+Scenario: head, le muet sans jumeau
+  Given le même client
+  When `head("/x")` rend
+  Then la map {code, headers} SEULE (aucun corps lu) ; `http_head("/x")` est fonction
+    INCONNUE en script [?] d'alias §Tasks
+  When @crate::http::RestClient::header_head("/x") est appelé en Rust
+  Then une vraie GET part (label `Get`), seules les paires d'en-têtes sont rendues
+
+Scenario: les quatre verbes à corps sérialisent selon le type
+  When `post("/x", "brut")` envoie `brut` sans quotes ni JSON (is_string → @core::fmt::Display)
+  When `post("/x", #{a: 1})` envoie `{"a":1}` (via @core::fmt::Display de @rhai::Dynamic)
+  When `put("/x", fn)` sur un Dynamic non sérialisable
+  Then l'erreur chaîne `Failed to serialize body: {e}` avant toute connexion
+
+Scenario: post_form encode et ne saute que le Content-Type exact
+  When `post_form("/x", #{a: 1})` part vers un @wiremock
+  Then le corps urlencoded `a=1`, valeur par @core::fmt::Display
+  Given add_header("Content-Type", "text/xml") avant l'appel
+  Then l'en-tête EST SAUTÉ (skip exact §Must) et @reqwest pose le form
+  Given add_header("content-type", "text/xml") en minuscules
+  Then il N'EST PAS sauté — deux Content-Type sur la requête, même [?] que l'idempotence §Tasks
+
+Scenario: hors runtime multi-thread, le vrai panique, le mock jamais
+  Given un test ordinaire sans runtime @tokio
+  When @crate::http::RestClient::body_post est appelé
+  Then @tokio::task::block_in_place/@tokio::runtime::Handle::current PANIQUE (borne [?]
+    partagée ./s3.sdd, ./oci.sdd)
+  When `post(...)` du mock dans le même contexte
+  Then la fixture sort, sans @tokio ni @reqwest dans ./http_mock.rs
+
+Scenario: http_get_yaml parle bearer, basic, et scanne
+  Given un @wiremock servant un YAML valide
+  When @crate::http::http_get_yaml(url, "", "") rend
+  Then le @rhai::Dynamic du YAML passe JSON (verrouillé par le test inline ligne 1375) ;
+    l'UA capturé est celui de @reqwest, PAS @crate::get_client_name [?]
+  When ("bearer", "tok") puis ("basic", "user:pass")
+  Then `Authorization: Bearer tok`, puis `Basic ` + base64(`user:pass`) capturé — tests inline
+    lignes 1415/1433
+  When l'auth_type est `Basic` capitalisé
+  Then la requête part SANS en-tête d'auth (match exact `basic`) [?]
+  Given le serveur répond 404
+  Then l'erreur porte `SCAN-HTTP-001: HTTP 404 Not Found for <url>` — verrouillé ligne 1393
+  Given un credential porteur d'un caractère d'en-tête interdit
+  Then @variant-Error::Other `invalid bearer credential: {e}` via @crate::rhai_err
+
+Scenario: headers_get et headers_has sont les deux soeurs case-insensitives
+  Given le `headers` vectoriel d'un `rhai_get` posant `X-Total-Pages: 3`
+  Then headers_get(headers, "x-total-pages") → "3" ; headers_get manquant → @rhai::Dynamic::UNIT ;
+    headers_has case-insensitive — les trois tests inline lignes 1451+
+
+Scenario: obj_update répond sans serveur quand None, et double-slash quand use_slash
+  Given un client vers un port ÉTEINT
+  Then @crate::http::RestClient::obj_update(@crate::http::UpdateMethod::None, "p", "k", input, false) rend Ok(input.clone())
+    AUCUNE connexion
+  Given @crate::http::UpdateMethod::Put, key `k`, `use_slash` vrai
+  Then l'URL visée est `p/k/` (slash final supplé, ligne 1046)
+  Given ReadMethod/CreateMethod/UpdateMethod/DeleteMethod exhaustifs
+  Then @variant-Error::UnsupportedMethod est INATTEIGNABLE par type-system — branches [?] §Tasks
+
+Scenario: le registre des 28 noms
+  Given un engine frais + @crate::http::http_rhai_register
+  Then type "RestClient", et les VINGT-HUIT noms §Must — jumeaux `new_client`/`new_http_client`
+    fonctionnels, six verbes à double alias, `head` orphelin, `http_get_yaml`/`headers_get`/
+    `headers_has` libres
+  Given un script `let c = new_http_client("http://x")`
+  Then `type_of(c)` est "RestClient" ; `header_head`, `body_get`, `json_get`, `obj_read`,
+    `add_header_json_content` sont TOUS inconnus en script
+
+Scenario: le mock est un serveur dans une liste
+  Given des fixtures [GET /a → #{code: 200, body: "ok"}, GET /a → #{code: 200, body: "ok2"}]
+    via @crate::httpmock_rhai_register
+  When `get("/a")` rend
+  Then le return_obj de la PREMIÈRE entrée (first-match §Must) ; `get("/b")` rate exactement
+    `Failed to find GET /b in the Mock database`
+  When `post_form("/a", #{})` filtre avec la FIXTURE `POST /a` et `delete_with_body` avec
+    `DELETE` — corps ignorés, baseurl ignoré au matching
+  When `set_server_ca`/`add_header_bearer`/`headers_reset` sont appelés
+  Then RIEN ne change (no-op `(_arg)`) et aucun moyen d'échouer
+
+Scenario: co-enregistrement, la substitution à deux trous
+  Given un engine, @crate::http::http_rhai_register PUIS @crate::httpmock_rhai_register
+  When `new_http_client("http://x")` rend
+  Then un @crate::http_mock::RestClientMock — dernier enregistré gagne, type nommé "RestClient"
+    dans les DEUX mondes [?]
+  When le script appelle `new_client("http://x")` ou `http_get_yaml(...)`
+  Then fonction INCONNUE : `new_client` et `http_get_yaml` manquent à la table du mock —
+    substituer un script qui s'en sert CASSE [?] §Tasks
