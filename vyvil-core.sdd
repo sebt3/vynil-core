@@ -28,6 +28,10 @@ Must:
   Garder `hbs-scripting` isolable de `hbs` : `hbs` seul ne doit jamais réintroduire
   `handlebars/script_helper` (donc `rhai` ni `smartstring`) dans le graphe de dépendances
   (https://github.com/sebt3/vynil-core/issues/9).
+  Ne jamais laisser un script Rhai paniquer l'hôte : toute entrée de script (format invalide,
+  valeur démesurée, débordement, entropie défaillante) se traduit en @crate::RhaiRes en échec,
+  rattrapable par un `try` de script, jamais en `panic!` ni en abort du processus. Les portes
+  Rust sous-jacentes retournent un @crate::Result plutôt que de paniquer.
   Exiger qu'aucune ligne de code source ne soit écrite sans spec `.sdd` cible approuvée par
   Sébastien et sans tests dérivés de ses `Scenario` écrits et exécutés d'abord (flux
   spec → test → implémentation, `.specdd/bootstrap.project.md`).

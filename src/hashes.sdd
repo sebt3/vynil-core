@@ -20,9 +20,9 @@ References:
     toutes deux gated `crypto` avec leurs affichages d'attribut : @crate::Error::Argon2hash
     `Argon2 password_hash error {0}` (payload @argon2::password_hash::Error via `#[from]`) et
     @crate::Error::BcryptError `Bcrypt hash error {0}` (payload @bcrypt::BcryptError via
-    `#[from]`). La table de features de la rustdoc racine annonce `argon_hash` « Handlebars +
-    Rhai » et liste `argon` — deux noms que ./hashes.rs n'enregistre pas côté script, point
-    ouvert en `Tasks`.
+    `#[from]`). La table de features de la rustdoc racine annonce à tort `argon_hash`
+    « Handlebars + Rhai » et liste `argon` — deux noms que ./hashes.rs n'enregistre pas côté
+    script ; la rustdoc est à corriger (voir `Tasks`).
   ./engine.rs — @Script::new_bare est l'unique appelant des deux registres :
     @crate::hashes::hashes_rhai_register inconditionnellement (./engine.rs vit déjà sous `rhai`
     seul, après @crate::chrono::chrono_rhai_register), @crate::hashes::crypto_hashes_rhai_register
@@ -43,16 +43,16 @@ References:
 Must:
   La table des portes est exactement : @crate::hashes::crc32_hash sans aucune feature ;
     @crate::hashes::hashes_rhai_register sous `rhai` seule ; @crate::hashes::Argon avec son
-    implémentation de @std::default::Default, @crate::hashes::Argon::new,
-    @crate::hashes::Argon::hash et @crate::hashes::bcrypt_hash sous `crypto` ;
+    @crate::hashes::Argon::new, @crate::hashes::Argon::hash et @crate::hashes::bcrypt_hash sous `crypto` ;
     @crate::hashes::Argon::rhai_hash et @crate::hashes::crypto_hashes_rhai_register sous
     `crypto` + `rhai`. ./lib.rs ne gant pas le module : sans `crypto`, ./hashes.rs compile et ne
     livre que la face crc32.
   @crate::hashes::Argon est un @core::fmt::Debug et @std::clone::Clone dérivés à deux champs
-    privés, sel et hacheur : @crate::hashes::Argon::new — seul chemin de création hors du
-    module, @std::default::Default::default se bornant à déléguer — tire un sel frais via
-    @argon2::password_hash::SaltString::generate sur @argon2::password_hash::rand_core::OsRng,
-    sel de 16 octets rendu en 22 caractères, et instancie @argon2::Argon2::default, soit les
+    privés, sel et hacheur : @crate::hashes::Argon::new — seul chemin de création, aucune
+    implémentation de @std::default::Default car la construction est faillible — tire un sel
+    frais de 16 octets par @argon2::password_hash::rand_core::RngCore::try_fill_bytes sur
+    @argon2::password_hash::rand_core::OsRng puis l'encode en @argon2::password_hash::SaltString
+    (22 caractères) ; un échec d'entropie devient une erreur, jamais un panic ; et instancie @argon2::Argon2::default, soit les
     paramètres effectifs argon2id, version `0x13`, `m=19456`, `t=2`, `p=1`, sortie de 32 octets
     (argon2 `0.5.3`, constante `DEFAULT_M_COST` verrouillée).
   Le `&mut self` de @crate::hashes::Argon::rhai_hash ne sert qu'à la forme des méthodes d'objet
@@ -70,8 +70,8 @@ Must:
     chez bcrypt `0.19.3` verrouillée : sel interne de 16 octets tiré à chaque appel par
     getrandom `0.4.3`, sortie de exactement 60 caractères ASCII commençant par `$2b$12$`
     (version `2b` forcée par le formatage de la dépendance) ; le mot de passe est accepté vide
-    et silencieusement tronqué à 72 octets, la voie `non_truncating` de bcrypt n'étant pas
-    celle utilisée.
+    et jamais tronqué en silence : la voie @bcrypt::non_truncating_hash est utilisée, un mot de
+    passe de plus de 72 octets est refusé en @crate::Error::BcryptError.
   @crate::hashes::crc32_hash est @crc32fast::hash one-shot sur les octets UTF-8 de l'entrée
     (CRC-32/ISO-HDLC, variante IEEE à init 0 et XOR final 0, vérification faite contre
     `zlib.crc32`) : déterministe, sans sel, rendu dans `0` à `4294967295` ; la chaîne vide rend
@@ -88,8 +88,8 @@ Must:
     voies bcrypt et argon : un échec rendu au script porte le texte @std::fmt::Display complet
     de @crate::Error (`Argon2 password_hash error ...` ou `Bcrypt hash error ...`), sans chaîne
     vide de déguisement — motif réservé aux helpers ./hbs.rs.
-  Seuils de harnais : @crate::hashes::crc32_hash et @crate::hashes::Argon::new portent
-    l'attribut `#[must_use]`, les trois autres fonctions non ; chaque item `pub` porte sa
+  Seuils de harnais : @crate::hashes::crc32_hash porte l'attribut `#[must_use]`, les autres
+    fonctions non (leur @crate::Result l'est déjà) ; chaque item `pub` porte sa
     rustdoc avec sa section `# Errors` pour les deux fallibles ; le code de production est sans
     @std::result::Result::unwrap ni @std::option::Option::expect hors cas prouvé, la propagation
     se faisant par `?`, @std::result::Result::map_err et le `#[from]` des variantes d'@Error.
@@ -97,8 +97,7 @@ Must:
 Must not:
   Enregistrer côté Rhai une fonction nommée `argon_hash` ou `argon` : les noms côté script sont
     `crc32_hash`, `bcrypt_hash`, `new_argon` et la méthode `hash` ; `argon_hash` n'existe que
-    comme nom Handlebars dans ./hbs.rs, la confusion vient de la rustdoc de ./lib.rs, point
-    ouvert en `Tasks`.
+    comme nom Handlebars dans ./hbs.rs ; la rustdoc de ./lib.rs doit le dire correctement.
   Gater @crate::hashes::crc32_hash ou @crate::hashes::hashes_rhai_register derrière `crypto` :
     crc32 est la moitié non-crypto du module, disponible sous `--no-default-features` côté Rust
     et sous `rhai` seul côté script.
@@ -127,9 +126,8 @@ Exposes:
   @crate::hashes::crc32_hash — signature `pub fn crc32_hash(text: String) -> @std::primitive::u32`,
     `#[must_use]`, aucune feature, pas de variante `&str`.
   @crate::hashes::Argon — `pub struct Argon` à champs privés `salt` et `argon`, sous `crypto`
-    seulement, derives @std::clone::Clone et @core::fmt::Debug ; @std::default::Default::default
-    équivaut à @crate::hashes::Argon::new.
-  @crate::hashes::Argon::new — signature `pub fn new() -> Self`, `#[must_use]`, sous `crypto`.
+    seulement, derives @std::clone::Clone et @core::fmt::Debug, sans @std::default::Default.
+  @crate::hashes::Argon::new — signature `pub fn new() -> @crate::Result<Self>`, sous `crypto`.
   @crate::hashes::Argon::hash — signature `pub fn hash(&self, password: String) -> @crate::Result<@std::string::String>`,
     sous `crypto`, sans `#[must_use]`, seule voie Rust du hachage argon2.
   @crate::hashes::Argon::rhai_hash — signature `pub fn rhai_hash(&mut self, password: String) -> @crate::RhaiRes<@std::string::String>`,
@@ -158,8 +156,8 @@ Accepts:
   @crate::hashes::Argon::hash et @crate::hashes::Argon::rhai_hash — tout mot de passe
     @std::string::String, vide compris ; le sel n'est pas un paramètre, il vient de la
     construction.
-  @crate::hashes::bcrypt_hash — tout @std::string::String ; au-delà de 72 octets la dépendance
-    tronque sans que le module n'avertisse ni n'errore.
+  @crate::hashes::bcrypt_hash — tout @std::string::String d'au plus 72 octets ; au-delà, le
+    module refuse en @crate::Error::BcryptError plutôt que de tronquer.
   Les collages de script — exactement un argument de type chaîne (les deux unaires) ou zéro
     pour `new_argon` ; entiers, booléens, flottants, tableaux et objets ne coercent pas et
     échouent côté @rhai avant toute exécution.
@@ -188,14 +186,13 @@ Raises:
   @crate::hashes::bcrypt_hash — @crate::Error::BcryptError sur tout @bcrypt::BcryptError, seul
     reachable en pratique @bcrypt::BcryptError::Rand (défaillance d'entropie getrandom `0.4.3`) ;
     affichage `Bcrypt hash error Rand error: ` suivi du texte getrandom.
-    @bcrypt::BcryptError::CostNotAllowed, @bcrypt::BcryptError::InvalidHash et
-    @bcrypt::BcryptError::Truncation sont inatteignables par cette porte : coût cloué à `12`,
-    aucune chaîne d'autrui parsée, la voie `non_truncating` n'est pas appelée.
+    @bcrypt::BcryptError::Truncation est le refus d'un mot de passe de plus de 72 octets.
+    @bcrypt::BcryptError::CostNotAllowed et @bcrypt::BcryptError::InvalidHash sont
+    inatteignables par cette porte : coût cloué à `12`, aucune chaîne d'autrui parsée.
   @crate::hashes::crc32_hash — rien : total, sans allocation faillible.
-  @crate::hashes::Argon::new — pas d'erreur en @crate::Result : si l'entropie système lâche,
-    @argon2::password_hash::rand_core::OsRng panique dans rand_core `0.6.4` et le processus
-    meurt — @crate::Error::Argon2hash n'est jamais fabriqué pour ce cas, asymétrie avec bcrypt
-    ouverte en `Tasks`.
+  @crate::hashes::Argon::new — @crate::Error::Other (`Entropy failure: ...`) si l'entropie
+    système lâche, symétrique au @bcrypt::BcryptError::Rand de bcrypt ; aucun panic. Le
+    constructeur de script `new_argon` porte ce cas en @crate::RhaiRes.
   Collages de script — @crate::RhaiRes porteurs du texte @std::fmt::Display de @crate::Error
     via @crate::rhai_err : `Argon2 password_hash error ...` pour `.hash`, `Bcrypt hash error ...`
     pour `bcrypt_hash` ; @crc32fast::Hasher de crc32 ne pouvant échouer, aucune erreur ne sort
@@ -210,10 +207,9 @@ Handles:
   Sel figé à la construction — une instance @crate::hashes::Argon appelée dix fois rejoue le
     même sel et rend la même chaîne pour le même mot de passe ; ../docs/rhai_helpers.md le
     documente déjà et le `&mut self` de @crate::hashes::Argon::rhai_hash n'y change rien.
-  Mots de passe de plus de 72 octets pour bcrypt — tronqués à 72 octets par @bcrypt::hash sans
-    erreur ni avertissement du module ; deux mots de passe partageant leurs 72 premiers octets
-    deviennent indiscernables, la porte de vérification absente empêchant le module de le
-    rendre observable, point ouvert en `Tasks`.
+  Mots de passe de plus de 72 octets pour bcrypt — refusés en @crate::Error::BcryptError
+    (@bcrypt::BcryptError::Truncation) par @bcrypt::non_truncating_hash : deux mots de passe
+    partageant leurs 72 premiers octets ne deviennent jamais indiscernables en silence.
   Entrée non-ASCII pour crc32 — hachée sur la représentation UTF-8 de la chaîne, caractère par
     caractère : `907060870` est le CRC des cinq octets de `hello`.
   Appels de script de forme étrangère — zéro ou deux arguments aux unaires, argument non-string,
@@ -233,18 +229,15 @@ Tasks:
     aucun `#[cfg(test)]` et le repo n'a aucun répertoire ./tests/ : les cinq publics et les
     deux registres sont vierges de tout test, y compris l'affichage exact des variantes
     d'erreur — seule la matrice de features valide aujourd'hui la table des portes.
-  [?] Trancher le nommage de la rustdoc de ./lib.rs : la table de features annonce
-    `argon_hash` « Handlebars + Rhai » (ligne 20) et la liste script écrit `argon` (ligne 69),
-    alors que ./hashes.rs enregistre `new_argon` et la méthode `hash`, `argon_hash` n'existant
-    que côté Handlebars. Corriger la doc — ou ajouter des enregistrements Rhai de ces noms —
-    la spec fige le code actuel : ces noms n'existent pas côté script.
-  [?] Trancher l'asymétrie d'échec d'entropie : @crate::hashes::Argon::new panique dans
-    rand_core `0.6.4` si getrandom `0.2` lâche, alors que @crate::hashes::bcrypt_hash rend
-    @crate::Error::BcryptError::Rand. Accepter, ou rendre tryable la construction d'@crate::hashes::Argon
-    avant exposition publique.
-  [?] Trancher la troncature bcrypt : @bcrypt::hash (voie silencieuse) et non
-    `non_truncating_hash` — un mot de passe de plus de 72 octets est tronqué sans signe.
-    Décision de sécurité à prendre par Sébastien : garder ce comportement ou basculer.
+  [ ] Corriger la rustdoc de ./lib.rs : `argon_hash` est Handlebars seul, la face script est
+    `new_argon` + `.hash` (décision actée : le code est juste, la doc fausse).
+  [ ] Rendre @crate::hashes::Argon::new faillible (`@crate::Result<Self>`, `try_fill_bytes`,
+    suppression de @std::default::Default) et faire porter l'erreur par `new_argon`
+    (décision actée : un constructeur public ne panique pas) ; adapter le helper Handlebars
+    de ./hbs.rs et ses tests, test d'abord.
+  [ ] Basculer @crate::hashes::bcrypt_hash sur @bcrypt::non_truncating_hash (décision
+    actée : sécurité, pas de troncature silencieuse) ; adapter les Scenario bcrypt et
+    signaler le changement de comportement pour les consommateurs (> 72 octets refusé).
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
@@ -295,7 +288,7 @@ Scenario: l'argon par défaut borne les champs PHC attendus
   And le segment de hash compte exactement 43 caractères
 
 Scenario: deux constructions d'Argon tirent deux sels
-  Given @crate::hashes::Argon::new appelée deux fois et @std::default::Default::default une fois
+  Given @crate::hashes::Argon::new appelée trois fois
   When leurs trois @crate::hashes::Argon::hash reçoivent le même mot de passe
   Then les trois chaînes rendues sont deux à deux différentes
   And leurs segments de sel sont distincts
@@ -328,11 +321,11 @@ Scenario: bcrypt rend soixante caractères en 2b coût 12
   And elle commence par `$2b$12$`, le `12` venant de @bcrypt::DEFAULT_COST
   And deux appels rendent deux chaînes différentes, sel frais par appel
 
-Scenario: bcrypt ne refuse pas cent octets
+Scenario: bcrypt refuse cent octets
   Given @crate::hashes::bcrypt_hash compilée sous `crypto`
   When appelée sur un mot de passe de 100 octets ASCII
-  Then un @std::result::Result::Ok est rendu, la dépendance tronquant en silence à 72 octets
-  And aucun @crate::Error::BcryptError n'apparaît, la voie `non_truncating` n'étant pas la sienne
+  Then un @crate::Error::BcryptError (@bcrypt::BcryptError::Truncation) est rendu
+  And un mot de passe de 72 octets est encore accepté
 
 Scenario: le script ne coerce aucun scalaire vers les collages
   Given un @rhai::Engine enregistré par @crate::hashes::crypto_hashes_rhai_register

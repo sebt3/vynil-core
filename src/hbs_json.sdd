@@ -29,7 +29,8 @@ References:
   ./yaml.sdd — référence croisée : ce module appelle @serde_yaml directement avec sa propre
     découpe `---\n` à l'écriture et ne transite jamais par @crate::yaml ; ./yaml.sdd énonce
     déjà la même symétrie depuis l'autre côté.
-  ../docs/handlebars_helpers.md — section 8 : table des six helpers, le `format=` commun,
+  ../docs/handlebars_helpers.md — section 8 : table des six helpers, le `format=` (hors
+    `json_query`, où il est un no-op à documenter),
     « Empty or null input to any of these returns an empty string » et « `null` if nothing
     matches » pour les requêtes JMESPath.
   ./Cargo.toml — la liste de la feature `hbs`,
@@ -91,11 +92,11 @@ Must:
     @serde_json::Number normal.
   Lire le TOML cible en @serde_json::Value (@toml::from_str sur le type de retour) comme les
     autres formats, avec la même voie d'erreur `to_nested_error`.
-  Rendre les paramètres chaîne manquants et non-chaînes silencieusement vides sur les trois
+  Rendre les paramètres chaîne manquants ou non-chaînes silencieusement vides sur les trois
     helpers qui les lisent par la voie privée `find_str_param` : paramètre absent à une
     position donne l'erreur à message texte `param <N> (the string) not found` ; paramètre
-    présent mais non-chaîne devient la chaîne vide via @std::option::Option::unwrap_or — une valeur
-    présente mais non-chaîne devient ainsi la chaîne vide, sans avertissement. Le
+    présent mais non-chaîne donne l'erreur à message texte `param <N> (the string) is not a
+    string`, jamais la chaîne vide. Le
     paramètre `data` de `json_to_str` (valeur JSON, position 0) est lu sans contrainte de
     type, seul l'absence donne `param 0 (the json) not found`.
   Se enregistrer sans toucher l'échappement : @handlebars::no_escape n'est posé que par
@@ -170,8 +171,8 @@ Exposes:
 Accepts:
   Le hash `format="..."` des six emplacements où il est lu — toute chaîne, casse
     indifférente, cinq valeurs reconnues, toute autre valeur textuelle refusée avant parsing.
-  `str_to_json` et `json_str_query` côté chaîne : paramètre manquant = erreur de position, paramètre
-    présent non-chaîne = chaîne vide, donc la voie vide.
+  `str_to_json` et `json_str_query` côté chaîne : paramètre manquant = erreur de position,
+    paramètre présent non-chaîne = erreur de type de même famille.
   `json_to_str` : n'importe quel @serde_json::Value en paramètre 0, y compris `null` et `{}`.
   `json_query` : une expression en premier paramètre chaîne, un @serde_json::Value en second ;
     l'expression est recompilée à chaque appel.
@@ -199,7 +200,8 @@ Raises:
     @serde_json::Error ; les erreurs de parsing @serde_json::Error, @serde_yaml::Error et
     @toml::de::Error nichées telles quelles en NestedError ; les erreurs d'écriture en
     NestedError ; l'absence de paramètre chaîne requis en Reason::Other
-    `param <N> (the string) not found` ; l'absence de la valeur `json_to_str` en
+    `param <N> (the string) not found` ; un paramètre chaîne présent mais non textuel en
+    Reason::Other `param <N> (the string) is not a string` ; l'absence de la valeur `json_to_str` en
     `param 0 (the json) not found`. La forme d'habillage finale du @handlebars::RenderError
     (préfixe « Render error ») appartient à @handlebars et n'est pas verrouillée.
   `to_ordored_toml_value` — Reason::Other `to_toml: can not convert a Json Number: <v>` :
@@ -222,9 +224,9 @@ Handles:
   Requêtes JMESPath sans correspondance — le résultat est `null` ; `json_query` le rend comme
     valeur nulle dans le template, `json_str_query` le force en `json` compact « null » après
     trim — la coercition JMESPath exacte appartient à @jmespath 0.5.0.
-  Valeur non textuelle sur les paramètres de chaîne — l'`as_str().unwrap_or("")`
-    de `find_str_param` la transforme en chaîne vide, ce qui masque une erreur de gabarit en
-    résultat vide plutôt qu'en erreur, comportement discuté en `Tasks`.
+  Valeur non textuelle sur les paramètres de chaîne — `find_str_param` la refuse en erreur
+    explicite (`{{str_to_json 5}}` échoue), une erreur de gabarit ne se masque pas en résultat
+    vide.
   Combinaisons de features — sans `hbs` : module absent, ./hbs.rs absent, aucun des six noms
     n'existe nulle part ; `hbs` sans `crypto` ni `rhai` : les six noms sont enregistrés, la
     branche yaml compile car @serde_yaml est non optionnel, et @hbs_json ne dépend de
@@ -251,21 +253,14 @@ Tasks:
     non-coercition des non-chaînes en paramètres, l'égouttage Null et l'ordonnancement TOML,
     la sortie trim/compacte du `json_str_query` scalaire vs tableau-vs-format, la rognure
     `---\n` à l'écriture yaml seule, et la branche échec de `json_query`.
-  [?] Trancher la non-coercition silencieuse des paramètres non-chaînes : `find_str_param`
-    remplace une valeur non-textuelle par la chaîne vide (`as_str().unwrap_or("")`), ce qui
-    transforme une erreur de gabarit (`{{str_to_json 5}}` rend la chaîne vide) en exécution
-    vide ou faussement valide plutôt qu'en erreur explicite. Garder, ou rendre la non-chaîne
-    également erroree comme l'absence.
-  [?] Trancher la mention « All accept format= » de ../docs/handlebars_helpers.md : la doc dit
-    le hash lu par tous les helpers, mais `json_query` ne le lit jamais (signature à deux
-    paramètres sans hash) et l'ignorer silencieusement est du comportement — corriger la table
-    pour `json_query` (le `format=` y est un no-op) ou le lui faire honorer.
-  [?] Trancher l'ordre des clés JSON comme contrat : le crate ne demande pas la feature
-    `preserve_order` de @serde_json et l'objet de test actuel est déjà trié alphabétiquement, si
-    bien que l'assertion `{"foo":{"bar":{"baz":true}}}` passe par accident d'ordre ; un
-    consommateur unifiant la feature depuis son propre graphe changerait l'ordre rendu sans
-    changer la compilation. Figer l'ordre trié dans les tests en connaissance de cause, ou
-    trier avant toute assertion.
+  [ ] `find_str_param` : refuser un paramètre non-chaîne en erreur explicite
+    `param <N> (the string) is not a string` au lieu de `unwrap_or("")` (décision actée : une
+    erreur de gabarit doit se voir) ; test d'abord depuis le Scenario dédié.
+  [ ] Corriger ../docs/handlebars_helpers.md section 8 : « All accept format= » est faux pour
+    `json_query`, où `format=` est un no-op (décision actée : la requête ne lit pas de format).
+  [ ] Réécrire les assertions de test dont le résultat dépend de l'ordre des clés JSON pour
+    comparer des @serde_json::Value parsées, non des chaînes (décision actée : l'ordre n'est
+    jamais contractuel).
 
 Scenario: la table des portes limite le module à hbs
   Given la crate compilée sans aucune feature
@@ -299,18 +294,19 @@ Scenario: str_to_json rend une valeur et json_to_str sa chaîne
   Then le rendu est la valeur JSON elle-même dans le template, et non sa chaîne échappée
   When il évalue `{{ json_to_str ( str_to_json "{\"foo\":true}" ) }}` imbriqués
   Then il rend la chaîne `{"foo":true}` en `json` compact par défaut
-  And les clés ordonnées ainsi sont dues au tri du sérialiseur, la feature de préservation
-    d'ordre d'insertion n'étant demandée par personne, point ouvert en `Tasks`
+  And l'ordre des clés n'est pas contractuel : l'assertion compare des @serde_json::Value
+    parsées, jamais des chaînes, si bien qu'une unification de la feature `preserve_order`
+    par un consommateur ne la casse pas
 
-Scenario: le paramètre chaîne manquant parle, le non-texte se tait
+Scenario: le paramètre chaîne manquant ou non textuel parle
   Given un engine de test avec les six helpers
   When un template évalue `{{ json_str_query }}` sans paramètre
   Then le rendu échoue sur le message exactement `param 0 (the string) not found`
   When il évalue `{{ json_str_query "x" }}` avec un seul paramètre
   Then le même message cite la position `1`
   When il évalue `{{ str_to_json 5 }}`, un nombre en position de chaîne
-  Then aucune erreur de coercition ne survient : le nombre devient la chaîne vide, la voie vide
-    le short-circuite, et le rendu est la chaîne vide — comportement discuté en `Tasks`
+  Then le rendu échoue sur le message exactement `param 0 (the string) is not a string`, sans
+    coercition en chaîne vide
 
 Scenario: la rognure --- precède le yaml écrit seulement
   Given un engine de test avec les six helpers

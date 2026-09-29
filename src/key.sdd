@@ -41,10 +41,9 @@ Must:
     cette valeur est contractuelle : seul le collage unaire de script l'applique.
   La reconnaissance d'algorithme s'opère sur une copie de l'entrée passée par
     @std::primitive::str::to_ascii_lowercase, et seuls `ed25519` et `rsa` y sont reconnus,
-    sans alias, préfixe ni variante orthographique. La copie lowercased sert aussi de texte à
-    la variante rejetée : pour un algo inconnu, @crate::Error::UnsupportedKeyAlgorithm porte
-    le texte lowercased de l'entrée (`DSA` rend `dsa`), jamais sa casse d'origine — point
-    ouvert en `Tasks`.
+    sans alias, préfixe ni variante orthographique. La copie lowercased ne sert qu'à la
+    comparaison : pour un algo inconnu, @crate::Error::UnsupportedKeyAlgorithm porte le texte
+    d'origine de l'entrée, casse conservée (`DSA` rend `DSA`).
   La dispatch est exactement : `ed25519` via @openssl::pkey::PKey::generate_ed25519 puis
     @openssl::pkey::PKey::private_key_to_pem_pkcs8, `bits` jamais lu quelle que soit sa valeur ;
     `rsa` via @openssl::rsa::Rsa::generate, @openssl::pkey::PKey::from_rsa puis
@@ -141,7 +140,7 @@ Raises:
   @crate::key::gen_private_key — @crate::Error::UnsupportedKeyAlgorithm pour tout `algo`
     autre que `ed25519` et `rsa`, casse confondue, chaîne vide comprise, sans aucun appel
     OpenSSL ; l'affichage rendu est `KEY-ALGO-001 Unsupported key algorithm: ` suivi du texte
-    lowercased de l'entrée.
+    d'origine de l'entrée, casse conservée.
   @crate::key::gen_private_key — @crate::Error::OpenSSL sur chaque étape OpenSSL des deux
     voies (@openssl::pkey::PKey::generate_ed25519, @openssl::rsa::Rsa::generate,
     @openssl::pkey::PKey::from_rsa, @openssl::pkey::PKey::private_key_to_pem_pkcs8) remontant
@@ -192,11 +191,9 @@ Tasks:
     que `ED25519` et `unknown_algorithm_is_rejected` que le refus, sans le texte porté.
     Sont sans test : l'affichage exact du refus, les tailles aberrantes pour `ed25519`,
     tout le versant script et les portes de features.
-  [?] Trancher le texte porté par @crate::Error::UnsupportedKeyAlgorithm : le code matche la
-    copie lowercased (./key.rs ligne 20) et l'algo d'origine est donc perdu à la ligne 23 —
-    `DSA` rend `dsa`. La spec fige ce comportement courant ; si l'intention est de conserver
-    la casse d'origine, corriger le collage (comparer en lowercased, alimenter la variante
-    avec l'original) puis reprendre la spec.
+  [ ] Conserver la casse d'origine dans @crate::Error::UnsupportedKeyAlgorithm : comparer sur
+    la copie lowercased mais alimenter la variante avec `algo` (décision actée : le lowercase
+    perdu était un défaut de collage) ; test d'abord depuis le Scenario `DSA`.
 
 Scenario: la voie ed25519 rend un PEM PKCS8 valide
   Given @crate::key::gen_private_key compilée sous la feature `crypto`
@@ -220,12 +217,12 @@ Scenario: reconnaissance d'algorithme insensible à la casse
   And `gen_private_key("Ed25519", 0)` est accepté de même
   And `gen_private_key("Rsa", 2048)` retourne une clé RSA de taille `2048`
 
-Scenario: l'algo inconnu porte le texte lowercased reçu
+Scenario: l'algo inconnu porte le texte d'origine reçu
   Given @crate::key::gen_private_key compilée sous la feature `crypto`
   When `gen_private_key("DSA", 0)` est appelé
   Then un @crate::Error::UnsupportedKeyAlgorithm est retourné
-  And son @std::fmt::Display est exactement `KEY-ALGO-001 Unsupported key algorithm: dsa`
-  And le texte porté est `dsa`, la copie lowercased matchée, point ouvert en `Tasks`
+  And son @std::fmt::Display est exactement `KEY-ALGO-001 Unsupported key algorithm: DSA`
+  And le texte porté est `DSA`, la casse d'origine, non la copie lowercased matchée
   But aucun PEM n'est produit et aucune erreur @crate::Error::OpenSSL n'apparaît
 
 Scenario: l'algo vide est refusé avec un texte vide

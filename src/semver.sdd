@@ -45,8 +45,9 @@ References:
     souvenir et reproduction », le comportement d'inc_patch en présence de pré-release
     et l'annotation « Standard semver ordering (prerelease < stable) ». Elle est muette sur les
     champs d'objet, les erreurs de compteur, la préservation du `build` et les transitions de
-    labels ; son annotation d'ordre est contredite par le départage `use_v` des derives — point
-    ouvert en `Tasks`. Sa table de couverture déclare semver « Always (given `rhai`) », conforme.
+    labels ; son annotation d'ordre n'est vraie qu'une fois le comparateur écrit à la main hors `use_v`
+    (voir `Tasks`), et la préservation du `build` qu'elle tait devient « effacé à chaque
+    bump ». Sa table de couverture déclare semver « Always (given `rhai`) », conforme.
   ./Cargo.toml — `semver = { version = "1.0.24", features = ["serde"] }` : dépendance NON
     optionnelle, rattachée à aucune feature, verrouillée `1.0.28` ; @rhai est verrouillé
     `1.25.1` au lock.
@@ -61,8 +62,9 @@ Must:
     @crate::semver::semver_rhai_register sous `rhai` seule=./engine.rs câble le registre sous
     `rhai` seul, sans aucune autre feature à activer. La dépendance @semver n'est optionnelle
     pour personne.
-  @crate::Semver est @std::cmp::Eq, @std::hash::Hash, @std::clone::Clone, @std::cmp::Ord,
-    @std::cmp::PartialEq, @std::cmp::PartialOrd et @core::fmt::Debug dérivés, avec deux champs
+  @crate::Semver est @std::clone::Clone et @core::fmt::Debug dérivés, et @std::cmp::PartialEq,
+    @std::cmp::Eq, @std::cmp::PartialOrd, @std::cmp::Ord et @std::hash::Hash implémentés à la
+    main sur le seul champ @crate::Semver.version, `use_v` étant cosmétique (affichage), avec deux champs
     publics : @crate::Semver.version de type @semver::Version et @crate::Semver.use_v de type
     @std::primitive::bool. Les champs publics étant ouverts à la racine du struct, un
     consommateur Rust peut construire le type par littéral sans passer par
@@ -86,9 +88,11 @@ Must:
     remet `patch` à `0` et vide le pre-release, `major` intact ; @crate::Semver::inc_patch ne
     fait `patch + 1` que si le pre-release est vide, sinon se borne à le vider sans toucher
     `patch` — un pre-release quel qu'il soit, `rc.1` comme `beta.2`, déclenche ce second bras.
-    Aucun des trois ne touche jamais le champ `build` — @semver::BuildMetadata n'est même pas
-    importé par ./semver.rs, preuve que le champ n'y est jamais assigné — ni le drapeau
-    `use_v`. L'arithmétique est partout en @std::primitive::u64::saturating_add : aux bornes, le
+    Les trois — comme @crate::Semver::inc_beta et @crate::Semver::inc_alpha — remplacent
+    aussi le champ `build` par @semver::BuildMetadata::EMPTY : la métadonnée de provenance
+    (`+sha.5114f85`) décrit l'artefact d'avant le bump et serait fausse après (décision
+    actée : effacée à chaque bump, l'appelant repose la sienne s'il en veut une). Ils ne
+    touchent pas au drapeau `use_v`. L'arithmétique est partout en @std::primitive::u64::saturating_add : aux bornes, le
     champ sature sans enroulement ni @std::panic.
   @crate::Semver::inc_beta et @crate::Semver::inc_alpha partagent une logique jumelle,
     sensible à la casse sur les labels exacts `beta.` et `alpha.` testés par
@@ -101,7 +105,8 @@ Must:
     parse en @std::primitive::u32 et le pre-release est reconstruit en `beta.{n+1}`,
     respectivement `alpha.{n+1}`, en @std::primitive::u32::saturating_add, `patch` intact — le
     reliquat `01` est donc normalisé en compteur `1` puis rendu `2`, et `4294967295` se fige sur
-    lui-même. Les deux fonctions ne touchent ni `major`, ni `minor`, ni `build`, ni `use_v`, et
+    lui-même. Les deux fonctions ne touchent ni `major`, ni `minor`, ni `use_v`, et remettent
+    `build` à vide en cas de succès, et
     l'appelant qui reçoit un @std::result::Result::Err voit l'objet strictement inchangé dans le
     bras compteur, le parse du compteur échouant avant toute assignation.
   @std::fmt::Display rend soit `v` concaténé à l'affichage interne de @semver::Version quand
@@ -109,14 +114,13 @@ Must:
     puis `-` + pre-release si non vide puis `+` + build si non vide — la construction exacte de
     la queue appartient à la dépendance ; ce qui est verrouillé ici est la délégation intégrale,
     sans retraitement ni normalisation ajoutée par le wrapper.
-  Les comparaisons @std::cmp::PartialEq, @std::cmp::PartialOrd et @std::cmp::Ord dérivées
-    comparent le tuple des champs dans l'ordre de déclaration : @semver::Version d'abord — donc
+  Les comparaisons @std::cmp::PartialEq, @std::cmp::PartialOrd et @std::cmp::Ord
+    comparent @semver::Version seule — donc
     `2.0.0` domine `1.99.99` et tout pré-release domine sa version stable selon l'ordre complet
     de @semver::Version, dont le détail (identifiants numériques contre alphanumériques)
-    appartient à la dépendance — puis @crate::Semver::use_v en départage, `false` étant
-    inférieur à `true`. Comportement courant figé en attendant la décision `Tasks` :
-    `v1.2.3 == 1.2.3` est faux et `1.2.3 < v1.2.3` est vrai, y compris via les opérateurs de
-    script, @std::hash::Hash incluant pareillement le drapeau.
+    appartient à la dépendance — `use_v` n'entre ni dans l'égalité, ni dans l'ordre, ni dans
+    @std::hash::Hash : `v1.2.3 == 1.2.3` est vrai et `1.2.3 < v1.2.3` est faux, y compris via
+    les opérateurs de script, et deux valeurs égales ont le même hash.
   @crate::semver::semver_rhai_register fait exactement un enregistrement de type et treize
     enregistrements de fonction, et rien d'autre : @rhai::Engine::register_type_with_name
     donnant au type le nom de script `Semver` pour `type_of` ; la fonction unaire `semver_from`
@@ -141,9 +145,8 @@ Must:
   Les erreurs de script remontent par @crate::rhai_err, donc par @crate::error_chain : un échec
     de `semver_from` porte le texte exactement `Semver error ` suivi de l'affichage interne —
     la source @semver::Error étant déjà fondue dans ce message, la marche de chaîne n'ajoute
-    rien ; un échec de compteur porte l'affichage complet de @crate::Error::Other,
-    `Error: invalid beta counter '<reliquat>': ` suivi du texte de @std::num::ParseIntError, ou
-    `invalid alpha counter` pour l'autre. Les unes comme les autres sont des erreurs attrapables
+    rien ; un échec de compteur porte l'affichage de @crate::Error::ParseInt,
+    `ParseIntError ` suivi du texte de @std::num::ParseIntError. Les unes comme les autres sont des erreurs attrapables
     par un `try` de script.
   Seuils de harnais : seul @crate::Semver::opt_parse porte `#[must_use]` ; chaque item public
     porte sa rustdoc avec sa section `# Errors` pour les six fallibles ; la production est sans
@@ -162,10 +165,9 @@ Must not:
   Avaler une erreur de @crate::Semver::rhai_parse en valeur par défaut ou en
     @std::option::Option::None : c'est le contrat exclusif de @crate::Semver::opt_parse ; les
     deux autres portes propagent.
-  Router l'erreur de compteur non numérique vers @crate::Error::ParseInt ou
-    @crate::Error::Semver : les deux variantes existent non gated et @std::num::ParseIntError a
-    son `#[from]`, mais le contrat courant est @crate::Error::Other au message posé par le
-    `format!` du fichier — écart à trancher en `Tasks`, pas à corriger d'autorité.
+  Router l'erreur de compteur non numérique vers @crate::Error::Other ou
+    @crate::Error::Semver : la variante typée @crate::Error::ParseInt, par son `#[from]`, en
+    est la seule voie.
 
 Depends on:
   semver — @semver::Version parse/@std::fmt::Display/@std::cmp::Ord, @semver::Prerelease (dont
@@ -237,9 +239,10 @@ Returns:
     complète, ou @std::result::Result::Err sans mutation dans le bras compteur.
   @std::fmt::Display — la chaîne canonique de @semver::Version, précédée de `v` quand le drapeau
     est posé, y compris après toute mutation : le drapeau survit à tous les `inc_`.
-  Les six opérateurs de script — @std::primitive::bool ; en Rust les derives de
-    @std::cmp::PartialEq/@std::cmp::PartialOrd/@std::cmp::Ord portent la même sémantique du
-    tuple `(version, use_v)`.
+  Les six opérateurs de script — @std::primitive::bool ; en Rust les implémentations de
+    @std::cmp::PartialEq/@std::cmp::PartialOrd/@std::cmp::Ord portent la même sémantique de
+    la seule `version`. Les opérandes doivent être deux `Semver` : un script enveloppe chaque
+    côté dans `semver_from`, sans forme mixte ni `<=>` (décision actée, à dire en doc).
   `type_of(v)` en script rend `Semver` ; @crate::semver::semver_rhai_register rend `()` ;
     @crate::Semver::rhai_parse rend un @crate::Semver de script utilisable comme opérande des
     six opérateurs.
@@ -253,12 +256,12 @@ Raises:
   @crate::Semver::rhai_parse — le même verdict fondu par @crate::rhai_err en une seule erreur
     @crate::RhaiRes commençant par `Semver error `, sans doublement de la source déjà incluse ;
     en script, erreur rattrapable par `try` ni plus ni moins qu'une autre.
-  @crate::Semver::inc_beta, @crate::Semver::inc_alpha — @crate::Error::Other portant exactement
-    le contenu `invalid beta counter '<reliquat>': <ParseIntError>`, respectivement
-    `invalid alpha counter`, quand le reliquat après le préfixe n'est pas un
+  @crate::Semver::inc_beta, @crate::Semver::inc_alpha — @crate::Error::ParseInt portant le
+    @std::num::ParseIntError, quand le reliquat après le préfixe n'est pas un
     @std::primitive::u32 — un label comme `rc`, un nombre signé, un reliquat à points
     (`beta.1.rc`) ou un dépassement d'amplitude u32 ; l'affichage complet est donc
-    `Error: invalid beta counter 'rc': ` suivi du texte de @std::num::ParseIntError.
+    `ParseIntError ` suivi du texte de @std::num::ParseIntError (le label fautif n'y figure
+    plus).
     @crate::Error::Semver est aussi déclaré possible sur les @semver::Prerelease::new des deux
     bras, mais les deux littéraux mis en cause sont des préfixes valides par construction : ce
     bras est défensif et inatteignable par les appels publics du module.
@@ -290,9 +293,9 @@ Handles:
     poussé et pre posé à `beta.1` ; `1.2.3-alpha.4` sous inc_beta et `1.2.3-beta.4` sous
     inc_alpha : même forme, compteur remis à `1` et patch poussé — la symétrie est totale,
     aucun « passage naturel alpha vers beta sans bump » n'existe.
-  Préservation du build partout — `1.2.3-alpha.1+sha.5114f85` sous inc_major donne
-    `2.0.0+sha.5114f85`, sous inc_minor `1.3.0+sha.5114f85`, sous inc_patch `1.2.3+sha.5114f85`,
-    sous inc_beta `1.2.4-beta.1+sha.5114f85`. Le drapeau `v` survit pareil à tout : `v1.2.3`
+  Effacement du build partout — `1.2.3-alpha.1+sha.5114f85` sous inc_major donne `2.0.0`,
+    sous inc_minor `1.3.0`, sous inc_patch `1.2.3`, sous inc_beta `1.2.4-beta.1`, sous
+    inc_alpha depuis `alpha.1` `1.2.3-alpha.2`. Le drapeau `v` survit pareil à tout : `v1.2.3`
     après inc_minor s'affiche `v1.3.0`.
   Réenregistrement et engine nu — deux appels de @crate::semver::semver_rhai_register sur le
     même @rhai::Engine rendent `()` et laissent les appels marcher à l'identique ; un
@@ -335,32 +338,23 @@ Tasks:
     mutation, l'égalité et l'ordre à version égale, `type_of` et les propriétés d'objet, les
     coercitions et arités refusées, l'engine nu contre @Script::new_bare, le double
     enregistrement, la construction par littéral et la forme pointée des mutateurs.
-  [?] Trancher la part de @crate::Semver.use_v dans le comparateur : les derives
-    @std::cmp::PartialEq, @std::cmp::Ord et @std::hash::Hash comparent le drapeau : à version
-    égale, `v1.2.3 == 1.2.3` est faux et `1.2.3 < v1.2.3` est vrai, y compris depuis les opérateurs de script —
-    alors que la rustdoc du struct (./semver.rs) affirme « Ordering is delegated to the inner
-    `semver::Version` » et que ../docs/rhai_helpers.md promet « Standard semver ordering
-    (prerelease < stable) ». Implémentation manuelle ignorant le drapeau, ou correction des deux
-    textes ; la spec fige le comportement courant.
-  [?] Trancher la variante d'erreur du compteur : @crate::Semver::inc_beta et
-    @crate::Semver::inc_alpha fabriquent un @crate::Error::Other avec le message posé par le
-    `format!` du fichier, alors que @crate::Error::ParseInt existe non gated avec son `#[from]`
-    de @std::num::ParseIntError (affichage `ParseIntError {0}`). Garder le message posé ou
-    basculer sur la variante typée : le texte de script passerait alors de
-    `Error: invalid beta counter 'rc': ...` à `ParseIntError ...`.
-  [?] Trancher la survie du @semver::BuildMetadata aux quatre mutations : ./semver.rs
-    n'assigne jamais `build`, donc `1.2.3-alpha.1+sha.5114f85` devient `2.0.0+sha.5114f85` sous
-    inc_major, tandis que ../docs/rhai_helpers.md ne promet que « resets minor/patch, clears
-    prerelease » sans un mot sur le build. Clearing assumé à chaque bump — usage des chaînes de
-    release — ou préservation documentée.
-  [?] Trancher les états adjacents des compteurs : le code traite `beta` nu comme un état
-    non-beta — patch poussé, compteur remis à `1` — et toute traversée croisée pousse pareil le
-    patch, alors que ../docs/rhai_helpers.md ne documente que « From stable » et « From existing
-    beta.N ». Documenter les traversées et le label nu, ou changer la sémantique.
-  [?] Trancher la surface d'opérateurs de script : ./semver.rs n'enregistre que six comparisons
-    entre deux `Semver`, sans forme mixte avec une chaîne ni `<=>`, si bien qu'un script doit
-    envelopper chaque opérande dans `semver_from`. Ajouter des coercitions mixtes (Semver,
-    chaîne) ou assumer l'obligation du double `semver_from` et le dire en doc.
+  [ ] Implémenter à la main @std::cmp::PartialEq, @std::cmp::Ord (et son PartialOrd) et
+    @std::hash::Hash de @crate::Semver sur `version` seule (décision actée : `use_v` est
+    cosmétique) ; la rustdoc du struct et « Standard semver ordering » de
+    ../docs/rhai_helpers.md deviennent vraies.
+  [ ] Faire échouer @crate::Semver::inc_beta et @crate::Semver::inc_alpha en
+    @crate::Error::ParseInt (variante typée existante) au lieu de @crate::Error::Other
+    (décision actée) ; le texte de script passe à `ParseIntError ...`.
+  [ ] Effacer `build` (@semver::BuildMetadata::EMPTY) aux cinq mutateurs (décision actée :
+    la provenance d'avant le bump serait fausse après) ; documenter dans
+    ../docs/rhai_helpers.md « resets minor/patch, clears prerelease and build ».
+  [ ] Documenter dans ../docs/rhai_helpers.md les transitions de labels actuelles (décision
+    actée : le comportement est cohérent, pas de changement de code) : `beta` nu et tout label
+    étranger comptent comme non-beta (patch poussé, compteur `1`), traversée croisée
+    alpha/beta identique.
+  [ ] Documenter dans ../docs/rhai_helpers.md que les six opérateurs exigent deux `Semver`
+    (décision actée : pas de coercition mixte ni de `<=>`) : envelopper chaque opérande dans
+    `semver_from`.
 
 Scenario: le même type sous deux chemins dans tous les graphes
   Given la crate compilée par `cargo check --no-default-features`
@@ -394,29 +388,29 @@ Scenario: opt_parse transforme chaque rejet en None
   Then elle rend @std::option::Option::None à chaque fois, l'erreur de @crate::Semver::parse
     étant avalée sans panic ni journal
 
-Scenario: inc_major réinitialise les niveaux bas et garde le build
+Scenario: inc_major réinitialise les niveaux bas et efface le build
   Given un @crate::Semver parsé de `1.2.3-alpha.1+sha.5114f85`
   When @crate::Semver::inc_major est appelée
   Then `major`, `minor` et `patch` valent `2`, `0` et `0` et le pre-release est vide
-  But le build reste `sha.5114f85` et le drapeau reste inchangé, jamais assignés par ./semver.rs
+  And le build est vide, le rendu est `2.0.0`, et le drapeau reste inchangé
 
-Scenario: inc_minor n'efface que patch et pre-release
+Scenario: inc_minor efface patch, pre-release et build
   Given un @crate::Semver parsé de `v1.2.3-beta.2+meta.7`
   When @crate::Semver::inc_minor est appelée
-  Then le rendu est `v1.3.0+meta.7`, `major` restant `1` et `minor` valant `3`
+  Then le rendu est `v1.3.0`, `major` restant `1` et `minor` valant `3`
 
 Scenario: inc_patch pousse en stable et ne vide que le pre-release sinon
   Given un @crate::Semver parsé de `1.2.3+exp.1`
   When @crate::Semver::inc_patch est appelée
-  Then `patch` vaut `4` et le build `exp.1` est intact
-  When elle est appelée sur un @crate::Semver de `1.2.3-rc.1`
-  Then @crate::Semver::inc_patch ne fait qu'effacer le pre-release et laisse `patch` à `3`
+  Then `patch` vaut `4` et le build `exp.1` est effacé
+  When elle est appelée sur un @crate::Semver de `1.2.3-rc.1+x`
+  Then @crate::Semver::inc_patch n'efface que le pre-release et le build, et laisse `patch` à `3`
   And `1.2.3-alpha.9` a le même traitement, tout pre-release non vide déclenche la vidange
 
 Scenario: inc_beta pousse le patch depuis le stable ou un pre-release étranger
   Given un @crate::Semver de `1.2.3+exp`
   When @crate::Semver::inc_beta est appelée
-  Then un @std::result::Result::Ok est rendu avec `1.2.4-beta.1+exp`, build survécu
+  Then un @std::result::Result::Ok est rendu avec `1.2.4-beta.1`, build effacé
   Given un @crate::Semver de `1.2.3-beta` sans point
   When @crate::Semver::inc_beta est appelée
   Then le rendu est `1.2.4-beta.1`, le label nu comptant comme état non-beta, donc patch poussé
@@ -448,15 +442,14 @@ Scenario: inc_alpha est le miroir exact de inc_beta
 Scenario: un compteur non numérique erreur et laisse la version intacte
   Given un @crate::Semver de `1.2.3-beta.rc`
   When @crate::Semver::inc_beta est appelée
-  Then un @std::result::Result::Err de @crate::Error::Other est rendu, ni @crate::Error::Semver
-    ni @crate::Error::ParseInt
-  And son @std::fmt::Display commence par `Error: invalid beta counter 'rc': `, la suite
-    appartenant au @std::num::ParseIntError
+  Then un @std::result::Result::Err de @crate::Error::ParseInt est rendu, ni
+    @crate::Error::Semver ni @crate::Error::Other
+  And son @std::fmt::Display commence par `ParseIntError `, la suite appartenant au
+    @std::num::ParseIntError
   And `major`, `minor`, `patch`, le pre-release, le build et `use_v` sont strictement inchangés
   Given de même `1.2.3-alpha.xy` sous @crate::Semver::inc_alpha et `1.2.3-beta.4294967296`
     sous @crate::Semver::inc_beta, dépassement d'amplitude compris
-  Then les deux rendent aussi un @crate::Error::Other, avec `invalid alpha counter 'xy': ` et
-    `invalid beta counter ` respectivement
+  Then les deux rendent aussi un @crate::Error::ParseInt
 
 Scenario: les maxima d'entiers saturent sans panic ni enroulement
   Given un @crate::Semver de `18446744073709551615.9.9-beta.1`
@@ -473,15 +466,13 @@ Scenario: Display reproduit le v initial puis la queue complète
   And le même littéral avec le drapeau faux rend `1.2.3-beta.1+b`, la queue étant l'affichage
     délégué de @semver::Version sans retraitement du wrapper
 
-Scenario: l'ordre suit semver et le v départage les égaux
+Scenario: l'ordre suit semver, le v n'y compte pas
   Given `2.0.0`, `1.99.99`, `1.2.3-alpha.1` et `1.2.3`, déjà verrouillés par les tests actuels
   Then `2.0.0` domine `1.99.99` et `1.2.3-alpha.1` reste sous `1.2.3`
   Given `1.2.3` et `v1.2.3`, même version et drapeaux opposés, sous la même compilation
-  Then leur @std::cmp::PartialEq est faux, vrai en revanche entre deux versions au même drapeau
-  And `1.2.3 < v1.2.3` est vrai et `v1.2.3 > 1.2.3` vrai, départage dérivé de l'ordre des champs
-  And ces deux verdicts valent aussi en script, `==` et `<` empruntant les fermetures enregistrées
-  But cette part du drapeau contredit les textes de la rustdoc et de la doc, point ouvert en
-    `Tasks`, à ne pas normaliser sans décision
+  Then leur @std::cmp::PartialEq est vrai, le drapeau n'y entrant pas
+  And `1.2.3 < v1.2.3` et `v1.2.3 > 1.2.3` sont faux, et les deux ont le même @std::hash::Hash
+  And ces verdicts valent aussi en script, `==` et `<` empruntant les fermetures enregistrées
 
 Scenario: l'objet Rhai connaît ses méthodes, aucune de ses propriétés
   Given un @rhai::Engine enregistré par @crate::semver::semver_rhai_register sous `rhai`
