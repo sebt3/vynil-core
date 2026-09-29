@@ -30,6 +30,12 @@ Must:
   isolée, `k8s,oci,s3`, `--all-features`) : les analyses `pedantic` dépendent du graphe de
   features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
   uniquement en `--all-features` laisse passer des avertissements.
+  Compiler et linter chaque feature isolément par une règle, non par une liste manuelle :
+  `cargo hack check --each-feature --no-dev-deps` puis le harnais clippy de même (décision
+  actée), de sorte que chaque module gated (`fs`, `shell`, `password`, `crypto`, `http`, `hbs`
+  sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
+  de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
+  sens (`k8s,oci,s3`, `--all-features`) restent en plus.
 
 Must not:
   Accepter un `#[allow(...)]` de lint du harnais dans du code de production sans commentaire
@@ -57,6 +63,11 @@ Tasks:
   [x] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand
     `/.github/workflows/test.yml` le prévoit (voir sa spec).
   [x] Purger les warnings `missing_docs` (177 pub items non documentés au point de départ).
+  [ ] Mettre en place la matrice `cargo hack --each-feature` (check et clippy) : vérifier que
+    `cargo-hack` s'installe en CI, l'ajouter à `/.github/workflows/test.yml` (avec sa spec
+    `workflows.sdd`), à la batterie de l'agent `validator` et à la liste de commandes de
+    ./AGENTS.md — ces trois fichiers sont modifiés ensemble, avec l'accord du développeur
+    principal déjà acquis (décision actée, lots 1 et 2 : shell, engine, hbs).
 
 Done when:
   `cargo clippy -- -D warnings` et `cargo clippy --all-features --all-targets -- -D warnings`

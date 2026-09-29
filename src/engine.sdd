@@ -44,9 +44,9 @@ References:
     `template` des shims désigne une fonction DE MODULE Rhai côté consommateur, sans aucun
     rapport au @crate::hbs::HandleBars::register_template.
   ../docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
-    section 12 contient une phrase fausse sur reqwest « dependency de base » (§`Tasks`).
+    section 12 contient une phrase fausse sur reqwest « dependency de base » (à corriger, §`Tasks`).
   ./lib.rs (rustdoc racine) — quickstart `new_bare(vec![...])` + `run_file(&PathBuf)` ;
-    deux mentions fausses consignées en `Tasks` : « Additional, feature-gated » pour
+    deux mentions fausses, à corriger (§`Tasks`) : « Additional, feature-gated » pour
     yaml/semver/glob/date_now alors qu'elles sont ALWAYS sous `rhai`, et le nom `argon_hash`
     présenté en « Handlebars + Rhai » alors que le nom Rhai côté crypto est le trio
     `bcrypt_hash` + type `Argon` + `new_argon`/`hash`.
@@ -77,12 +77,13 @@ Must:
     `url_encode` est @crate::engine::url_encode, percent-encode @url::form_urlencoded dont
     l'espace devient `+` ; `sleep` reçoit un @std::primitive::i64 et ne dort
     (@std::thread::sleep, sans plafond) que si la conversion @std::primitive::u64 reussit ET
-    la valeur est strictement positive — 0 et négatifs sont des no-op immédiats ; `get_env`
-    rend la chaîne vide quand la variable est absente ET quand elle existe mais n'est pas
-    UTF-8 (NotUnicode avalé par `unwrap_or_default`) ; `to_decimal` parse en base 8 (nom
-    mensonger : c'est un octal-decode) vers @std::primitive::u32, tout échec log un
-    @tracing::warn et rendOk(0) — l'appel ne peut échouer et le 0 d'erreur est
-    indiscernable du 0 légitime ; `base64_decode` délègue à @crate::engine::base64_decode
+    la valeur est strictement positive — 0 et négatifs sont des no-op immédiats, sans plafond
+    (le script d'un opérateur peut légitimement attendre) ; `get_env` rend la chaîne vide quand
+    la variable est absente (les défauts sont un cas d'usage) mais une erreur
+    @crate::RhaiRes quand elle existe sans être UTF-8 (NotUnicode) ; `to_decimal` décode
+    une chaîne octale (`"755"` → `493`, usage : modes de fichiers) vers
+    @std::primitive::u32 et rend un @crate::RhaiRes en échec pour toute chaîne non octale —
+    jamais un `0` indiscernable du `0` légitime ; `base64_decode` délègue à @crate::engine::base64_decode
     avec @crate::rhai_err ; `base64_encode` encode en alphabet STANDARD padddé et ne peut
     échouer ; `json_encode`/`json_decode` font l'aller-retour @serde_json avec erreur
     @crate::rhai_err de @variant-Error::SerializationError ; `json_encode_escape` rend
@@ -96,10 +97,10 @@ Must:
     écrasement intégral et création du fichier mais AUCUNE création des dossiers parents ;
     `file_copy` en @std::fs::copy qui écrase la destination et ne déplace pas la source ;
     `create_dir` en @std::fs::create_dir_all récursif et idempotent ; `read_dir` en tableau
-    de chaînes des chemins complets des entrées, ordre non spécifié, chemin d'entrée non
-    UTF-8 rendu chaîne VIDE en silence ; `is_file`/`is_dir` booléens ne pouvant jamais
-    erreur. Toutes les erreurs passent par @crate::rhai_err de @variant-Error::Stdio
-    (préfixe `Stdio error `).
+    de chaînes des chemins complets des entrées, ordre non spécifié, un chemin d'entrée non
+    UTF-8 échouant en erreur (jamais une chaîne vide glissée dans le tableau) ; `is_file`/`is_dir` booléens ne pouvant jamais
+    erreur. Toutes les erreurs d'E/S passent par @crate::rhai_err de @variant-Error::Stdio
+    (préfixe `Stdio error `) ; le chemin non UTF-8 de `read_dir` porte @variant-Error::UTF8.
   Injecter dans @crate::engine::Script::add_common exactement sept blocs de code RHAÏ (pas
     du Rust) via @crate::engine::Script::add_code (lignes 212-337) : `assert(cond, mess)` à
     l'unique arité 2 qui `throw mess` — la VALEUR `mess` est jetée telle quelle, pas forcée
@@ -120,16 +121,21 @@ Must:
     consommateur qui dépose les modules dans les répertoires passés à `resolver_path` ;
     sans chemins, la collection vide fait échouer tout import et les shims ne font que
     log_debug + skip — `import_run` sur un `new_bare(vec![])` ne produit JAMAIS d'erreur.
-  Avaler les erreurs de @crate::engine::Script::add_code (lignes 341-355) : échec de
-    @rhai::Engine::compile → @tracing::error! « Loading {code} failed with : {e:} » ; échec
-    de @rhai::Module::eval_ast_as_new → @tracing::error! « Parsing {code} failed with :
-    {e:} » — les libellés SONT permutés par rapport à l'opération réelle — et dans les deux
-    cas aucune propagation ; corollaire contractuel : si un shim d'`add_common` ne
-    compilait plus, `new_bare` ne le signaler pas (trace `error` seule).
+    Ce fail-closed est voulu et contractuel (décision actée) : aucun accès disque implicite
+    par `import` sans chemin explicite du consommateur, aucun resolver par défaut de repli.
+  Propager les erreurs de @crate::engine::Script::add_code : un échec de
+    @rhai::Engine::compile rend @variant-Error::RhaiError et un @tracing::error! « Compiling
+    {code} failed with : {e:} » ; un échec de @rhai::Module::eval_ast_as_new rend
+    @variant-Error::RhaiError et un @tracing::error! « Evaluating {code} failed with : {e:} » —
+    les libellés nomment l'opération réellement en échec (décision actée : ils étaient
+    permutés). @crate::engine::Script::add_common, lui, n'a pas de canal d'erreur : ses sept
+    shims sont des constantes de la crate dont un test verrouille la compilation et
+    l'évaluation, et un échec y est un @tracing::error! seul.
   Évaluer le module de @crate::engine::Script::add_code sur une COPIE du scope
-    (`self.ctx.clone()`, ligne 343) : un @crate::engine::Script::set_dynamic postérieur ne
-    nourrit pas les modules déjà globalisés, un antérieur les feconde à l'enregistrement ;
-    puis @rhai::Engine::register_global_module.
+    (`self.ctx.clone()`) : un @crate::engine::Script::set_dynamic postérieur ne nourrit pas
+    les modules déjà globalisés, un antérieur les féconde à l'enregistrement ; puis
+    @rhai::Engine::register_global_module. Ce snapshot est intentionnel (décision actée) : un
+    module est évalué une fois, indépendamment de l'état courant du scope, donc reproductible.
   Poser @crate::engine::Script::set_dynamic (lignes 362-374) sans canal d'erreur :
     aller-retour @serde_json::to_string puis `from_str::<@rhai::Dynamic>` ; au succès
     @rhai::Scope::set_or_push (remplace l'homonyme existant sinon l'ajoute) ; à l'échec
@@ -177,8 +183,8 @@ Must not:
   Enrichir une erreur @rhai d'évaluation par @crate::rhai_err ou une chaîne de contexte :
     la voie publique des cinq méthodes est `map_err(RhaiError)` nue.
   Refuser un double appel de @crate::engine::Script::add_common ou un usage direct de
-    @crate::engine::Script::add_code : les deux sont `pub`, re-appelables, et leurs échecs
-    restent des log uniquement.
+    @crate::engine::Script::add_code : les deux sont `pub` et re-appelables ; l'échec du
+    second est rendu à l'appelant, celui du premier est un log seul.
   Créer un module global par un autre canal que @rhai::Engine::register_global_module dans
     `add_code`, ni enregistrer un dix-septième nom commun, ni déléguer à ./hbs.rs.
   Convertir les erreurs @rhai internes des shims : `assert` jette une VALEUR, un `eval`
@@ -216,8 +222,9 @@ Exposes:
     `cargo test` aux features par défaut.
   @crate::engine::Script::add_common — `pub fn add_common(&mut self)` : rappelable, ne rend
     rien, ne propage jamais rien.
-  @crate::engine::Script::add_code — `pub fn add_code(&mut self, code: &str)` : compile,
-    globalise ou log seulement.
+  @crate::engine::Script::add_code — `pub fn add_code(&mut self, code: &str) -> @crate::Result<()>` :
+    compile, globalise, ou rend l'erreur (décision actée : changement d'API publique, vynil
+    est à faire évoluer).
   @crate::engine::Script::set_dynamic — `pub fn` prenant un nom `&str` et un
     &@serde_json::Value ; pas de canal d'erreur, jamais de panique.
   @crate::engine::Script::run_file — `pub fn` prenant un &@std::path::PathBuf et rendant
@@ -256,8 +263,8 @@ Returns:
   @crate::engine::Script::eval — le @rhai::Dynamic de la dernière expression ; `run_file`
     même forme pour un fichier ; les typées rendent bool / chaîne JSON compacte /
     @serde_json::Value.
-  Les méthodes sans `Result` (`add_common`, `add_code`, `set_dynamic`) rendent l'unité en
-    tout état de cause.
+  Les méthodes sans `Result` (`add_common`, `set_dynamic`) rendent l'unité en tout état de
+    cause.
   Les shims `import_run`/`import_template` sur chemin de skip rendent la valeur
     d'absence @rhai (unité/undefined, non verrouillé) ; sur chemin de succès, ce que rend
     `imp::run`/`imp::template`.
@@ -277,8 +284,9 @@ Raises:
   Côté script, les fonctions natives : base64_decode/json_encode/json_decode échouent en
     erreurs textuelles portant le Display @Error via @crate::rhai_err ; les sept noms de
     shims ne remontent QUE les erreurs relancées (`throw`), jamais les deux codes skipés ;
-    `sleep(3600)` dort une heure sans plafond ni erreur — borne contractuelle, pas un
-    échec.
+    `sleep(3600)` dort une heure sans plafond ni erreur — contrat de `sleep`, pas un échec ;
+    `to_decimal("8")` et tout non-octal, `get_env` d'une variable non UTF-8 et `read_dir` d'un
+    chemin non UTF-8 échouent en erreur textuelle.
 
 Handles:
   Le triple cas de l'absence de module d'import : module introuvable → skip silencieux ;
@@ -305,29 +313,21 @@ Tasks:
     des modules existent, le trajet « script via `new_bare` » n'est testé pour aucune
     feature.
 
-  [?] @crate::engine::Script::add_code avale les échecs de compilation/évaluation des
-    shims — un shim cassé ne laisse qu'un @tracing::error aux libellés `Loading`/`Parsing`
-    d'ailleurs permutés (lignes 348/352) : propager (retour Result), tester au moins la
-    compilation des sept blocs, ou assumer le silence ?
-  [?] `new_bare(vec![])` REMPLACE le resolver par défaut par une collection vide : `import`
-    est totalement désactivé sans chemins. Désiré (fail-closed) ou fallback @FileModuleResolver
-    par défaut attendu ?
-  [?] `to_decimal` invalide rend Ok(0) indiscernable du 0 légitime (nom « decimal » qui
-    plus est pour de l'octal) : erreur explicite à la place ?
-  [?] L'UTF-8 est traité par trois poids différents : `get_env` avale NotUnicode comme une
-    absence, `read_dir` pousse une chaîne vide pour un chemin non-UTF-8, `file_read` lui est
-    strict : harmoniser, et dans quel sens ?
-  [?] Shims à arités fermées : `assert` sans variante 1-argument, `import_run`/
-    `import_template` sans variante 1-argument — figé ou manque à combler ?
-  [?] Le snapshot `self.ctx.clone()` de `add_code` (ligne 343) contracte un module froid :
-    intentional (reproductibilité) ou doit-il voir le ctx vire ?
-  [?] Rustdoc ./lib.rs — « Additional, feature-gated » pour yaml/semver/glob/date_now
-    (FAUX : always sous `rhai`) et le nom `argon_hash` présenté en Rhai (INEXISTANT côté
-    script) : corriger les textes ? (aussi ./docs/rhai_helpers.md section 12 et sa phrase
-    sur reqwest « dependency de base ».)
-  [?] La batterie AGENTS.md ne compile JAMAIS `rhai,fs`, `rhai,shell`, `rhai,password`,
-    `rhai,crypto` seuls : les branches gated de `new_bare` ne tournent que sous
-    `--all-features` — ajouter des commandes de matrice dédiées ?
+  [ ] `add_code` rend un @crate::Result, libellés `Compiling`/`Evaluating` corrigés, test des
+    sept shims ; répercuter dans vynil (appelants de `add_code`) — décisions actées.
+  [ ] `to_decimal` en erreur pour toute chaîne non octale ; `get_env` en erreur sur
+    NotUnicode (absente reste `""`) ; `read_dir` en erreur sur chemin non-UTF-8 (décisions
+    actées : erreur explicite, UTF-8 strict comme `file_read`). Le helper Handlebars
+    `to_decimal` de ./hbs.rs suit (voir ./hbs.sdd).
+  [ ] Retirer de ./engine.rs le test qui verrouille le quirk yaml des cinq caractères (voir
+    ./yaml.sdd) et figer `new_bare(vec![])` fail-closed dans la rustdoc de `new_bare`.
+  [ ] Corriger les textes : rustdoc de ./lib.rs (« Additional, feature-gated » est faux pour
+    yaml/semver/glob/date_now, toujours présents sous `rhai` ; `argon_hash` n'existe pas côté
+    Rhai) et ../docs/rhai_helpers.md section 12 (phrase sur reqwest).
+  [ ] Couvrir les branches gated de `new_bare` (`rhai,fs`, `rhai,shell`, `rhai,password`,
+    `rhai,crypto`) par la matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
+  Décisions figées sans changement de code : arités fermées des shims (`assert(cond, mess)`,
+    `import_*`), snapshot `ctx.clone()` de `add_code`, fail-closed de `new_bare`.
 
 Scenario: sans rhai le module n'existe pas
   Given la crate compilée `--no-default-features` (sans `rhai`)
@@ -414,30 +414,31 @@ Scenario: run_file garde ses trois portes
   Then @variant-Error::RhaiError de compilation ; d'un fichier valide, le @rhai::Dynamic de
     la dernière expression, évalué dans le scope persistant
 
-Scenario: add_code avale tout y compris les libellés permutés
+Scenario: add_code rend ses erreurs avec le bon libellé
   Given un Script vivant
   When @crate::engine::Script::add_code reçoit du code syntaxiquement invalide
-  Then le Script évalue normal ensuite, et le seul signe est un @tracing::error! au texte
-    « Loading ... failed » — l'opération qui a échoué est la COMPILATION, libellé permuté —
-    sans aucun retour d'erreur : point [?] des `Tasks`
+  Then un @variant-Error::RhaiError est rendu et un @tracing::error! « Compiling ... failed »
+    est émis ; le Script évalue normalement ensuite
   Given du code qui compile mais dont l'évaluation de module lève
-  Then même mutisme, libellé « Parsing ... failed » cette fois (inversé aussi)
+  Then un @variant-Error::RhaiError est rendu et le libellé est « Evaluating ... failed »
   When @crate::engine::Script::add_common est rappelé manuellement
-  Then les sept shims se recompilent et se réenregistrent sans erreur visible (sémantique
-    @rhai de coexistence de globaux identiques laissée à la dépendance)
+  Then les sept shims se recompilent et se réenregistrent sans erreur (sémantique @rhai de
+    coexistence de globaux identiques laissée à la dépendance)
+  And un test compile et évalue chacun des sept blocs de shims, sans quoi `add_common`, qui ne
+    propage rien, masquerait une régression
 
 Scenario: les utilitaires verrouillent leurs valeurs
   Given un Script de test (les verrous existants inline lignes 592-699)
   Then `sha256("hello")` est le digest hex 2cf24db...9824, `base64_encode("hello")` est
     `aGVsbG8=` et l'aller-retour base64 réussit, `url_encode("hello world")` rend
     `hello+world` (espace en `+`, JAMAIS `%20`), `to_decimal("755")` rend 493 en base 8
-  When `to_decimal("8")` est évalué — chaîne valide, parse octal raté
-  Then l'appel REND Ok 0 avec @tracing::warn [?] des `Tasks`
-  When `get_env("ABSENTE")` rend — et une variable existante mais non-UTF-8 rendrait idem
-  Then la chaîne vide, les deux cas indiscernables [?] des `Tasks`
+  When `to_decimal("8")` est évalué — chaîne valide, chiffre hors base 8
+  Then l'évaluation échoue en erreur, et `to_decimal("0")` rend bien `0`
+  When `get_env("ABSENTE")` est évalué
+  Then la chaîne vide est rendue ; une variable existante mais non-UTF-8 échoue en erreur
   When `sleep(0); sleep(-3)` rend
   Then l'évaluation est immédiate (moins de 250 ms verrouillés) ; `sleep(1)` bloque au
-    moins 900 ms et `sleep(3600)` dormirait une heure sans plafond [?] des `Tasks`
+    moins 900 ms et `sleep(3600)` dormirait une heure, sans plafond par contrat
   And `json_encode_escape(#{})` rend la chaîne avec guillemets englobants échappés (JSON
     imbriqué) et `basename("/a/")` rend `a` là où `dirname("/")` rend la chaîne vide
 
@@ -449,8 +450,8 @@ Scenario: fs sous sa double porte (fs && rhai)
   When `file_write` sur un fichier existant passe
   Then le contenu est intégralement écrasé (write, pas append)
   When `read_dir` traverse un nom de fichier non-UTF-8 quand il existe
-  Then l'élément correspondant est la chaîne vide en silence [?] des `Tasks`, pendant qu'une
-    erreur `read_dir` lui remonte en Stdio
+  Then l'évaluation échoue en @variant-Error::UTF8, aucune chaîne vide n'étant glissée dans
+    le tableau, pendant qu'une erreur d'E/S de `read_dir` lui remonte en Stdio
   And `is_file`/`is_dir` sur chemin brisé rendent `false` sans erreur aucune — et `fs` sans
     `rhai` n'enregistre rien : `file_read` reste inconnu à un engine
 

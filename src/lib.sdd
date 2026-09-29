@@ -47,8 +47,10 @@ Must:
       celui de @variant-Error::SerializationError, d'où construction manuelle de JsonError en
       amont (./http.sdd) avec @core::error::Error::source disponible ;
     @variant-Error::MethodFailed — trois champs (méthode, statut, corps) mais Display
-      `{0} query failed: {1}` : le 3ᵉ champ (corps de réponse) n'est JAMAIS affiché et
-      n'a aucun accesseur, visible par la seule déstructuration [?] ;
+      `{0} query failed: {1}` : le 3ᵉ champ (corps de réponse) n'est JAMAIS affiché (on ne fuit
+      pas de corps — jetons, données personnelles — dans les logs) mais est accessible par
+      @fn-Error::http_body (voir Exposes), `pub fn http_body(&self) -> Option<&str>`,
+      `#[must_use]`, `Some(corps)` pour ce seul variant et `None` pour tous les autres ;
     @variant-Error::UnsupportedMethod — unité — `Unsupported method` ;
     @variant-Error::MissingScript — @std::path::PathBuf — `Missing script {0}` ;
     @variant-Error::UTF8 — `#[from]` @std::string::FromUtf8Error — `UTF8 error {0}` ;
@@ -57,7 +59,7 @@ Must:
     @variant-Error::Base64DecodeError — `#[from]` @base64::DecodeError — `Base64 decode error {0}` ;
     @variant-Error::RawHTTP — `#[from]` @http::Error du CRATE `http` (dépendance non
       optionnelle), NON gate par la feature `http` (reqwest) — `RAW api error {0}` ;
-      deux « http » de sens différents coexistent dans l'enum, documenté comme tel [?] ;
+      deux « http » de sens différents coexistent dans l'enum, documenté comme tel ;
     @variant-Error::ParseInt — `#[from]` @std::num::ParseIntError — `ParseIntError {0}` ;
     @variant-Error::UnsupportedKeyAlgorithm — @std::string::String — le texte
       `KEY-ALGO-001 Unsupported key algorithm: {0}` ;
@@ -80,15 +82,18 @@ Must:
       @variant-Error::FinalizerError `Finalizer error: {0}` — récursive : porte un
       @std::boxed::Box de @kube::runtime::finalizer::Error paramétré par @variant-Error elle-même.
   Deux textes embarquent un code brut sans constante : `KEY-ALGO-001` (non gated) et
-    `KEY-OPENSSL-001` (crypto) — gelés dans le Display [?].
-  @fn-error_chain (non gated) : part de l'@core::fmt::Display de l'erreur extérieure, puis
-    remonte @core::error::Error::source de l'extérieur vers la racine en joignant chaque
-    niveau par le séparateur `": "` (jamais avant le premier) ; la dédup est un test de
-    SOUS-CHAÎNE sur tout l'accumulé (`acc.contains`), pas l'égalité verbatim avec
-    l'ancêtre immédiat que la doc promet : un message de source déjà contenu n'importe où
-    en amont est effacé [?] ; aucune borne de profondeur ni garde anti-cycle [?] ; totale :
-    ne panique jamais, ne retourne jamais d'erreur ; sans @core::marker::must_use (contraire
-    des deux fabriques [?]).
+    `KEY-OPENSSL-001` (crypto) — gelés dans le Display : ce sont des identifiants stables
+    faits pour être recherchés par les consommateurs, contrat d'API dit dans la rustdoc de
+    @variant-Error, sans constante nécessaire (décision actée).
+  @fn-error_chain (non gated, `#[must_use]` — fonction pure comme ses deux fabriques) : part de
+    l'@core::fmt::Display de l'erreur extérieure, puis remonte @core::error::Error::source de
+    l'extérieur vers la racine en joignant chaque niveau par le séparateur `": "` (jamais
+    avant le premier) ; la dédup est un test `contains` du message de la source contre celui
+    du niveau IMMÉDIATEMENT précédent (ajouté ou lui-même déjà effacé), non contre tout
+    l'accumulé — un message court d'un niveau lointain (« timeout ») n'efface donc pas une
+    cause distincte (décision actée) ; la profondeur est bornée à 32 sources, au-delà de quoi
+    la marche s'arrête en ajoutant `: …` — garantie de terminaison même sur un `source()` cyclique
+    (décision actée) ; totale : ne panique jamais, ne retourne jamais d'erreur.
   @fn-rhai_err (gate `rhai`, @core::marker::must_use) : consomme @variant-Error PAR VALEUR
     (le rappel `map_err` l'impose ; seul `#[allow]` de production de la racine, justifié en
     une ligne, conforme ./tooling.sdd) et retourne `error_chain(&e).into()` : le message vu
@@ -98,15 +103,18 @@ Must:
   Déclarations de modules, 19 au total, exactement deux familles. Sans gate (toujours
     compilés) : @mod @crate::chrono, @crate::client_name, @crate::hashes, @crate::password,
     @crate::semver, @crate::yaml. Gated, chacune avec sa clause `doc(cfg)` : @crate::key
-    (`crypto`) ; @crate::engine et @crate::glob (`rhai` — gate `rhai`, PAS `fs`) ;
+    (`crypto`) ; @crate::engine et @crate::glob (`rhai` — gate `rhai`, PAS `fs`, intention figée : @crate::glob ne touche pas au disque, à dire
+    dans la rustdoc du module) ;
     @crate::hbs (`hbs`) et @crate::hbs_json (`hbs`, PRIVÉ, seule déclaration sans doc ni
     `doc(cfg)`) ; @crate::http et @crate::http_mock (`http`) ; @crate::oci et @crate::oci_mock
     (`oci`) ; @crate::s3 (`s3`, seul des trois gros modules sans mock déclaré ici) ;
     @crate::k8s et @crate::k8s_mock (`k8s`) ; @crate::shell (`shell`).
-  Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : livrés aux tests des
-    consommateurs [?].
+  Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : façade livrée volontairement aux
+    tests des consommateurs (vynil s'appuie sur `oci_mock` et `k8s_mock`) — décision actée ;
+    les isoler derrière une feature serait un autre contrat.
   Le module @crate::password est compilé SANS la feature `password` : la feature n'opte que
-    les enregistrements Rhai/Handlebars (enregistrements Rhai/Handlebars, ./engine.sdd et ./hbs.sdd).
+    les enregistrements Rhai/Handlebars (./engine.sdd et ./hbs.sdd) ; ce module ungated est figé
+    (décision actée).
   Ré-exports racine : 9 symboles en 5 énoncés — @fn-client_name_is_set, @fn-get_client_name,
     @fn-set_client_name et @struct-Semver sans gate ; @struct-Script gate `rhai` ;
     @struct-HandleBars gate `hbs` ; @fn-update_cache gate `k8s` — SEUL symbole k8s qui monte
@@ -189,23 +197,15 @@ Tasks:
     (assertions de texte par feature), la surface compilable à `--no-default-features`,
     le 3ᵉ champ caché de @variant-Error::MethodFailed, l'enrichissement de chaîne par
     @fn-rhai_err, la visibilité de @fn-update_cache sous `k8s` seul.
-  [?] @variant-Error::MethodFailed : le corps (3ᵉ champ) hors Display et sans accesseur —
-    omission voulue (ne pas fuir des corps dans les logs) ou accessoiriser ?
-  [?] @fn-error_chain : dédup par sous-chaîne de l'accumulé (faux positifs sur messages
-    courts inclus ailleurs, ex. « timeout ») vs égalité verbatim avec l'ancêtre, comme la
-    doc le promet ?
-  [?] @fn-error_chain sans gate et sans @core::marker::must_use (asymétrie avec ses deux
-    fabriques) : utilitaire std générique assumé ?
-  [?] @fn-error_chain sans borne de profondeur ni garde anti-cycle : hypothèse d'acyclicité
-    des source() actée à vie, ou sécuriser ?
-  [?] Codes `KEY-ALGO-001`/`KEY-OPENSSL-001` gelés dans des Display sans constante :
-    contrat d'API stable pour les consommateurs qui les matchent en texte ?
-  [?] Les mock `http_mock`/`oci_mock`/`k8s_mock` publics hors `cfg(test)` : façade livrée
-    volontairement ou fuite d'outils de test ?
-  [?] Le module @crate::password compilation hors feature `password` (opt-in = enregistrement
-    seul) : figer ou gate le module ?
-  [?] Le gate de @crate::glob est `rhai` (non `fs`) : intention figée, à noter dans la doc
-    du module pour éviter la lecture « fs » ?
+  [ ] Ajouter @fn-Error::http_body (décision actée) ; documenter dans la rustdoc de
+    @variant-Error que le corps de `MethodFailed` est hors Display par choix, et que
+    `KEY-ALGO-001` / `KEY-OPENSSL-001` sont des identifiants stables.
+  [ ] Réécrire @fn-error_chain : dédup contre le niveau précédent seulement, plafond de 32
+    niveaux, `#[must_use]` ; corriger sa rustdoc (« contenu dans l'ancêtre immédiat »), test
+    d'abord depuis les deux Scenario ajoutés (décisions actées).
+  [ ] Noter dans la rustdoc de @crate::glob que son gate est `rhai` par intention.
+  Décisions figées sans changement de code : mocks publics, module `password` ungated,
+    gate `rhai` de `glob`, `error_chain` sans gate.
 
 Scenario: error_chain remonte la source de l'extérieur vers la racine
   Given une erreur à trois niveaux calquée sur un échec DNS reqwest
@@ -219,6 +219,17 @@ Scenario: error_chain effondre la source doublon verbatim
   When @fn-error_chain la rend
   Then le texte de l'accumulé reste le message extérieur, sans seconde occurrence ; et une
     feuille sans source reste inchangée (aucun séparateur ajouté)
+
+Scenario: error_chain n'efface pas une cause distincte par faux positif
+  Given trois niveaux : « request failed after timeout », « connection error », « timeout »
+  When @fn-error_chain les rend
+  Then les trois messages sont présents, « timeout » n'étant contenu que dans le niveau
+    lointain et non dans son ancêtre immédiat « connection error »
+
+Scenario: error_chain se termine sur une chaîne trop profonde ou cyclique
+  Given une erreur dont @core::error::Error::source revient sur elle-même
+  When @fn-error_chain la rend
+  Then l'appel se termine, après 32 sources, par un suffixe `: …`, sans panic
 
 Scenario: error_chain feuille seule
   Given une erreur simple sans source (message « boom »)
@@ -238,11 +249,11 @@ Scenario: RawHTTP et UnsupportedMethod survivent sans la feature http
   Then @variant-Error::RawHTTP compile et s'affiche `RAW api error {0}` ; @variant-Error::UnsupportedMethod
     reste `Unsupported method` — les deux « http » de l'enum restent distincts
 
-Scenario: MethodFailed cache son corps de réponse
+Scenario: MethodFailed cache son corps de réponse mais l'expose par accesseur
   Given @variant-Error::MethodFailed("GET", 503, "body")
   When affiché en @core::fmt::Display
-  Then `GET query failed: 503` — le 3ᵉ champ « body » est absent du texte, accessible
-    seulement par déstructuration du variant
+  Then `GET query failed: 503` — le 3ᵉ champ « body » est absent du texte
+  And @fn-Error::http_body rend `Some("body")`, et `None` pour tout autre variant
 
 Scenario: JsonError n'a pas de From
   Given une @serde_json::Error à convertir avec `?`

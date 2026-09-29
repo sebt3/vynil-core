@@ -31,14 +31,15 @@ References:
   ./Cargo.toml — la liste de la feature `hbs` : `dep:handlebars`,
     `dep:handlebars_misc_helpers`, `dep:jmespath`, `dep:toml` (ligne 83) ; et
     `hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]`
-    (ligne 92) ; @handlebars déclaré 6.2.0 feature `string_helpers` (ligne 104) mais résolu
-    6.4.4 au @Cargo.lock ; @handlebars_misc_helpers 0.17.0 avec `default-features = false`
+    (ligne 92) ; @handlebars déclaré 6.2.0 feature `string_helpers` (ligne 104) — plancher à
+    relever à 6.4, la version vérifiée (§`Tasks`) — résolu 6.4.4 au @Cargo.lock ; @handlebars_misc_helpers 0.17.0 avec `default-features = false`
     et features `["string", "jsonnet", "regex", "uuid"]` (ligne 105) — donc NI `json` NI
     `http` de la dépendance ; @default de la crate inclut `hbs` et `hbs-scripting`.
   ~/.cargo/registry(handlebars_misc_helpers-0.17.0) — `new_hbs` appelle `setup_handlebars` :
     `set_strict_mode(true)`, `register_escape_fn(no_escape)` puis enregistrement des groupes
     selon NOS features ; `uuid_new_v7` y est câblé sur `Uuid::new_v4` (bug de la dépendance,
-    uuid 1.24.1 en lock).
+    uuid 1.24.1 en lock ; 0.17.0 est la dernière version publiée, aucun correctif amont à
+    attendre).
   ../docs/handlebars_helpers.md — tables des helpers par section ; tolérance « non-string →
     vide + warn » qui ne couvre pas les trois helpers typés (§`Scenario` et `Tasks`).
 
@@ -61,14 +62,14 @@ Must:
     `url_encode`, `to_decimal`, `header_basic`, `crc32_hash`, `concat` sous `hbs` seul ;
     `argon_hash`, `bcrypt_hash`, `gen_private_key` sous `crypto` ; `gen_password`,
     `gen_password_alphanum` sous `password` — et rien d'autre.
-  Distinguer les deux voies d'échec des helpers : les neuf à paramètre(s) @serde_json::Value
-    (base64_decode, base64_encode, url_encode, to_decimal, header_basic, argon_hash,
+  Distinguer les deux voies d'échec des helpers : les huit à paramètre(s) @serde_json::Value
+    (base64_decode, base64_encode, url_encode, header_basic, argon_hash,
     bcrypt_hash, crc32_hash, concat) remplacent silencieusement toute entrée non-chaîne par
     la chaîne vide après @tracing::warn au message textuel
     `handlebars::<nom> received a non-string parameter`, et rendent toujours une valeur — jamais d'erreur de rendu ; les
-    trois à paramètres TYPÉS (`gen_password`, `gen_password_alphanum`, `gen_private_key` :
-    @std::primitive::u32 positionnels, @std::primitive::str pour `algo`, hashes typés)
-    REJETTENT le mal-typé en @handlebars::RenderError produit par la macro
+    quatre à paramètres TYPÉS (`gen_password`, `gen_password_alphanum`, `gen_private_key` :
+    @std::primitive::u32 positionnels, @std::primitive::str pour `algo`, hashes typés ;
+    `to_decimal` : @std::primitive::str, décision actée) REJETTENT le mal-typé en @handlebars::RenderError produit par la macro
     (ParamNotFound/ParamTypeMismatch/HashTypeMismatch @handlebars 6.4.4), sans warn ni vide.
     Un paramètre ABSENT est partout une erreur macro (mode strict), jamais un chemin warn.
   Poser les défauts de hashes en dur dans les macros, non ailleurs : `gen_password` accepte
@@ -80,22 +81,26 @@ Must:
   Rendre les formes de sortie propres à chaque aide : `base64_encode`/`base64_decode` en
     alphabet base64 STANDARD; `url_encode` en percent-encoding @url::form_urlencoded (espace
     en `+`) ; `to_decimal` lit la chaîne en base 8 (`u32::from_str_radix`) et rend la chaîne
-    décimale, `0` sur parse raté avec le même message warn trompeur ; `header_basic` rend
+    décimale ; une non-chaîne et une chaîne non octale échouent en @handlebars::RenderError
+    de messages distincts (`to_decimal: parameter is not a string` / `to_decimal: '<v>' is
+    not an octal number`), alignés sur ./engine.sdd où `to_decimal` est en erreur aussi ; `header_basic` rend
     `Basic ` suivi du base64 de `user:pass` ; `crc32_hash` rend un NOMBRE JSON (motif
     @serde_json number, contrat de valeur dans ./hashes.sdd) et non-string y rend 0 via la
     voie vide ; `concat` concatène les deux chaînes (chaque côté non-chaîne valant segment
-    vide après warn) ; `argon_hash` appelle `Argon::new()` à chaque invocation donc deux
-    hachés du même mot de passe diffèrent (sel frais) ; `bcrypt_hash` au `DEFAULT_COST` de
-    ./hashes.rs ; `gen_private_key` rend le PEM PKCS8 de @crate::key (algos insensibles à la
+    vide après warn) ; `argon_hash` appelle `Argon::new()` (faillible, voir ./hashes.sdd) à chaque
+    invocation donc deux hachés du même mot de passe diffèrent (sel frais), un échec
+    d'entropie ou de hachage donnant warn + chaîne vide ; `bcrypt_hash` au `DEFAULT_COST` de
+    ./hashes.rs, un mot de passe de plus de 72 octets (refusé par ./hashes.rs) donnant aussi
+    warn + chaîne vide ; `gen_private_key` rend le PEM PKCS8 de @crate::key (algos insensibles à la
     casse, `bits` ignoré hors rsa).
   Enregistrer les répertoires en boucle plate non récursive à nom plat (basename sans
     suffixe) : @crate::hbs::HandleBars::register_partial_dir sur `*.hbs` et
     @crate::hbs::HandleBars::register_helper_dir sur `*.rhai` traitent non-répertoire comme
-    no-op silencieux `Ok(())` ; entrée non-UTF8 ou sans le suffixe attendu silencieusement
-    sautée via `strip_suffix` ; @std::fs::read_dir et chaque entrée en erreur →
-    @variant-Error::Stdio ; un succès partiel laisse en place les enregistrements déjà faits
-    (aucun rollback) ; un sous-dossier nommé `x.hbs`/`x.rhai` passe le `strip_suffix` puis
-    échoue à la lecture → @variant-Error::Stdio.
+    no-op silencieux `Ok(())` ; entrée non-UTF8, sans le suffixe attendu, dont le nom est
+    vide après retrait du suffixe (`.hbs` / `.rhai` pur) ou qui n'est pas un fichier
+    (sous-dossier nommé `x.hbs`/`x.rhai`) silencieusement sautée (décision actée : trous
+    bouchés) ; @std::fs::read_dir et chaque entrée en erreur → @variant-Error::Stdio ; un
+    succès partiel laisse en place les enregistrements déjà faits (aucun rollback).
   Enregistrer les partials comme templates, pas via @handlebars::Handlebars::register_partial :
     `register_partial_dir` passe par @crate::hbs::HandleBars::register_template (donc
     @handlebars::Handlebars::register_template_string), avec un
@@ -113,22 +118,22 @@ Must:
     `rhai_register_partial_dir`, `rhai_render`, `rhai_render_named` sous `rhai` (donc
     accessibles sous `hbs`+`rhai` sans `hbs-scripting`) ; `register_helper_dir` et
     `rhai_register_helper_dir` sous `hbs-scripting` seules.
-  Fabriquer les erreurs des cinq wrappers `rhai_*` par deux voies distinctes codées en dur :
-    `rhai_register_template`, `rhai_render` (conversion serde ET rendu) et le RENDU de
-    `rhai_render_named` convertissent l'erreur en chaîne brute `format!("{e}").into()` ;
-    `rhai_register_helper_dir`, `rhai_register_partial_dir` et la COMPILATION de
-    `rhai_render_named` passent par @crate::rhai_err. La variante @variant-Error::SerializationError
-    annoncée par la rustdoc des deux `rhai_render*` n'est JAMAIS construite : les deux
-    conversions serde (Map → chaîne → @serde_json::Value) mappent en chaîne brute.
+  Fabriquer les erreurs des cinq wrappers `rhai_*` par une seule voie : @crate::rhai_err
+    (error_chain complète) sur tout échec — enregistrement, conversion serde, compilation et
+    rendu (décision actée). La conversion @rhai::Map → @serde_json::Value construit
+    @variant-Error::SerializationError, comme le promet la rustdoc des deux `rhai_render*`.
   Publier @crate::hbs::CORE_HBS_HELPERS comme liste INFORMATIQUE uniquement — elle ne pilote
     aucun enregistrement — avec ses entrées `crypto` (`argon_hash`, `bcrypt_hash`,
     `gen_private_key`) et `password` conditionnées dans le littéral, `crc32_hash` et
     `concat` inconditionnels, incluant les 18 built-ins @handlebars, les huit cas `string_helpers`,
     `inline` (qui est en réalité un DÉCORATEUR @handlebars, pas un helper) et les six noms vendored.
-  Publier les douze structs générées par la macro : le module privé `core_helpers` porte
-    `#[allow(missing_docs)]` justifié et `pub use core_helpers::*` rend
-    chaque struct atteignable en `@crate::hbs::<nom>` (ce sont des @handlebars::HelperDef,
-    ré-enregistrables par un consommateur).
+  Garder les douze structs générées par la macro hors de l'API publique (décision actée :
+    aucun consommateur ne les utilise) : le module privé `core_helpers` porte
+    `#[allow(missing_docs)]` justifié, ses items sont `pub(crate)` et rien n'en est ré-exporté ;
+    @crate::hbs::CORE_HBS_HELPERS reste la seule publication de leurs noms.
+  @crate::hbs::HandleBars est @core::marker::Send et @core::marker::Sync, affirmé par une
+    assertion de compilation dans les tests (décision actée : les consommateurs tournent sous
+    tokio) ; il en va de même de @Script dans ./engine.sdd.
 
 Must not:
   Tirer @rhai sous `hbs` seul : la moitié du module (import @crate::RhaiRes/@crate::rhai_err,
@@ -140,15 +145,15 @@ Must not:
     pour le faire autrement que @crate::hbs::HandleBars::engine_mut.
   Enregistrer un treizième nom maison, ni un nom Handlebars de la dépendance : les douze
     noms vérifiés sans collision avec les couches une et deux dans l'ordre courant.
-  Remonter une erreur de rendu depuis un des neuf helpers `Value` : toute anomalie y devient
-    warn + chaîne vide (ou `0` pour `to_decimal`/`crc32_hash`) ; la réciproque vaut pour les
-    trois typés dont l'entrée mal typée ne devient JAMAIS la chaîne vide.
+  Remonter une erreur de rendu depuis un des huit helpers `Value` : toute anomalie y devient
+    warn + chaîne vide (ou `0` pour `crc32_hash`) ; la réciproque vaut pour les
+    quatre typés dont l'entrée mal typée ne devient JAMAIS la chaîne vide.
   Rendre un template depuis un fichier sans enregistrement préalable : aucune méthode de
     rendu-direct-de-fichier n'existe ; seuls les deux enregistrements de répertoire lisent
     le disque, et `render` ne prend qu'une chaîne inline.
-  Rouler récursif dans les répertoires, normaliser les noms, dédoublonner les extensions
-    (`a.hbs.hbs` s'enregistre sous le nom `a.hbs`) ni refuser un fichier nommé `.hbs` pur
-    (il s'enregistre sous un NOM VIDE — point `Tasks`).
+  Rouler récursif dans les répertoires, normaliser les noms ni dédoublonner les extensions :
+    `a.hbs.hbs` s'enregistre sous le nom `a.hbs` (un seul suffixe retiré, décision actée) ; un
+    fichier nommé `.hbs` pur n'est jamais enregistré sous un nom vide.
   Construire @variant-Error::SerializationError dans le module, appeler @crate::yaml,
     @crate::client_name, @crate::engine::Script, @handlebars_misc_helpers::register
     directement, ou poser @handlebars::no_escape soi-même.
@@ -160,7 +165,7 @@ Depends on:
     strict, type mismatch = erreur), @handlebars::TemplateError et @handlebars::RenderError
     comme payloads des deux variantes @Error ; résolu 6.4.4 au lock alors que ./Cargo.toml
     déclare 6.2.0 — la sémantique macro citée est vérifiée sur le lock, pas sur le plancher
-    déclaré (point `Tasks`).
+    déclaré, à relever à 6.4 (§`Tasks`).
   handlebars_misc_helpers — @handlebars_misc_helpers::new_hbs porte strict+no_escape, la
     liste des groupes misc enregistrés, le décorateur `inline` et le bug `uuid_new_v7`
     (génère un v4, uuid 1.24.1) ; 0.17.0 verrouillé ; NI son feature `json` NI son `http`.
@@ -181,13 +186,10 @@ Depends on:
 Exposes:
   @crate::hbs::CORE_HBS_HELPERS — `pub const &[&str]`, liste informative des noms vus au
     template (entrées gated incluses dans le littéral), sous `hbs`.
-  Douze structs `pub` de helper (une par aide maison, nom = nom du helper) ré-exportées du
-    module privé via wildcard, chacune @handlebars::HelperDef ; atteignables sous `hbs`
-    (avec les gates de leurs features propres). @crate::hbs::HandleBars est
-    réexporté à la racine de la crate comme @crate::HandleBars sous `hbs`.
+  Aucune struct de helper n'est exposée : les douze aides maison sont `pub(crate)`.
+    @crate::hbs::HandleBars est réexporté à la racine de la crate comme @crate::HandleBars sous `hbs`.
   @crate::hbs::HandleBars — `pub struct` unitaire autour d'un @handlebars::Handlebars privé,
-    @core::clone::Clone et @core::fmt::Debug dérivés ; @core::marker::Send/Sync non affirmés
-    par le code. Constructeur unique @crate::hbs::HandleBars::new — `#[must_use] pub fn` sans
+    @core::clone::Clone et @core::fmt::Debug dérivés ; @core::marker::Send/Sync affirmés par test. Constructeur unique @crate::hbs::HandleBars::new — `#[must_use] pub fn` sans
     argument rendant @crate::hbs::HandleBars<'static> — ; échec de construction impossible.
   @crate::hbs::HandleBars::engine_mut — `#[must_use]` emprunt mutable du moteur interne,
     seule voie de customisation (helpers, strict, escape).
@@ -221,10 +223,11 @@ Accepts:
     qu'il soit — le mode strict jugera sur place les chemins manquants.
 
 Returns:
-  Les neuf helpers `Value` rendent toujours : chaîne (dont vide), nombre pour `crc32_hash`
+  Les huit helpers `Value` rendent toujours : chaîne (dont vide), nombre pour `crc32_hash`
     (0 sur entrée non-chaîne, CRC de la vide), jamais une erreur de rendu.
-  Les trois typés rendent la chaîne utile (mot de passe, PEM) ou vide après warn sur échec
-    métier ; l'entrée mal typée ne rend pas : elle échoue le rendu.
+  Les trois typés de génération rendent la chaîne utile (mot de passe, PEM) ou vide après warn
+    sur échec métier ; `to_decimal` rend la chaîne décimale ; pour les quatre, l'entrée mal
+    typée (et, pour `to_decimal`, non octale) ne rend pas : elle échoue le rendu.
   Les rendus Rust rendent @std::string::String : `no_escape` rendues sans échappement,
     `to_decimal` en chaîne décimale, `header_basic` avec préfixe `Basic `.
   Les deux registres de répertoire rendent `Ok(())` même sur non-répertoire, chemin vide ou
@@ -245,11 +248,9 @@ Raises:
   @crate::hbs::HandleBars::register_helper_dir — @variant-Error::Stdio (lecture) ou
     @variant-Error::Other portant le texte Debug (@core::fmt::Debug aplati, pas le Display) de
     l'erreur script @handlebars.
-  Les cinq wrappers Rhai — @crate::RhaiRes échoué : chaîne brute `format!("{e}")` (sans
-    typage crate, sans error_chain) pour `rhai_register_template`, `rhai_render` et le rendu
-    de `rhai_render_named` ; @crate::rhai_err complet pour les deux `*_dir` et la compilation
-    de `rhai_render_named`.
-  Les helpers typés — @handlebars::RenderError de la macro (ParamNotFound, ParamTypeMismatch,
+  Les cinq wrappers Rhai — @crate::RhaiRes échoué par @crate::rhai_err (error_chain complète)
+    dans tous les cas, `SerializationError` compris pour la conversion des données.
+  Les helpers typés (dont `to_decimal`) — @handlebars::RenderError de la macro (ParamNotFound, ParamTypeMismatch,
     HashTypeMismatch) sur absence ou mal-typage ; la formulation exacte du message appartient
     à @handlebars 6.4.4 (lock).
 
@@ -273,28 +274,26 @@ Tasks:
     peuvent pas être rejoués sans @new_hbs) ; ./hbs_json.rs a ses neufs tests internes déjà
     cantonnés dans ./hbs_json.sdd, et l'auxiliaire `render` de ces tests (Handlebars nu, non
     strict, échappement remis) ne doit PAS servir d'oracle pour ce module.
-  [?] @core::marker::Send et @core::marker::Sync de @crate::hbs::HandleBars ne sont affirmés
-    nulle part : figer un contrat d'envoi (assertion de test) ou assumer le silence ?
-  [?] le `pub use core_helpers::*` (ligne 187) : douze structs HelperDef
-    rendues API publique assumée — figé comme tel dans la spec — ou compromise de harnais à
-    restreindre (module privé, structs `pub(crate)`) ?
-  [?] Un fichier nommé `.hbs` pur s'enregistre sous nom VIDE, et `x.hbs` (sous-dossier) ou
-    `a.hbs.hbs` produisent respectivement @variant-Error::Stdio et un nom `a.hbs` — trous
-    réels à boucher ou comportements assumés ?
-  [?] Rustdoc de `rhai_render`/`rhai_render_named` promet @variant-Error::SerializationError
-    JAMAIS construite (le code rend des chaînes brutes format) : corriger la rustdoc ou
-    typer le code ; et faut-il unifier toute la face Rhai sur @crate::rhai_err (error_chain)
-    comme les deux `*_dir` ?
-  [?] @handlebars déclaré `6.2.0`, lock `6.4.4` : toute la sémantique macro/strict/built-ins
-    citée est vérifiée sur 6.4.4 ; relever le plancher Cargo.toml, ou tester le plancher ?
-  [?] `to_decimal` affiche le message « non-string parameter » même quand la chaîne était
-    valide et le parse base-8 seulement raté (message partagé) : libellé distinct ou statu quo ?
-  [?] `uuid_new_v7` (dépendance 0.17.0) rend un v4 — bug amont fidèlement observable dans
-    tout moteur de la crate : la doc l'avoue déjà ; le réimplémenter maison ou assumer tel
-    quel ?
-  [?] La batterie AGENTS.md/validator n'a AUCUNE commande pure avec la seule feature `hbs`
-    (ni `hbs` sans `crypto`/`password`) : l'invariant d'isolabilité racine n'est
-    vérifié par aucune commande existante — en ajouter ?
+  [ ] Affirmer @core::marker::Send et @core::marker::Sync de @crate::hbs::HandleBars par une
+    assertion de compilation (décision actée).
+  [ ] Passer `pub use core_helpers::*` en `pub(crate)` (décision actée : aucun consommateur
+    — vynil, kuberest, miryad-core — n'utilise les structs) ; `CORE_HBS_HELPERS` reste public.
+  [ ] `register_partial_dir` / `register_helper_dir` : sauter le nom vide et les non-fichiers ;
+    `a.hbs.hbs` reste `a.hbs` (décision actée).
+  [ ] Unifier les cinq wrappers Rhai sur @crate::rhai_err et construire réellement
+    @variant-Error::SerializationError pour la conversion Map → Value (décision actée).
+  [ ] Relever le plancher `handlebars` de ./Cargo.toml à 6.4 (décision actée : tout est
+    vérifié sur 6.4.4).
+  [ ] `to_decimal` : helper typé `str`, erreur pour non-chaîne et non-octal, messages
+    distincts ; passer par un @handlebars::HelperDef manuel si la macro ne permet pas
+    l'erreur (décision actée, alignée sur ./engine.sdd) ; adapter `argon_hash` à
+    @crate::hashes::Argon::new faillible et `bcrypt_hash` au refus > 72 octets (voir
+    ./hashes.sdd), tous deux en warn + chaîne vide.
+  [ ] Documenter dans ../docs/handlebars_helpers.md `uuid_new_v7` (rend un v4, défaut amont
+    de handlebars_misc_helpers 0.17.0, pas de correctif prévu) et la nouvelle politique de
+    `to_decimal` (décision actée : on ne réimplémente pas).
+  [ ] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
+    matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 
 Scenario: new compose les trois couches et les deux réglages hérités
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
@@ -314,7 +313,7 @@ Scenario: CORE_HBS_HELPERS informe sans piloter
     construction les variantes cruet et les familles misc exhaustives — aucun test n'asservit
     la liste au registre réel ; point de doc, pas de contrat d'exhaustivité
 
-Scenario: les neuf Value aident dans le vice
+Scenario: les huit Value aident dans le vice
   Given un HandleBars de production (new)
   When un template évalue `{{ base64_encode 42 }}`
   Then le rendu EST `""`-base64 (l'entrée est remplacée vide après @tracing::warn), aucune
@@ -332,15 +331,14 @@ Scenario: base64_decode traverse trois échecs sans lever
   Then le rendu est encore la chaîne vide, warn distinct ; Given une entrée non-chaîne : vide
     aussi en trois warn possibles — aucun chemin n'est une erreur
 
-Scenario: to_decimal lit l'octal et ment sur le motif
+Scenario: to_decimal lit l'octal et échoue explicitement sinon
   Given un HandleBars de production
   When un template évalue `{{ to_decimal "755" }}`
-  Then le rendu est la chaîne `493`
+  Then le rendu est la chaîne `493`, et `{{ to_decimal "0" }}` rend bien `0`
   When il évalue `{{ to_decimal "999" }}` — chaîne valide mais non-octale
-  Then le rendu est la chaîne `0` et le warn porte le message trompeur « received a
-    non-string parameter » partagé — message discuté en `Tasks`
+  Then le rendu échoue en @handlebars::RenderError portant `to_decimal: '999' is not an octal number`
   When il évalue `{{ to_decimal 8 }}` (nombre)
-  Then le rendu est encore `0` (non-chaîne → vide → parse vide → 0)
+  Then le rendu échoue en @handlebars::RenderError portant `to_decimal: parameter is not a string`
 
 Scenario: crc32_hash rend un nombre et 0 dans le vice
   Given un HandleBars de production
@@ -407,10 +405,11 @@ Scenario: partial_dir enregistre plat, saute, et n'annule rien
   Given un répertoire contenant `a.hbs`, `b.txt`, un fichier nommé `.hbs` pur, un sous-dossier
     `x.hbs`, et `c.hbs` invalide en syntaxe ordonnée ainsi
   When @crate::hbs::HandleBars::register_partial_dir est appelé dessus
-  Then `a` est enregistré sous ce nom plat ; `b.txt` sauté en silence ; le `.hbs` pur
-    enregistré sous le NOM VIDE ; le sous-dossier `x.hbs` devient @variant-Error::Stdio à la
-    lecture — selon l'ordre de la boucle, les enregistrements déjà faits RESTENT (pas de
-    rollback) ; l'invalide donne @variant-Error::HbsTemplateError
+  Then `a` est enregistré sous ce nom plat ; `b.txt`, le `.hbs` pur et le sous-dossier
+    `x.hbs` sont sautés en silence, aucun nom vide n'étant enregistré ; selon l'ordre de la
+    boucle, les enregistrements déjà faits RESTENT (pas de rollback) ; l'invalide donne
+    @variant-Error::HbsTemplateError
+  And un fichier `a.hbs.hbs` s'enregistre sous le nom `a.hbs`
   Given un chemin de non-répertoire
   Then le retour est `Ok(())` silencieux — no-op contracté
 
@@ -424,22 +423,22 @@ Scenario: helper_dir scripting charge les rhai et parle en Debug
   Then le corps `.rhai` tourne sur le moteur interne @handlebars (PAS le @crate::engine::Script)
     — sémantique des globals laissée à la dépendance, non contractée ici
 
-Scenario: uuid_new_v7 ment sur la marchandise
+Scenario: uuid_new_v7 rend un v4, défaut amont documenté
   Given un HandleBars de production sous les features de la crate
   When un template évalue `{{ uuid_new_v7 }}`
-  Then la chaîne UUID rendue est un v4 (bug @handlebars_misc_helpers 0.17.0 verrouillé,
-    ./docs/handlebars_helpers.md l'avoue) — observable dans tout moteur produit, [?] des `Tasks`
+  Then la chaîne UUID rendue est un v4 (bug @handlebars_misc_helpers 0.17.0 verrouillé, dernière version
+    publiée) — observable dans tout moteur produit ; décision actée : on ne le réimplémente
+    pas, on le documente
 
-Scenario: la face Rhai bricole ses erreurs en chaînes
+Scenario: la face Rhai type toutes ses erreurs
   Given la crate compilée `hbs`+`rhai`
   When @crate::hbs::HandleBars::rhai_render reçoit une `name` et `data` valides
   Then le @rhai::Map est converti par aller-retour @serde_json et le rendu sort en chaîne
   When la CONVERSION serde échoue (Map contenant une dynamique non sérialisable)
-  Then l'erreur Rhai est la chaîne brute `format!("{e}")` — AUCUN @variant-Error::SerializationError
-    n'est construit malgré la promesse de la rustdoc ([?])
-  Given @crate::hbs::HandleBars::rhai_render_named échouant à la COMPILATION
-  Then l'erreur passe par @crate::rhai_err (error_chain complète), contrairement au rendu du
-    même wrapper qui repart en chaîne brute — incohérence [?] des `Tasks`
+  Then l'erreur Rhai passe par @crate::rhai_err et porte @variant-Error::SerializationError,
+    comme le promet la rustdoc
+  Given @crate::hbs::HandleBars::rhai_render_named échouant à la COMPILATION puis, séparément, au RENDU
+  Then les deux erreurs passent par @crate::rhai_err (error_chain complète), sans exception
 
 Scenario: les portes isolent hbs de rhai
   Given `cargo check --no-default-features --features hbs`
