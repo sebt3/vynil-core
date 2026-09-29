@@ -31,7 +31,10 @@ Must:
   Ne jamais laisser un script Rhai paniquer l'hôte : toute entrée de script (format invalide,
   valeur démesurée, débordement, entropie défaillante) se traduit en @crate::RhaiRes en échec,
   rattrapable par un `try` de script, jamais en `panic!` ni en abort du processus. Les portes
-  Rust sous-jacentes retournent un @crate::Result plutôt que de paniquer.
+  Rust sous-jacentes retournent un @crate::Result plutôt que de paniquer. Seule exception :
+  la panique contractuelle de @get_client_name quand @set_client_name n'a pas été appelé —
+  un script qui l'atteint révèle un bug de l'application fille, qui doit configurer son
+  identité au démarrage ; cette exigence prime sur la règle.
   Exiger qu'aucune ligne de code source ne soit écrite sans spec `.sdd` cible approuvée par
   Sébastien et sans tests dérivés de ses `Scenario` écrits et exécutés d'abord (flux
   spec → test → implémentation, `.specdd/bootstrap.project.md`).
@@ -67,6 +70,11 @@ Tasks:
   [x] Spec `src/shell.sdd` produite (spec-reverse) puis revue.
   [x] Spec `src/yaml.sdd` produite (spec-reverse) puis revue.
   [x] Purger la dette harnais stricte module par module, en coordination avec `./tooling.sdd`.
+  [ ] Rédiger `src/rt.sdd` puis créer `src/rt.rs` : helper crate-privé `block_on` (runtime
+    multi-thread → `block_in_place` ; sans runtime → runtime courant temporaire ;
+    `current_thread` → `Error::Other` `requires a multi-thread tokio runtime`), utilisé par
+    `s3`, `oci` et `http` — spec à écrire avec le lot http (décision actée : plus de panique
+    tokio depuis un script).
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

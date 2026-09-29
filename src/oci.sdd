@@ -4,15 +4,15 @@ Purpose:
     Contrat groupé de ./oci.rs et ./oci_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::oci::Registry, client de registre OCI sur
     @oci_client 0.15 — push d'une image une-couche tar+gzip fabriquée depuis un dossier
-    local, pull décompressé sur disque, listing de tags plafonné à 100, manifeste rendu en
+    local, pull décompressé sur disque, listing de tags paginé jusqu'à épuisement (borné à 10 000), manifeste rendu en
     @rhai::Dynamic par double passe JSON, signature par le binaire EXTERNE `cosign`, plus
     la lecture locale d'un docker-config JSON (@crate::oci::get_auth_from_file) et deux
     faces Rust hors Rhai (@crate::oci::verify_tag_in_registry, et
     @crate::oci::resolve_registry_auth sous double porte `oci`+`k8s` qui lit un secret
     dockerconfigjson). Le module est auto-wired : @crate::oci::oci_rhai_register est appelé
     par @crate::engine::Script::new_bare sous `oci` (frontière contractée par ./engine.sdd).
-    Contrechamp assumé du groupe : @crate::oci_mock ne reproduit NI le nom de type
-    (`OciRegistryMock` contre `Registry`) NI `get_auth_from_file`, et n'a AUCUNE fixture —
+    @crate::oci_mock reproduit le nom de type Rhai `Registry` et `get_auth_from_file` (valeur
+    constante anonyme), et n'a AUCUNE fixture par décision — double constant définitif :
     valeurs constantes, zéro état, zéro échec possible ; le seul mock de la crate sans
     injectable.
 
@@ -35,9 +35,9 @@ References:
   ./engine.rs — frontière seule : sous `oci`, `new_bare` appelle
     @crate::oci::oci_rhai_register ; @crate::oci_mock n'y est JAMAIS appelé (./engine.sdd
     Must not) — avec `oci` actif un script obtient le VRAI type "Registry".
-  ./engine.sdd, ./s3.sdd — tier : `oci` EST auto-wired (contrairement à s3), mais le pont
-    @tokio::task::block_in_place sans runtime multi-thread et sa panique sont la même
-    borne que ./s3.sdd ; les deux questions sont les mêmes en `Tasks`.
+  ./engine.sdd, ./s3.sdd — tier : `oci` EST auto-wired (contrairement à s3) ; le pont
+    async→sync passe par le helper crate-privé `crate::rt::block_on` (voir ./rt.sdd, à
+    rédiger avec le lot http), le même que ./s3.sdd : plus aucune panique tokio.
   ./Cargo.toml — `oci = ["dep:oci-client", "dep:tokio", "rhai"]` (ligne 58) : la feature
     implique `rhai`, les signatures Rust des méthodes prennent donc des types Rhai en dur
     (commentaire lignes 56-57). @oci-client déclaré et lock 0.15.0 (@oci-spec 0.8.4 et
@@ -47,12 +47,11 @@ References:
   ../docs/rhai_helpers.md — section 11 « Feature `oci` (auto-wired) », table des 5 méthodes
     + fonction libre, fidèle aux noms enregistrés. Lignes 51-54 : la phrase qui range `oci`
     dans le trio « http/k8s/s3 » avec promesse de « exact same Rhai type and function
-    names » est doublement fausse pour oci — consignée en `Tasks` (déjà épinglée par
-    ./s3.sdd pour `s3_mock` inexistant).
+    names » est fausse pour oci et s3 — à corriger (`Tasks`, voir ./s3.sdd).
   ../docs/mocking.md — section 3 : la docs la plus fidèle de la crate (« No fixtures —
     every method returns a fixed canned value », caveat explicite du nom de type divergent,
     table des cinq valeurs constantes) ; mais sa page d'accueil parle de mocks « backed by
-    in-memory fixtures » pour les trois doubles — contradiction interne pour oci, `Tasks`.
+    in-memory fixtures » pour les trois doubles — à corriger pour oci (`Tasks`).
   ./README.md — ligne 34 : `oci` off par défaut, « Registry + OCI mock », implique `rhai`.
 
 Must:
@@ -76,57 +75,66 @@ Must:
     os Linux, rootfs type `layers` avec l'unique diff_id, working_dir `/`, history à UNE
     entrée `created_by` `vynil` et commentaire `vynil.build`, empty_layer false ; @
     oci_client::client::Config::oci_v1_from_config_file ; @oci_client::manifest::OciImageManifest::build
-    avec media_type FORCÉ à OCI_IMAGE_MEDIA_TYPE ; push sous @tokio::task::block_in_place +
-    @tokio::runtime::Handle::current().@tokio::runtime::Handle::block_on.
-  Convertir les annotations de @rhai::Map en @std::collections::BTreeMap de chaînes par
-    `(key.into(), val.to_string())` : la valeur est le @core::fmt::Display de @rhai::Dynamic
-    — contenu brut pour une chaîne, forme `#{...}`/`[...]` pour les composites, JAMAIS une
-    sérialisation JSON.
+    avec media_type FORCÉ à OCI_IMAGE_MEDIA_TYPE ; push par
+    `crate::rt::block_on` (voir ./rt.sdd).
+  Convertir les annotations de @rhai::Map en @std::collections::BTreeMap de chaînes : une
+    valeur chaîne, entière, flottante ou booléenne devient son @core::fmt::Display ; une map
+    ou un tableau est refusé en @variant-Error::Other `annotation '<clé>' must be a scalar`
+    (décision actée : les annotations OCI sont des paires chaîne/chaîne, jamais de `#{...}`
+    glissé en valeur).
   Extraire le digest de push par `rfind("sha256:")` sur la manifest_url de réponse :
-    tranche depuis ce dernier `sha256:` jusqu'en fin d'URL ; SINON l'URL ENTIÈRE est rendue
-    comme digest quand aucune sous-chaîne `sha256:` n'apparaît — borne verrouillée telle
-    quelle malgré la rustdoc qui promet « the manifest digest ».
+    tranche depuis ce dernier `sha256:` jusqu'en fin d'URL ; SINON un @variant-Error::Other
+    `push response without a sha256 digest: <manifest_url>` (décision actée : le digest sert
+    à `cosign sign …@digest`, une URL n'est pas un digest).
   Signer @crate::oci::Registry::sign_image par PROCESSUS EXTERNE `cosign`, jamais par une
     lib Rust : no-op `Ok(())` immédiat si `key_path` est vide ; sinon @std::process::Command
     avec les arguments EXACTS `sign`, `--yes`, `--key`, la clé, puis
     `<registry>/<repository>:<tag>@<digest>` ; stdio hérités, AUCUNE credential transmise
     (cosign prend son propre environnement), aucun timeout, aucune vérification locale
-    d'existence de la clé avant le spawn.
+    d'existence de la clé avant le spawn ; un binaire absent (@std::io::ErrorKind::NotFound
+    au spawn) donne @variant-Error::Other `cosign not found in PATH` (décision actée : message
+    parlant), tout autre échec de spawn restant @variant-Error::Stdio.
   Accepter dans @crate::oci::Registry::pull_image DEUX media types seulement
     (IMAGE_LAYER_GZIP et IMAGE_DOCKER_LAYER_GZIP) : charger toutes les couches en mémoire
     puis @flate2::read::GzDecoder + @tar::Archive::unpack dans `dest_dir` couche par
     couche ; le nettoyage des chemins du tar (absolus, `..`) est un contrat de @tar.
-  Plafonner @crate::oci::Registry::list_tags à `Some(100)` et pagination `None`, rendre les
-    tags bruts du registre, non triés.
+  Paginer @crate::oci::Registry::list_tags jusqu'à épuisement (pages de 1000, `last` = dernier
+    tag reçu), rendre les tags dans l'ordre du registre, non triés, et refuser au-delà de
+    10 000 tags en @variant-Error::Other `too many tags (> 10000)` (décision actée : un
+    plafond de 100 silencieux tronquait la liste dont `scan.rhai` tire ses mises à jour).
   Valider la référence par `format` + `parse` (@std::str::FromStr de @oci_client::Reference)
     SEULEMENT sur le chemin list_tags — `push_image`/`pull_image`/`get_manifest`/
     `verify_tag_in_registry` construisent par @oci_client::Reference::with_tag SANS
     validation : la même chaîne malformée échoue sur l'un et pas sur les autres.
   Faire de @crate::oci::Registry::rhai_list_tags le pont async→Rhai du listing
-    (@tokio::task::block_in_place + block_on sur l'async, `.map_err(@crate::rhai_err)`,
+    (`crate::rt::block_on` sur l'async, `.map_err(@crate::rhai_err)`,
     collecte en tableau @rhai) — c'est lui, et non l'async, qu'@crate::oci::oci_rhai_register
     enregistre sous le nom script `list_tags`.
   Rendez le manifeste de @crate::oci::Registry::get_manifest par double passe : @serde_json::to_string
     du manifeste puis @serde_json::from_str en @rhai::Dynamic ; le digest renvoyé par
     @oci_client est JETÉ ; toute la richesse du JSON (schemaVersion, mediaType, configs,
     layers…) transite.
-  Faire de @crate::oci::resolve_registry_auth une échelle de replis anonymes (secret absent
-    via `get_opt`, champ `data` absent, clé `.dockerconfigjson` absente,
-    `auths[registry].auth` absent ou vide, décodé sans deux-points → Anonymous à CHAQUE
-    barreau), Basic(user, pass) sur @str::splitn(2, ':') de longueur exactement 2 — un
-    `user:pa:ss` donne pass=`pa:ss` ; le @kube::Client est FOURNI EN PARAMÈTRE, aucun
-    client global.
+  Faire de @crate::oci::resolve_registry_auth une échelle de replis anonymes pour l'ABSENCE
+    (secret absent via `get_opt`, champ `data` absent, clé `.dockerconfigjson` absente,
+    `auths[registry].auth` absent ou vide → Anonymous à CHAQUE barreau), Basic(user, pass) sur
+    @str::splitn(2, ':') de longueur exactement 2 — un `user:pa:ss` donne pass=`pa:ss` ; une
+    donnée MALFORMÉE (base64 invalide, non-UTF-8, décodé sans deux-points) est une erreur
+    typée (@variant-Error::Base64DecodeError, @variant-Error::UTF8, ou
+    @variant-Error::Other `docker config auth is not user:pass`), jamais un repli (décision
+    actée : « pas d'identifiant » est normal, « identifiant corrompu » se signale) ; le
+    @kube::Client est FOURNI EN PARAMÈTRE, aucun client global.
   Contracter @crate::oci::verify_tag_in_registry : true au succès de @oci_client::Client::pull_manifest_raw
-    avec accept VIDE ; false sur erreur d'enveloppe portant au moins un code ManifestUnknown
+    avec une liste `accept` EXPLICITE (manifest OCI, index OCI, manifest Docker v2, liste de
+    manifests Docker — décision actée : un `Accept` vide dépend du registre) ; false sur erreur d'enveloppe portant au moins un code ManifestUnknown
     ou NotFound, ou ServerError 404 ; TOUTE autre erreur remontée en @variant-Error::OCIDistrib.
   Lire @crate::oci::get_auth_from_file : @std::fs::read_to_string (UTF-8 strict) puis
-    @serde_json::from_str — ces deux-là sont les SEULS canaux d'erreur ; indexage
-    `["auths"][&registry]["auth"]` (absence → Null → chaîne vide, jamais de panic),
-    décodage base64 STANDARD `unwrap_or_default` (b64 invalide → vide SILENCIEUX), UTF-8
-    `unwrap_or_default` (non-UTF-8 → vide SILENCIEUX), splitn(2, ':') : un décodé sans
-    deux-points donne user=contenu-entier et pass=vide — asymétrie assumée avec
-    resolve_registry_auth qui, lui, rend Anonymous et remonte ses erreurs ; rend exactement
-    la map {user, pass}.
+    @serde_json::from_str, indexage `["auths"][&registry]["auth"]` (absence → Null → map
+    {user "", pass ""}, jamais de panic), puis, pour un `auth` présent, décodage base64
+    STANDARD, UTF-8 et @str::splitn(2, ':') avec les MÊMES erreurs typées que
+    @crate::oci::resolve_registry_auth (@variant-Error::Base64DecodeError,
+    @variant-Error::UTF8, @variant-Error::Other `docker config auth is not user:pass`) —
+    décision actée, harmonisation des deux sources ; rend exactement la map {user, pass}.
+    Un `auth` vide équivaut à absent.
   Enregistrer dans @crate::oci::oci_rhai_register : un type @rhai::Engine::register_type_with_name
     `"Registry"`, et SIX noms — `new_registry` (3 chaînes), `push_image` (3 chaînes +
     map), `sign_image` (4 chaînes), `list_tags` vers @crate::oci::Registry::rhai_list_tags
@@ -139,13 +147,15 @@ Must:
     constante figée : `list_tags` → tableau @rhai VIDE ; `get_manifest` → map ne contenant
     QUE `annotations` = map vide ; `push_image` → la chaîne littérale
     `sha256:mock-digest-for-testing` ; `sign_image` → unité réussie immédiate, ne spawn
-    JAMAIS cosign. Aucune méthode ne peut échouer ; le @crate::RhaiRes ne mime que la
-    signature.
+    JAMAIS cosign ; `get_auth_from_file` → la map `{user "", pass ""}` (anonyme), sans
+    lecture de fichier. Aucune méthode ne peut échouer ; le @crate::RhaiRes ne mime que la
+    signature. Ce double constant est définitif (décision actée) ; des fixtures ne viendront
+    que d'un besoin réel.
   Enregistrer dans @crate::oci_mock::oci_mock_rhai_register le type sous le nom @rhai
-    LITTÉRAL `OciRegistryMock` — seul mock de la crate dont le nom de type DIVERGE du vrai
-    (`http_mock` et `k8s_mock` reprennent les noms vrais) — plus les cinq noms homonymes
-    dont `new_registry` par une closure de trois chaînes ignorant ses arguments.
-    `get_auth_from_file` N'EST PAS enregistrée côté mock.
+    `Registry`, identique au vrai (décision actée, comme `http_mock` et `k8s_mock`) — le
+    struct Rust garde `OciRegistryMock` — plus les cinq noms homonymes dont `new_registry` par
+    une closure de trois chaînes ignorant ses arguments, et `get_auth_from_file` par une
+    closure de deux chaînes.
   Maintenir le harnais : deux @core::default::Default permis seulement, lignes 123 et 303
     (`clippy::needless_pass_by_value`), chacun sous commentaire d'une ligne citant
     ./vyvil-core.sdd ; @core::marker::must_use sur @crate::oci::Registry::new seul ; aucun
@@ -155,24 +165,24 @@ Must:
 Must not:
   Câbler @crate::oci_mock dans @crate::engine::Script::new_bare, même sous `oci` : le tier
     auto-wired ne vaut que pour le vrai module.
-  Lire @crate::client_name ou poser un User-Agent : zéro occurrence dans les deux fichiers ;
-    le traffic OCI n'est jamais identifié par l'identité client de la crate et ne panique
-    jamais faute de @crate::set_client_name — asymétrie avec `http`/`k8s`, consignée.
+  Exiger @crate::set_client_name : le trafic OCI ne panique jamais faute d'identité client.
+    Quand @crate::client_name_is_set rend vrai, le User-Agent de @oci_client::client::ClientConfig
+    est ce nom (`&'static str` mémoïsé une fois dans un `OnceLock`, décision actée) ; sinon
+    le User-Agent par défaut d'@oci_client.
   Signer via une bibliothèque : la signature est l'appel externe à `cosign` ; la crate ne
     vérifie pas sa présence, ne pinne aucune version, ne transmet ni clé ni credential
     autres que le chemin passé en argument.
   Réutiliser un @oci_client::Client ou mutualiser un token entre appels : la recréation par
     appel est le contrat.
-  Paginer `list_tags`, trier ses tags, ou promettre plus de 100 entrées.
-  Contracter la sortie de push comme « toujours un digest » : sans sous-chaîne `sha256:`,
-    c'est l'URL de manifeste entière qui sort.
-  Promettre au mock une substitution totale : `get_auth_from_file` absente de son
-    enregistrement, nom de type divergent, manifeste sans `layers`/`schemaVersion`, aucun
-    chemin d'erreur, aucun pont @tokio (il ne peut donc pas paniquer là où le vrai panique)
-    — la substitution ne vaut que pour des scripts bornés aux cinq noms communs, sans
-    test du type ni lecture du manifeste profond.
-  Ajouter au mock une fixture, un état partagé ou un compteur d'appels : toute valeur
-    constante, présente ou future, est un choix [?] — le contrat actuel est le mutisme total.
+  Trier les tags de `list_tags` ni les tronquer en silence.
+  Rendre en sortie de push autre chose qu'un digest : sans sous-chaîne `sha256:`, c'est une
+    erreur, jamais l'URL de manifeste.
+  Promettre au mock plus que ses valeurs constantes : manifeste sans `layers`/`schemaVersion`,
+    aucun chemin d'erreur, aucun pont async (il ne peut donc pas échouer là où le vrai
+    échoue) — la substitution vaut pour les scripts qui n'inspectent pas le manifeste
+    profond.
+  Ajouter au mock une fixture, un état partagé ou un compteur d'appels : le mutisme total est
+    le contrat définitif (décision actée).
   Compiler @crate::oci::resolve_registry_auth, @kube::Client, @k8s_openapi::api::core::v1::Secret
     ou les tests `mod k8s_tests` sans `k8s` : seconde porte indépendante dans le module.
 
@@ -183,11 +193,10 @@ Depends on:
     Architecture, Os, Rootfs, Config, History}, @oci_client::manifest::{OciImageManifest,
     OCI_IMAGE_MEDIA_TYPE, IMAGE_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE},
     @oci_client::errors::{OciDistributionError, OciErrorCode} ; 0.15.0 en lock. Les flux
-    réseau réels (auth, retries, timeouts, backend TLS de @reqwest transitif) appartiennent
-    à la dépendance — §`Tasks`.
-  tokio — @tokio::task::block_in_place + @tokio::runtime::Handle::current : précondition
-    runtime multi-thread, sinon PANIQUE tokio (push/pull/list/get_manifest), borne partagée
-    avec ./s3.sdd ; features `macros`+`rt-multi-thread`.
+    réseau réels (auth, retries, timeouts) appartiennent à la dépendance ; son backend TLS par
+    défaut (`native-tls`, donc OpenSSL système) est à remplacer par rustls (§`Tasks`).
+  tokio — via `crate::rt::block_on` (voir ./rt.sdd), partagé avec ./s3.sdd ; features
+    `macros`+`rt-multi-thread`.
   std — @std::process::Command (cosign), @std::fs::read_to_string, @std::path::PathBuf,
     @std::io::copy, @std::collections::BTreeMap, @str::splitn.
   tar/flate2/sha256/base64/chrono/serde_json — non optionnels : @tar::Builder/@tar::Archive,
@@ -228,11 +237,11 @@ Exposes:
   @crate::oci::oci_rhai_register — `pub fn(engine: &mut @rhai::Engine)` : seul point
     d'entrée du câblage, le seul appelé par ./engine.rs.
   @crate::oci_mock::OciRegistryMock — `#[derive(Clone, Debug)] pub struct` unit sans champ ;
-    en Rhai `"OciRegistryMock"`. Quatre méthodes `pub fn` miroirs de noms, seule divergence
+    en Rhai `"Registry"`. Quatre méthodes `pub fn` miroirs de noms, seule divergence
     de type Rust : le 4ᵉ paramètre de `push_image` est @rhai::Dynamic là où le vrai prend
     @rhai::Map — invisible en script.
-  @crate::oci_mock::oci_mock_rhai_register — `pub fn(engine: &mut @rhai::Engine)` ; cinq
-    enregistrements, PAS `get_auth_from_file`.
+  @crate::oci_mock::oci_mock_rhai_register — `pub fn(engine: &mut @rhai::Engine)` ; six
+    enregistrements, `get_auth_from_file` compris.
   Rien de plus dans les deux fichiers.
 
 Accepts:
@@ -241,8 +250,9 @@ Accepts:
     `with_tag` avalent des hôtes invalides, seul `list_tags` reprochera un
     `registry/repository` malformé au `parse`.
   push : `source_dir` existant ou non (les deux mènent au code, l'inexistant en échec
-    @variant-Error::Stdio de `append_dir_all`) ; annotations toute @rhai::Map, valeurs de
-    n'importe quel type (converties en Display) — une Map vide passe Some(vide), jamais None.
+    @variant-Error::Stdio de `append_dir_all`) ; annotations toute @rhai::Map à valeurs
+    scalaires (chaîne, entier, flottant, booléen, convertis en Display), une valeur composite
+    étant refusée — une Map vide passe Some(vide), jamais None.
   sign : `key_path` vide = court-circuit ; non vide = transmis mot pour mot en position
     `--key` de l'invocation `cosign` ; `digest` sans contrôle de forme.
   get_auth_from_file : chemin texte UTF-8 (lecture stricte) ; `registry` clé EXACTE de
@@ -254,14 +264,14 @@ Returns:
   @crate::oci::Registry::new — Anonymous ou Basic selon la règle « vide OU vide » (OR) ;
     jamais d'erreur.
   push — @rhai::ImmutableString : `sha256:` + tranche au dernier porteur de `sha256:` dans
-    manifest_url, OU la manifest_url complète ; pull — unité, effet de bord fichiers écrits
+    manifest_url (sinon une erreur) ; pull — unité, effet de bord fichiers écrits
     sous `dest_dir` ; sign — unité.
-  list_tags async — le vecteur du registre (au plus 100, ordre du registre) ;
+  list_tags async — le vecteur complet du registre (au plus 10 000, ordre du registre) ;
     rhai_list_tags et le mock — tableau @rhai (mock : TOUJOURS vide).
   get_manifest — le Dynamic porteur de TOUT le JSON du manifeste ; le mock — la map à
     seule clé `annotations` vide (les scripts lisant `manifest.layers` cassent dessus).
-  get_auth_from_file — la map {user, pass}, chaînes vides dans TOUS les replis silencieux ;
-    resolve_registry_auth — Anonymous (5 barreaux) ou Basic ; verify_tag_in_registry — le
+  get_auth_from_file — la map {user, pass}, chaînes vides quand l'entrée est absente ou vide ;
+    resolve_registry_auth — Anonymous (absence à chaque barreau) ou Basic ; verify_tag_in_registry — le
     booléen strict succès/absent.
   Les deux registres d'engine — unité.
 
@@ -269,30 +279,31 @@ Raises:
   Côté script (@crate::RhaiRes, texte aplat par @crate::rhai_err avec chaîne de sources) :
     push — @variant-Error::Stdio préfixé `Stdio error ` sur append/into_inner/io::copy/finish,
     @variant-Error::OCIDistrib préfixé `OCI jukebox error ` sur le build de config ET le
-    push ; sign — @variant-Error::Stdio si `cosign` ne se spawn pas, @variant-Error::Other
+    push, @variant-Error::Other sur annotation composite et sur réponse sans digest ; sign —
+    @variant-Error::Other `cosign not found in PATH` si `cosign` est absent,
+    @variant-Error::Stdio pour tout autre échec de spawn, @variant-Error::Other
     au texte PRÉCIS `cosign sign failed for <registry>/<repo>:<tag>@<digest>` sur code de
     sortie non nul ; rhai_list_tags — @variant-Error::OCIParseError `OCI parse error ` OU
     @variant-Error::OCIDistrib propagés ; get_manifest — @variant-Error::OCIDistrib, puis
     @variant-Error::SerializationError sur la double passe (la branche from_str est
     défensive, @rhai::Dynamic accepte tout JSON valide : seule cette ligne la contracte) ;
-    get_auth_from_file — @variant-Error::Stdio (fichier absent/non-UTF-8) et
-    @variant-Error::SerializationError (JSON invalide), RIEN pour le reste.
+    get_auth_from_file — @variant-Error::Stdio (fichier absent/non-UTF-8),
+    @variant-Error::SerializationError (JSON invalide), et pour un `auth` corrompu
+    @variant-Error::Base64DecodeError, @variant-Error::UTF8 ou @variant-Error::Other.
   Côté Rust (@crate::Result, variantes typées intactes, sans rhai_err) : pull —
     @variant-Error::OCIDistrib et @variant-Error::Stdio ; list_tags async —
     @variant-Error::OCIParseError et @variant-Error::OCIDistrib ;
     verify_tag_in_registry — @variant-Error::OCIDistrib résiduel ; resolve_registry_auth —
     @variant-Error::KubeError, @variant-Error::SerializationError, @variant-Error::Base64DecodeError,
-    @variant-Error::UTF8 : ces deux dernières remontent ICI alors que get_auth_from_file les
-    avale — deux poids documentés, §`Tasks`.
-  Panique (PAS erreur) : les ponts @tokio::task::block_in_place/@tokio::runtime::Handle::current
-    (push 97, pull 157, rhai_list_tags 200, get_manifest 214) paniquent via tokio hors
-    runtime multi-thread ; le mock, lui, ne panique jamais — zéro @tokio dans ./oci_mock.rs.
+    @variant-Error::UTF8, @variant-Error::Other : mêmes erreurs typées que get_auth_from_file.
+  Aucune panique tokio : sur runtime current-thread, `crate::rt::block_on` rend
+    @variant-Error::Other `requires a multi-thread tokio runtime` ; sans runtime, un runtime
+    temporaire sert. Le mock ne fait jamais d'async — zéro @tokio dans ./oci_mock.rs.
 
 Handles:
-  L'auth à trois portes : le constructeur (vide OU vide → Anonymous), le secret K8s (échelle
-    de replis anonymes, erreurs typées sur le corruption), le fichier docker-config local
-    (erreurs seulement lecture/JSON, corruptions avalées en vides) — trois politiques pour
-    trois sources, contractées telles quelles.
+  L'auth à trois portes : le constructeur (vide OU vide → Anonymous), le secret K8s et le
+    fichier docker-config local — ces deux dernières sources partagent la même politique
+    (absence → anonyme, corruption → erreur typée), décision actée.
   La symétrie push/pull du format : une couche unique tar+gzip, `diff_id` du tar BRUT
     (push) contre décodage gzip couche par couche avec deux media types acceptés (pull) ;
     les images multi-couches ou zstd ne passent pas par ces media types ACCEPTÉS.
@@ -300,8 +311,8 @@ Handles:
     NotFound et ServerError 404 deviennent `false`, tout le reste erreur — seul endroit de
     la paire où une erreur oci devient une valeur.
   La substitution vrai/mock par l'appelant : un engine par enregistreur (recommandation
-    mocking.md) ; `new_registry` de même signature dans les deux mondes, le dernier
-    enregistré gagne à co-enregistrement — mécanisme de coexistence laissé à @rhai.
+    mocking.md) ; le type Rhai `Registry` et `new_registry` de même signature dans les deux
+    mondes, le dernier enregistré gagne à co-enregistrement — mécanisme laissé à @rhai.
 
 Tasks:
   [ ] Convertir les Scenario en tests passants. Aujourd'hui ./oci.rs : 7 `#[test]` inline
@@ -313,48 +324,31 @@ Tasks:
     `k8s` seul — seulement les deux dernières combinaisons de la batterie AGENTS.md.
     ./oci_mock.rs : ZÉRO test. Aucun test inline n'exerce push_image, pull_image, les
     voies de list_tags, get_manifest, verify_tag_in_registry, ni un seul de ces noms via
-    engine. Les Scenario réseau de bas de fichier demandent un seam (faux registre http
-    local, ou injection de Client) — décision liée aux [?].
+    engine. Les Scenario réseau de bas de fichier s'appuient sur un faux registre HTTP
+    local (`httpmock`, dev-dependency), seam décidé.
 
-  [?] Digest fallback de push : un registre servant une manifest_url sans `sha256:` fait
-    RENDRE L'URL ENTIÈRE comme digest (lignes 106-111) — borne assumée ou erreur explicite ?
-  [?] Deux poids de docker-config : @crate::oci::resolve_registry_auth remonte
-    @variant-Error::Base64DecodeError/@variant-Error::UTF8 (ligne 254) alors que
-    @crate::oci::get_auth_from_file avale les mêmes en vides (lignes 309-312) ; de plus un
-    décodé sans deux-points donne Anonymous côté secret mais user=champ-entier/pass=vide
-    côté fichier. Harmoniser, et dans quel sens ?
-  [?] Le mock sans fixtures NI état NI échec, est-ce son statut définitif de « double
-    constant » (contracté ici) ou faut-il fixtures + erreurs injectables (alignement sur
-    k8s_mock) ? La page d'accueil de ../docs/mocking.md (« backed by in-memory fixtures »)
-    devra changer dans un sens ou l'autre.
-  [?] Nom de type du mock `OciRegistryMock` ≠ `Registry` — assumé par mocking.md mais
-    contredit la promesse de ./docs/rhai_helpers.md (lignes 51-54) : rebaptiser le mock
-    "Registry" (vraie substitution transparente) ou garder le nom distinct et corriger la
-    promesse ? (Même phrase docs déjà [?] côté ./s3.sdd qui, lui, n'a AUCUN mock.)
-  [?] @crate::oci::get_auth_from_file absente de @crate::oci_mock : un script qui l'utilise
-    casse à la substitution mock seule. L'ajouter au mock (valeurs constantes) ou documenter
-    le trou dans mocking.md ?
-  [?] Les faces Rust @crate::oci::Registry::pull_image, list_tags async,
-    @crate::oci::verify_tag_in_registry et @crate::oci::resolve_registry_auth sont publiques
-    sans porte Rhai, sans test (sauf resolve), `resolve` documentée nulle part : face
-    publique durable assumée ou enrobage à prévoir ?
-  [?] Ponts @tokio hors runtime multi-thread = panique (borne ouverte et identique dans
-    ./s3.sdd) : trancher une fois pour les deux modules — envelopper en erreur ou assumer ?
-  [?] `cosign` non contrôlé : absence = @variant-Error::Stdio, sortie non nulle =
-    @variant-Error::Other ; erreur plus parlante pour « cosign non installé » (pré-test de
-    présence) et test en environnement hermétique ?
-  [?] `list_tags` plafonné `Some(100)` sans pagination, tags non triés : figé ou pagination
-    exposée ?
-  [?] @crate::oci::verify_tag_in_registry passe l'accept VIDE `&[]` à pull_manifest_raw :
-    effet réel sur un registre vrai incertain — verrouiller par test dès qu'un seam existe.
-  [?] Annotations de push converties par @core::fmt::Display de @rhai::Dynamic (les
-    composites sortent en forme `#{...}`) : conversion voulue, ou JSON ?
-  [?] Le traffic OCI ignore @crate::client_name (ni User-Agent, ni panique de non-identité,
-    contrairement à `http`/`k8s`) : asymétrie voulue ou User-Agent à câbler sur
-    @oci_client::client::ClientConfig ?
-  [?] Backend TLS effectif du transitif @reqwest (native-tls/openssl contre rustls selon
-    l'union des features ; `vendored` jamais déclaré) : hors lecture seule, à trancher par
-    `cargo tree -e features`.
+  [ ] Erreur `Other` sur digest de push absent ; erreurs typées harmonisées pour un `auth`
+    corrompu dans `resolve_registry_auth` et `get_auth_from_file` (dont `decoded` sans `:`) ;
+    annotations scalaires seulement ; `cosign not found in PATH` (décisions actées).
+  [ ] Paginer `list_tags` (pages de 1000, plafond 10 000 tags en erreur) ; passer une liste
+    `accept` explicite à `verify_tag_in_registry` ; câbler le User-Agent depuis
+    @crate::client_name quand défini (décisions actées).
+  [ ] Renommer le type Rhai du mock en `Registry`, ajouter `get_auth_from_file` (constante
+    `{user "", pass ""}`) au mock ; corriger ../docs/mocking.md (« backed by in-memory
+    fixtures » est faux pour oci, le mock est un double constant) et ../docs/rhai_helpers.md
+    lignes 51-54 (voir ./s3.sdd) ; documenter dans ../docs les faces Rust publiques
+    (`pull_image`, `list_tags` async, `verify_tag_in_registry`, `resolve_registry_auth`),
+    assumées comme API durable (décision actée).
+  [ ] Remplacer les ponts tokio par `crate::rt::block_on` (décision actée, commune à s3 et
+    http ; le helper est spécifié dans ./rt.sdd).
+  [ ] Tester les chemins réseau par un faux registre HTTP local (`httpmock` en
+    dev-dependency, décision actée) — dont l'en-tête `Accept` reçu par
+    `verify_tag_in_registry` — et le cas cosign absent par un test isolé qui vide le `PATH`.
+  [ ] Faisabilité : basculer `oci-client` (`default-features = false`, feature `rustls-tls`)
+    et `reqwest` (`default-features = false`) sur rustls seul pour retirer `native-tls` et
+    l'OpenSSL système du graphe (mesure `cargo tree` : `oci-client` et `reqwest` tirent
+    aujourd'hui `native-tls`, `object_store` est déjà en rustls) ; ne garder OpenSSL que pour
+    la feature `crypto` (décision actée : tâche de faisabilité, pas d'implémentation forcée).
 
 Scenario: oci éteint, les deux modules n'existent pas
   Given la crate compilée `--no-default-features --features rhai` (`oci` off par défaut)
@@ -367,7 +361,7 @@ Scenario: new_registry câble le vrai, jamais le mock
   When le script évalue `let r = new_registry("reg", "u", "p")` puis `type_of(r)`
   Then "Registry" — le VRAI @crate::oci::Registry, ./engine.rs n'appelant jamais le mock
   Given un engine peuplé par @crate::oci_mock::oci_mock_rhai_register seul
-  Then le même script rend "OciRegistryMock" — divergence de nom verrouillée par la docs
+  Then le même script rend aussi "Registry" — substitution transparente du nom de type
 
 Scenario: l'anonymat frappe à la première chaîne vide
   Given @crate::oci::Registry::new appelé avec ("", "p"), ("u", "") et ("", "")
@@ -379,11 +373,11 @@ Scenario: sign_image clé vide est un no-op sans spawn
   When sign_image(repo, tag, "sha256:abc", "") rend unité réussie
   Then AUCUN processus n'est spawner — verrou du test inline ligne 389
 
-Scenario: cosign absent parle en Stdio, cosign qui échoue en Other
+Scenario: cosign absent parle clairement, cosign qui échoue en Other
   Given une machine sans `cosign` sur le PATH
   When sign_image avec `key_path` non vide
-  Then l'échec est @variant-Error::Stdio via @crate::rhai_err — le test inline ligne 401,
-    lui, ne verrouille que `is_err` car sa variante dépend de la machine [?]
+  Then l'échec est @variant-Error::Other `cosign not found in PATH` via @crate::rhai_err,
+    verrouillé par un test hermétique qui vide le `PATH`
   Given une machine AVEC `cosign` et une clé invalide
   Then l'échec est @variant-Error::Other, texte exact :
     `cosign sign failed for r.io/repo/img:1.0.0@sha256:abc`
@@ -403,12 +397,15 @@ Scenario: push construit la couche unique et rend le sha256 tronqué
   And la sortie est la tranche `sha256:...` depuis le DERNIER porteur de `sha256:` dans la
     manifest_url
   Given un registre fictif dont la manifest_url ne contient pas `sha256:`
-  Then la sortie est l'URL entière — [?] des `Tasks`
+  Then l'échec est @variant-Error::Other `push response without a sha256 digest: <manifest_url>`
+  And une annotation composite (`#{a: #{b: 1}}`) échoue en @variant-Error::Other avant tout réseau
 
-Scenario: list_tags plafonne, valide son seul chemin, rend l'ordre du registre
-  Given un faux registre à 150 tags, runtime multi-thread
+Scenario: list_tags pagine jusqu'au bout, valide son seul chemin, rend l'ordre du registre
+  Given un faux registre à 2500 tags servis par pages de 1000, runtime multi-thread
   When @crate::oci::Registry::rhai_list_tags rend
-  Then au plus 100 tags, dans l'ordre servi, sans tri local (`Some(100)`, pagination None)
+  Then les 2500 tags, dans l'ordre servi, sans tri local
+  Given un faux registre à plus de 10 000 tags
+  Then l'échec est @variant-Error::Other `too many tags (> 10000)`
   Given un `registry` contenant une espace
   Then l'échec est @variant-Error::OCIParseError AVANT tout réseau (ligne 183-185) —
     `new_registry` + `with_tag` des autres méthodes n'auraient PAS validé la même chaîne
@@ -420,27 +417,30 @@ Scenario: get_manifest rend tout, le mock n'en rend qu'une clé
     digest d'@oci_client étant jeté
   Given @crate::oci_mock::OciRegistryMock::get_manifest sur les mêmes arguments
   Then la map ne porte QUE `annotations` = vide — un accès `manifest.layers` échoue sur le
-    mock [?] substitution
+    mock, borne assumée du double constant
 
-Scenario: hors runtime, le vrai panique, le mock jamais
+Scenario: hors runtime multi-thread, jamais de panique
   Given un test ordinaire sans runtime tokio
   When push_image/get_manifest/rhai_list_tags du vrai Registry sont appelés
-  Then @tokio::task::block_in_place/@tokio::runtime::Handle::current paniquent (borne [?]
-    partagée avec ./s3.sdd)
-  When les mêmes noms sur le mock sont appelés dans le même contexte
+  Then un runtime temporaire sert et l'appel se comporte normalement (erreur réseau vers un
+    registre injoignable, par exemple), sans panique
+  Given un `#[tokio::test(flavor = "current_thread")]`
+  Then les mêmes appels rendent @variant-Error::Other `requires a multi-thread tokio runtime`
+  When les mêmes noms sur le mock sont appelés dans n'importe quel contexte
   Then les valeurs constantes sortent sans AUCUNE panique — ./oci_mock.rs ne contient zéro @tokio
 
-Scenario: get_auth_from_file voit juste, faux, ou rien — jamais les deux
+Scenario: get_auth_from_file rend l'identifiant, l'absence, ou une erreur typée
   Given un docker-config `auths.docker.io.auth` = b64 de `user:pass`
   Then la map {user "user", pass "pass"} — test inline ligne 347
   Given la clé `ghcr.io` absente, ou `auth` vide
   Then {vide, vide} SANS erreur — tests inline lignes 358 et 378
   Given un `auth` base64 invalide, ou du décodé non-UTF-8, ou un décodé `userpass` sans
     deux-points
-  Then les deux premiers rendent {vide, vide}, le troisième {user "userpass", pass vide} —
-    AUCUNE erreur (replis `unwrap_or_default`) [?] des `Tasks`
+  Then les trois échouent en erreur typée (@variant-Error::Base64DecodeError,
+    @variant-Error::UTF8, @variant-Error::Other `docker config auth is not user:pass`),
+    aucune n'étant avalée en vide
   Given un chemin absent ou un JSON invalide
-  Then les DEUX SEULS canaux d'erreur : @variant-Error::Stdio puis @variant-Error::SerializationError
+  Then @variant-Error::Stdio puis @variant-Error::SerializationError
 
 Scenario: resolve_registry_auth sous oci+k8s — échelle anonyme et erreurs typées
   Given la crate avec `oci` ET `k8s`, @kube::Client mocké (@tower_test), client fourni en
@@ -451,16 +451,17 @@ Scenario: resolve_registry_auth sous oci+k8s — échelle anonyme et erreurs typ
   Then Anonymous — tests inline lignes 481 et 507
   Given un fetch kube qui échoue, un JSON interne invalide, un auth b64 invalide ou non-UTF-8
   Then remontent @variant-Error::KubeError, @variant-Error::SerializationError,
-    @variant-Error::Base64DecodeError, @variant-Error::UTF8 — typées, PAS avalées : le
-    contraste [?] avec get_auth_from_file
+    @variant-Error::Base64DecodeError, @variant-Error::UTF8 — typées, PAS avalées, comme
+    pour get_auth_from_file
+  And un décodé sans deux-points échoue en @variant-Error::Other `docker config auth is not user:pass`
 
 Scenario: verify_tag_in_registry ne ment sur aucun troisième cas
   Given un registre joignable (seam des `Tasks`)
   When l'image:tag existe → `true` ; un tag inconnu rendant ManifestUnknown, NotFound ou
     ServerError 404 → `false` sans erreur (lignes 279-290)
   Given un 500
-  Then @variant-Error::OCIDistrib — et l'accept `&[]` de la ligne 277 aura un comportement
-    à verrouiller dès le seam disponible [?]
+  Then @variant-Error::OCIDistrib
+  And le faux registre reçoit un en-tête `Accept` listant les quatre media types de manifest
 
 Scenario: le mock est un double constant, muet et increvable
   Given un engine via @crate::oci_mock::oci_mock_rhai_register — la signature ne prend
@@ -469,9 +470,9 @@ Scenario: le mock est un double constant, muet et increvable
   Then le tableau VIDE — aucune API de seed n'existe
   When `push_image("a", "b", "c", #{})` puis `sign_image(...)` rendent
   Then `sha256:mock-digest-for-testing` puis unité réussie sans AUCUN spawn (ligne 52)
-  When le script appelle `get_auth_from_file(...)`
-  Then fonction-inconnue : le nom manque à l'enregistrement mock — la substitution d'un
-    script qui s'en sert CASSE [?] des `Tasks`
+  When le script appelle `get_auth_from_file("chemin", "reg")`
+  Then la map `{user "", pass ""}` est rendue sans lire de fichier, la substitution d'un
+    script qui s'en sert ne casse plus
 
 Scenario: co-enregistrement des deux mondes est possible mais déconseillé
   Given un engine de test
