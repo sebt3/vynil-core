@@ -1,0 +1,110 @@
+Spec: rt
+
+Purpose:
+  Fournir aux modules réseau synchrones-côté-script (`http`, `oci`, `s3`) un unique pont
+    async → sync, `crate::rt::block_on`, qui exécute un futur depuis un appel de script Rhai
+    (synchrone) sans jamais paniquer l'hôte : sur un runtime @tokio multi-thread il bloque le
+    thread courant par @tokio::task::block_in_place, sans runtime il en crée un temporaire, et
+    sur un runtime `current_thread` — où `block_in_place` panique — il rend une erreur
+    explicite. Remplace la trentaine de couples `block_in_place` + `Handle::current` éparpillés
+    dans ./http.rs, ./oci.rs et ./s3.rs, dont la panique hors runtime multi-thread violait la
+    règle racine « un script ne peut pas paniquer l'hôte » (../vyvil-core.sdd).
+
+Owns:
+  ./rt.rs
+
+References:
+  ./lib.rs — déclare `mod rt;` PRIVÉ (aucun `pub`), sous
+    `#[cfg(any(feature = "http", feature = "oci", feature = "s3"))]` : seules ces trois
+    features activent @tokio ; le module n'existe pas sans elles et ne fait partie d'aucune API
+    publique. Variantes @Error consommées : @variant-Error::Other et @variant-Error::Stdio,
+    toutes deux non gated.
+  ./http.sdd, ./oci.sdd, ./s3.sdd — les trois appelants ; chacun y renvoie par « voir ./rt.sdd ».
+  ./k8s.sdd — non appelant : ./k8s.rs est asynchrone de bout en bout et n'a aucun pont.
+  ./Cargo.toml — @tokio optionnel `1.48`, features `macros` et `rt-multi-thread` ; les drivers
+    IO et temps requis par le runtime temporaire (`enable_all`) sont déjà tirés par @reqwest et
+    @object_store, à VÉRIFIER lors de l'implémentation (sinon ajouter `time` et `net`).
+
+Must:
+  Être `pub(crate)` seulement : la fonction `block_on` n'est jamais exportée, aucun consommateur
+    de la crate ne la voit.
+  Choisir sa stratégie dans cet ordre, par @tokio::runtime::Handle::try_current :
+    runtime courant de saveur multi-thread (@tokio::runtime::Handle::runtime_flavor) →
+    @tokio::task::block_in_place autour de @tokio::runtime::Handle::block_on ; aucun runtime →
+    runtime `current_thread` temporaire construit avec `enable_all`, le futur y est exécuté puis
+    le runtime est détruit à la sortie ; runtime `current_thread` courant → aucune exécution, une
+    erreur.
+  Rendre un @crate::Result du type de sortie du futur : la valeur du futur quand il s'exécute,
+    @variant-Error::Other `requires a multi-thread tokio runtime` sur `current_thread`,
+    @variant-Error::Stdio quand le runtime temporaire ne se construit pas (épuisement de
+    descripteurs, par exemple).
+  Ne jamais paniquer : aucun `unwrap`/`expect`, aucun appel à @tokio::runtime::Handle::current,
+    aucun `block_in_place` hors du seul bras multi-thread.
+  Ne pas exiger que le futur soit `Send` : il est exécuté sur le thread appelant.
+  Documenter que la voie « aucun runtime » est un secours (coût d'un runtime par appel) : en
+    production les scripts tournent dans le runtime du consommateur.
+
+Must not:
+  Créer un runtime global, un thread dédié, un pool ou un cache de runtime : le runtime
+    temporaire ne survit pas à l'appel.
+  Exposer une variante async ou une API à l'appelant : le module ne connaît ni @rhai ni
+    @crate::RhaiRes — les appelants convertissent l'erreur par @crate::rhai_err.
+  Retenter, temporiser ou journaliser : une erreur remonte telle quelle.
+
+Depends on:
+  tokio — @tokio::runtime::Handle (`try_current`, `runtime_flavor`, `block_on`),
+    @tokio::runtime::RuntimeFlavor, @tokio::runtime::Builder (`new_current_thread`,
+    `enable_all`, `build`), @tokio::task::block_in_place.
+  crate — @crate::Result, @crate::Error.
+
+Exposes:
+  `crate::rt::block_on` — `pub(crate) fn block_on<F: Future>(fut: F) -> @crate::Result<F::Output>`.
+
+Accepts:
+  Tout futur, `Send` ou non, à sortie quelconque ; appel depuis un thread de runtime
+    multi-thread (tâche ou @tokio::task::spawn_blocking) ou depuis un thread sans runtime.
+
+Returns:
+  `Ok(sortie du futur)` dans les deux voies qui l'exécutent.
+
+Raises:
+  @variant-Error::Other `requires a multi-thread tokio runtime` sur un runtime `current_thread`.
+  @variant-Error::Stdio si le runtime temporaire ne peut pas être construit.
+  Aucune panique dans aucun cas.
+
+Handles:
+  Appel imbriqué : un `block_on` lancé depuis le runtime temporaire d'un `block_on` extérieur
+    rencontre un runtime `current_thread` et rend l'erreur explicite plutôt que de paniquer.
+  Futur qui panique lui-même : la panique du futur traverse (c'est celle de l'appelant), le
+    module n'en ajoute aucune.
+
+Tasks:
+  [ ] Convertir les Scenario en tests passants, puis créer ./rt.rs et migrer les appels de
+    ./http.rs (28), ./oci.rs (4) et ./s3.rs (2) ; retirer `use tokio::{runtime::Handle,
+    task::block_in_place}` des trois fichiers.
+
+Scenario: multi-thread, le futur s'exécute
+  Given un `#[tokio::test(flavor = "multi_thread")]`
+  When `block_on` reçoit un futur qui rend `42`
+  Then `Ok(42)` est rendu, sans panique
+
+Scenario: sans runtime, un runtime temporaire sert
+  Given un test ordinaire (`#[test]`) hors de tout runtime tokio
+  When `block_on` reçoit un futur qui dort 10 ms puis rend `"ok"`
+  Then `Ok("ok")` est rendu, sans panique
+
+Scenario: current_thread rend une erreur explicite
+  Given un `#[tokio::test(flavor = "current_thread")]`
+  When `block_on` est appelé avec n'importe quel futur
+  Then l'@variant-Error::Other `requires a multi-thread tokio runtime` est rendu, sans panique
+  And le futur n'est pas exécuté
+
+Scenario: appel imbriqué
+  Given un futur qui appelle lui-même `block_on` depuis le runtime temporaire d'un premier appel
+  When le premier `block_on` s'exécute hors runtime
+  Then le futur extérieur reçoit l'erreur explicite du second appel, sans panique
+
+Scenario: futur non Send
+  Given un futur qui garde un `Rc` à travers un point d'attente
+  When `block_on` l'exécute sur un thread sans runtime
+  Then il compile et s'exécute, aucune borne `Send` n'étant exigée

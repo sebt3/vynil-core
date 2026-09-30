@@ -70,11 +70,11 @@ Tasks:
   [x] Spec `src/shell.sdd` produite (spec-reverse) puis revue.
   [x] Spec `src/yaml.sdd` produite (spec-reverse) puis revue.
   [x] Purger la dette harnais stricte module par module, en coordination avec `./tooling.sdd`.
-  [ ] Rédiger `src/rt.sdd` puis créer `src/rt.rs` : helper crate-privé `block_on` (runtime
-    multi-thread → `block_in_place` ; sans runtime → runtime courant temporaire ;
-    `current_thread` → `Error::Other` `requires a multi-thread tokio runtime`), utilisé par
-    `s3`, `oci` et `http` — spec à écrire avec le lot http (décision actée : plus de panique
-    tokio depuis un script).
+  [x] Spec `src/rt.sdd` rédigée : helper crate-privé `block_on` (runtime multi-thread →
+    `block_in_place` ; sans runtime → runtime courant temporaire ; `current_thread` →
+    `Error::Other` `requires a multi-thread tokio runtime`), utilisé par `s3`, `oci` et
+    `http` (décision actée : plus de panique tokio depuis un script).
+  [ ] Créer `src/rt.rs` depuis `src/rt.sdd` (tests d'abord) et migrer les trois modules.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),
