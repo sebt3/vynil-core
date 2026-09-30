@@ -1,13 +1,13 @@
 Spec: rt
 
 Purpose:
-  Fournir aux modules réseau synchrones-côté-script (`http`, `oci`, `s3`) un unique pont
+  Fournir aux modules réseau synchrones-côté-script (`http`, `oci`, `s3`, `k8s`) un unique pont
     async → sync, `crate::rt::block_on`, qui exécute un futur depuis un appel de script Rhai
     (synchrone) sans jamais paniquer l'hôte : sur un runtime @tokio multi-thread il bloque le
     thread courant par @tokio::task::block_in_place, sans runtime il en crée un temporaire, et
     sur un runtime `current_thread` — où `block_in_place` panique — il rend une erreur
-    explicite. Remplace la trentaine de couples `block_in_place` + `Handle::current` éparpillés
-    dans ./http.rs, ./oci.rs et ./s3.rs, dont la panique hors runtime multi-thread violait la
+    explicite. Remplace la soixantaine de couples `block_in_place` + `Handle::current` éparpillés
+    dans ./http.rs, ./oci.rs, ./s3.rs et ./k8s.rs, dont la panique hors runtime multi-thread violait la
     règle racine « un script ne peut pas paniquer l'hôte » (../vyvil-core.sdd).
 
 Owns:
@@ -15,12 +15,12 @@ Owns:
 
 References:
   ./lib.rs — déclare `mod rt;` PRIVÉ (aucun `pub`), sous
-    `#[cfg(any(feature = "http", feature = "oci", feature = "s3"))]` : seules ces trois
-    features activent @tokio ; le module n'existe pas sans elles et ne fait partie d'aucune API
+    `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]` : seules
+    ces quatre features activent @tokio ; le module n'existe pas sans elles et ne fait partie d'aucune API
     publique. Variantes @Error consommées : @variant-Error::Other et @variant-Error::Stdio,
     toutes deux non gated.
-  ./http.sdd, ./oci.sdd, ./s3.sdd — les trois appelants ; chacun y renvoie par « voir ./rt.sdd ».
-  ./k8s.sdd — non appelant : ./k8s.rs est asynchrone de bout en bout et n'a aucun pont.
+  ./http.sdd, ./oci.sdd, ./s3.sdd, ./k8s.sdd — les quatre appelants ; chacun y renvoie par
+    « voir ./rt.sdd ».
   ./Cargo.toml — @tokio optionnel `1.48`, features `macros` et `rt-multi-thread` ; les drivers
     IO et temps requis par le runtime temporaire (`enable_all`) sont déjà tirés par @reqwest et
     @object_store, à VÉRIFIER lors de l'implémentation (sinon ajouter `time` et `net`).
@@ -80,8 +80,10 @@ Handles:
 
 Tasks:
   [ ] Convertir les Scenario en tests passants, puis créer ./rt.rs et migrer les appels de
-    ./http.rs (28), ./oci.rs (4) et ./s3.rs (2) ; retirer `use tokio::{runtime::Handle,
-    task::block_in_place}` des trois fichiers.
+    ./http.rs (28), ./oci.rs (4), ./s3.rs (2) et ./k8s.rs (33) ; retirer `use
+    tokio::{runtime::Handle, task::block_in_place}` des quatre fichiers. Dans les `LazyLock` de
+    ./k8s.rs (`CLIENT`, `RAW_CLIENT`, `CACHE`), l'erreur de `block_on` reste un `expect`
+    (panic d'infrastructure acceptée, ./k8s.sdd).
 
 Scenario: multi-thread, le futur s'exécute
   Given un `#[tokio::test(flavor = "multi_thread")]`

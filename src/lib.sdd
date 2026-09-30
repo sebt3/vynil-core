@@ -110,7 +110,7 @@ Must:
     (`oci`) ; @crate::s3 (`s3`, seul des trois gros modules sans mock déclaré ici) ;
     @crate::k8s et @crate::k8s_mock (`k8s`) ; @crate::shell (`shell`).
   Un module PRIVÉ `rt` (pont async → sync, ./rt.sdd), sous
-    `#[cfg(any(feature = "http", feature = "oci", feature = "s3"))]`, sans `pub` : il n'entre
+    `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]`, sans `pub` : il n'entre
     pas dans le décompte des modules publics.
   Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : façade livrée volontairement aux
     tests des consommateurs (vynil s'appuie sur `oci_mock` et `k8s_mock`) — décision actée ;
