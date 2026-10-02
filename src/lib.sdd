@@ -245,6 +245,11 @@ Scenario: surface compilable sans aucune feature
     @fn-client_name_is_set, @struct-Semver et les modules chrono/client_name/hashes/
     password/semver/yaml compilent ; @struct-Script, @struct-HandleBars, @type-RhaiRes,
     @fn-rhai_err, @fn-update_cache et les 13 variantes gated n'existent pas
+  And le versant positif est verrouillé par le module de test `surface_without_features`
+    (gate `not(rhai)`), exécuté par `cargo test --no-default-features` de la batterie
+  And le versant négatif (symboles absents) n'est pas verrouillé par un test : il est tenu par
+    les clauses `#[cfg(feature = ...)]` des déclarations et vérifié à la relecture — aucun
+    dispositif de test en échec de compilation (`trybuild`) n'est voulu (décision actée)
 
 Scenario: RawHTTP et UnsupportedMethod survivent sans la feature http
   Given un build `--no-default-features` (la feature reqwest `http` éteinte)
@@ -280,3 +285,8 @@ Scenario: update_cache ne monte à la racine que sous k8s
   When une référence écrite @fn-update_cache est compilée
   Then elle échoue à la compilation ; sous `k8s` elle pointe vers @crate::k8s::update_cache,
     seul remontant k8s de toute la racine
+  And le versant positif est verrouillé par un test (gate `k8s`) comparant l'adresse de
+    @fn-update_cache racine à celle de @crate::k8s::update_cache
+  And l'échec de compilation du versant négatif n'est pas verrouillé par un test : il découle de
+    la clause `#[cfg(feature = "k8s")]` du ré-export, vérifiée à la relecture (`trybuild` non
+    voulu, décision actée)

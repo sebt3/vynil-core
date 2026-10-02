@@ -390,7 +390,7 @@ pub use k8s::update_cache;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt;
+    use std::{error::Error as _, fmt};
 
     #[derive(Debug)]
     struct Layered {
@@ -460,5 +460,561 @@ mod tests {
             source: None,
         };
         assert_eq!(error_chain(&err), "boom");
+    }
+
+    // ── Scenario « error_chain n'efface pas une cause distincte par faux positif » ──
+    #[test]
+    #[ignore = "src/lib.sdd: en attente de la tâche « Réécrire error_chain : dédup contre le niveau précédent seulement, plafond de 32 niveaux, #[must_use] »"]
+    fn error_chain_keeps_distinct_cause_lost_by_false_positive() {
+        let err = Layered {
+            msg: "request failed after timeout",
+            source: Some(Box::new(Layered {
+                msg: "connection error",
+                source: Some(Box::new(Layered {
+                    msg: "timeout",
+                    source: None,
+                })),
+            })),
+        };
+        assert_eq!(
+            error_chain(&err),
+            "request failed after timeout: connection error: timeout",
+            "« timeout » n'est contenu que dans le niveau lointain, pas dans l'ancêtre immédiat"
+        );
+    }
+
+    // ── Scenario « error_chain se termine sur une chaîne trop profonde ou cyclique » ──
+    #[derive(Debug)]
+    struct Cyclic;
+    impl fmt::Display for Cyclic {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("cyclic")
+        }
+    }
+    impl std::error::Error for Cyclic {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self)
+        }
+    }
+
+    #[test]
+    #[ignore = "src/lib.sdd: en attente de la tâche « Réécrire error_chain : dédup contre le niveau précédent seulement, plafond de 32 niveaux, #[must_use] ». Depuis le watchdog ci-dessous, le test ÉCHOUE en ~5 s (la marche ne termine pas) au lieu de geler la batterie."]
+    fn error_chain_terminates_on_cyclic_source() {
+        // Watchdog : `error_chain` n'a encore ni plafond à 32 ni visited-set (c'est la tâche 3
+        // de src/lib.sdd), donc la marche sur `Cyclic` boucle à l'infini. On l'exécute dans un
+        // thread et on n'attend que ~5 s : le test échoue vite et nomme la cause au lieu de
+        // geler. `Cyclic` est un unit type : 'static + Send.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let chain = error_chain(&Cyclic);
+            let _ = tx.send(chain);
+        });
+        let chain = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or_else(|_timeout| {
+                panic!(
+                    "la marche error_chain ne termine pas sur une source cyclique (~5 s écoulées) : \
+                 plafond de 32 niveaux et visited-set manquants, en attente de la tâche 3 de \
+                 src/lib.sdd (« Réécrire error_chain : dédup contre le niveau précédent seulement, \
+                 plafond de 32 niveaux, #[must_use] »)"
+                )
+            });
+        assert!(
+            chain.ends_with(": …"),
+            "une source cyclique doit s'arrêter au plafond de 32 sources avec le suffixe « : … », \
+             chaîne obtenue : {chain}"
+        );
+    }
+
+    #[test]
+    #[ignore = "src/lib.sdd: en attente de la tâche « Réécrire error_chain : dédup contre le niveau précédent seulement, plafond de 32 niveaux, #[must_use] »"]
+    fn error_chain_caps_walk_at_32_sources() {
+        let mut err = Layered {
+            msg: "layer-40",
+            source: None,
+        };
+        for i in (1..40).rev() {
+            let msg = Box::leak(format!("layer-{i:02}").into_boxed_str());
+            err = Layered {
+                msg,
+                source: Some(Box::new(err)),
+            };
+        }
+        let mut expected = String::from("layer-01");
+        for i in 2..=33 {
+            use std::fmt::Write as _;
+            let _ = write!(expected, ": layer-{i:02}");
+        }
+        expected.push_str(": …");
+        assert_eq!(error_chain(&err), expected);
+    }
+
+    // ── Display exacts des 15 variantes non gated (compilent sans aucune feature) ──
+    fn serde_err() -> serde_json::Error {
+        serde_json::from_str::<serde_json::Value>("{oops").unwrap_err()
+    }
+
+    #[test]
+    fn display_serialization_error() {
+        let inner = serde_err();
+        let msg = inner.to_string();
+        let err = Error::SerializationError(inner);
+        assert_eq!(err.to_string(), format!("SerializationError: {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    #[test]
+    fn display_yaml_error_has_no_source() {
+        let err = Error::YamlError("bad indent".to_string());
+        assert_eq!(err.to_string(), "YamlError: bad indent");
+        assert!(err.source().is_none(), "String posé manuellement, jamais de From");
+    }
+
+    #[test]
+    fn display_json_error_keeps_source() {
+        let inner = serde_err();
+        let msg = inner.to_string();
+        let err = Error::JsonError(inner);
+        assert_eq!(err.to_string(), format!("Json decoding error: {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    // ── Scenario « MethodFailed cache son corps de réponse mais l'expose par accesseur »
+    // (partie Display seulement) ──
+    #[test]
+    fn display_method_failed_hides_body_field() {
+        let err = Error::MethodFailed("GET".to_string(), 503, "body".to_string());
+        assert_eq!(err.to_string(), "GET query failed: 503");
+        let Error::MethodFailed(method, status, body) = &err else {
+            panic!("déstructuration attendue");
+        };
+        assert_eq!((method.as_str(), *status, body.as_str()), ("GET", 503, "body"));
+        assert!(err.source().is_none());
+    }
+
+    // La partie « And fn-Error::http_body rend Some("body"), et None pour tout autre variant »
+    // du Scenario ne compile pas avant la tâche 2 (l'accesseur n'existe pas ; #[ignore] ne
+    // suffit pas, c'est la compilation qui échoue) — test garrotté ci-dessous, à libérer
+    // (retirer le #[cfg(any())]) quand l'accesseur est implémenté.
+    #[cfg(any())] // src/lib.sdd: en attente de la tâche « Ajouter Error::http_body (décision actée) »
+    #[test]
+    fn http_body_exposes_body_field_only_for_method_failed() {
+        let e = Error::MethodFailed("GET".to_string(), 503, "body".to_string());
+        assert_eq!(e.http_body(), Some("body"));
+        assert_eq!(Error::UnsupportedMethod.http_body(), None);
+        assert_eq!(Error::Other("x".to_string()).http_body(), None);
+    }
+
+    #[test]
+    fn display_unsupported_method() {
+        assert_eq!(Error::UnsupportedMethod.to_string(), "Unsupported method");
+    }
+
+    #[test]
+    fn display_missing_script() {
+        let err = Error::MissingScript(std::path::PathBuf::from("/scripts/run.rhai"));
+        assert_eq!(err.to_string(), "Missing script /scripts/run.rhai");
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn display_utf8_error() {
+        let inner = String::from_utf8(vec![0xC3, 0x28]).unwrap_err();
+        let msg = inner.to_string();
+        let err = Error::UTF8(inner);
+        assert_eq!(err.to_string(), format!("UTF8 error {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    #[test]
+    fn display_semver_error() {
+        let inner = ::semver::Version::parse("not-a-version").unwrap_err();
+        let msg = inner.to_string();
+        let err = Error::Semver(inner);
+        assert_eq!(err.to_string(), format!("Semver error {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    #[test]
+    fn display_stdio_error() {
+        let err = Error::Stdio(std::io::Error::other("disk gone"));
+        assert_eq!(err.to_string(), "Stdio error disk gone");
+        assert_eq!(
+            err.source().map(ToString::to_string),
+            Some("disk gone".to_string())
+        );
+    }
+
+    #[test]
+    fn display_base64_decode_error() {
+        use base64::Engine as _;
+        let inner = base64::engine::general_purpose::STANDARD
+            .decode("!!")
+            .unwrap_err();
+        let msg = inner.to_string();
+        let err = Error::Base64DecodeError(inner);
+        assert_eq!(err.to_string(), format!("Base64 decode error {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    // ── Scenario « RawHTTP et UnsupportedMethod survivent sans la feature http » (partie
+    // compilée partout ; le From vient du crate `http` non optionnel, pas de la feature) ──
+    #[test]
+    fn display_raw_http_ungated_from_the_http_crate() {
+        let inner: ::http::Error = ::http::Method::from_bytes(b"bad method").unwrap_err().into();
+        let msg = inner.to_string();
+        let err = Error::RawHTTP(inner);
+        assert_eq!(err.to_string(), format!("RAW api error {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    #[test]
+    fn display_parse_int() {
+        let inner = "x".parse::<i32>().unwrap_err();
+        let msg = inner.to_string();
+        let err = Error::ParseInt(inner);
+        assert_eq!(err.to_string(), format!("ParseIntError {msg}"));
+        assert_eq!(err.source().map(ToString::to_string), Some(msg));
+    }
+
+    #[test]
+    fn display_unsupported_key_algorithm_freezes_key_algo_001() {
+        let err = Error::UnsupportedKeyAlgorithm("ed9999".to_string());
+        assert_eq!(
+            err.to_string(),
+            "KEY-ALGO-001 Unsupported key algorithm: ed9999",
+            "KEY-ALGO-001 est un identifiant stable congelé dans le Display"
+        );
+        assert!(err.source().is_none());
+    }
+
+    // ── Scenario « PasswordSpec affiche son message brut » ──
+    #[test]
+    fn display_password_spec_is_raw() {
+        let err = Error::PasswordSpec("minimum length 8".to_string());
+        assert_eq!(err.to_string(), "minimum length 8");
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn display_other() {
+        let err = Error::Other("something odd".to_string());
+        assert_eq!(err.to_string(), "Error: something odd");
+        assert!(err.source().is_none());
+    }
+
+    // ── Scenario « JsonError n'a pas de From » ──
+    #[test]
+    fn serde_json_error_always_converts_to_serialization_error() {
+        fn propagate() -> crate::Result<()> {
+            let _: serde_json::Value = serde_json::from_str("{oops")?;
+            Ok(())
+        }
+        let via_question_mark = propagate().unwrap_err();
+        assert!(
+            matches!(via_question_mark, Error::SerializationError(_)),
+            "seul le From de SerializationError existe pour serde_json::Error"
+        );
+        assert!(
+            Error::from(serde_err())
+                .to_string()
+                .starts_with("SerializationError: ")
+        );
+        assert!(
+            Error::JsonError(serde_err())
+                .to_string()
+                .starts_with("Json decoding error: ")
+        );
+    }
+
+    // ── Display exacts des 13 variantes gated, groupe par feature ──
+    #[cfg(feature = "hbs")]
+    mod display_hbs {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_hbs_template_error() {
+            // TemplateError non constructible hors du crate (non_exhaustive) : obtenu via
+            // l'enregistrement d'un template en syntaxe invalide.
+            let inner = handlebars::Handlebars::new()
+                .register_template_string("t", "{{#if}}x{{/each}}")
+                .unwrap_err();
+            let msg = inner.to_string();
+            let err = Error::HbsTemplateError(inner);
+            assert_eq!(
+                err.to_string(),
+                format!("Registering template failed with error: {msg}")
+            );
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        #[test]
+        fn display_hbs_render_error() {
+            // RenderErrorReason est non_exhaustive : RenderError obtenu via un helper de
+            // bloc inexistant (le seul chemin reproductible hors du crate — en mode strict,
+            // une variable manquante ne sort pas en erreur sur 6.4).
+            let hb = handlebars::Handlebars::new();
+            let inner = hb
+                .render_template("{{#myblock}}x{{/myblock}}", &serde_json::json!({}))
+                .unwrap_err();
+            let msg = inner.to_string();
+            assert!(!msg.is_empty(), "le motif HelperNotFound doit être non vide");
+            let err = Error::HbsRenderError(inner);
+            assert_eq!(err.to_string(), format!("Renderer error: {msg}"));
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+    }
+
+    #[cfg(feature = "rhai")]
+    mod display_rhai {
+        use super::*;
+
+        #[test]
+        fn display_rhai_error() {
+            let inner: Box<rhai::EvalAltResult> = "script exploded".into();
+            let msg = inner.to_string();
+            let err = Error::RhaiError(inner);
+            assert_eq!(err.to_string(), format!("Rhai script error: {msg}"));
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        // ── Scenario « rhai_err enrichit la chaîne visible du script » ──
+        #[test]
+        fn rhai_err_enriches_visible_chain() {
+            let root = Layered {
+                msg: "root cause",
+                source: None,
+            };
+            let transport = Layered {
+                msg: "transport failed",
+                source: Some(Box::new(root)),
+            };
+            let err = Error::Stdio(std::io::Error::other(transport));
+            let enriched = rhai_err(err).to_string();
+            let plain = rhai_err_str("transport failed".to_string()).to_string();
+            assert!(
+                enriched.contains("transport failed: root cause"),
+                "rhai_err doit porter la chaîne complète jointe par « : », obtenu : {enriched}"
+            );
+            assert_eq!(
+                enriched,
+                rhai_err_str(error_chain(&Error::Stdio(std::io::Error::other(Layered {
+                    msg: "transport failed",
+                    source: Some(Box::new(Layered {
+                        msg: "root cause",
+                        source: None
+                    })),
+                }))))
+                .to_string(),
+                "rhai_err équivaut à rhai_err_str(error_chain(..))"
+            );
+            assert!(
+                !plain.contains("root cause"),
+                "rhai_err_str rend l'entrée telle quelle, sans enrichissement : {plain}"
+            );
+        }
+    }
+
+    #[cfg(feature = "http")]
+    mod display_http {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_reqwest_error() {
+            let inner = reqwest::Client::new().post("http://:bad").build().unwrap_err();
+            let msg = inner.to_string();
+            let err = Error::ReqwestError(inner);
+            assert_eq!(err.to_string(), format!("Reqwest error: {msg}"));
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+    }
+
+    #[cfg(feature = "crypto")]
+    mod display_crypto {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_argon2hash_error() {
+            // password_hash::Error est non_exhaustive : obtenu via un sel trop court.
+            let inner = argon2::password_hash::SaltString::from_b64("ab").unwrap_err();
+            let msg = inner.to_string();
+            let err = Error::Argon2hash(inner);
+            assert_eq!(
+                err.to_string(),
+                format!("Argon2 password_hash error {msg}"),
+                "sel de 2 caractères < MIN_LENGTH (4) ⇒ SaltInvalid(TooShort)"
+            );
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        #[test]
+        fn display_bcrypt_error() {
+            let inner = bcrypt::BcryptError::CostNotAllowed(2);
+            let msg = inner.to_string();
+            let err = Error::BcryptError(inner);
+            assert_eq!(err.to_string(), format!("Bcrypt hash error {msg}"));
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        #[test]
+        fn display_openssl_freezes_key_openssl_001() {
+            let inner = openssl::bn::BigNum::from_dec_str("not a number").unwrap_err();
+            let msg = inner.to_string();
+            let err = Error::OpenSSL(inner);
+            assert!(
+                err.to_string() == format!("KEY-OPENSSL-001 OpenSSL error {msg}"),
+                "KEY-OPENSSL-001 est un identifiant stable congelé dans le Display"
+            );
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+    }
+
+    #[cfg(feature = "oci")]
+    mod display_oci {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_oci_distrib_error() {
+            let inner = oci_client::errors::OciDistributionError::AuthenticationFailure("no token".into());
+            let err = Error::OCIDistrib(inner);
+            assert_eq!(
+                err.to_string(),
+                "OCI jukebox error Authentication failure: no token"
+            );
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        #[test]
+        fn display_oci_parse_error() {
+            let inner = oci_client::ParseError::ReferenceInvalidFormat;
+            let err = Error::OCIParseError(inner);
+            assert_eq!(err.to_string(), "OCI parse error invalid reference format");
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+    }
+
+    #[cfg(feature = "k8s")]
+    mod display_k8s {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_kube_error() {
+            let http_err: ::http::Error = ::http::Method::from_bytes(b"bad method").unwrap_err().into();
+            let kube_err = kube::Error::HttpError(http_err);
+            let msg = kube_err.to_string();
+            let err = Error::KubeError(kube_err);
+            assert_eq!(err.to_string(), format!("K8s error: {msg}"));
+            assert_eq!(err.source().map(ToString::to_string), Some(msg));
+        }
+
+        #[test]
+        fn display_kube_wait_error() {
+            let http_err: ::http::Error = ::http::Method::from_bytes(b"bad method").unwrap_err().into();
+            let wait_err = kube::runtime::wait::Error::ProbeFailed(
+                kube::runtime::watcher::Error::WatchStartFailed(kube::Error::HttpError(http_err)),
+            );
+            let msg = wait_err.to_string();
+            let err = Error::KubeWaitError(wait_err);
+            assert_eq!(err.to_string(), format!("K8s wait error: {msg}"));
+            assert_eq!(err.source().map(ToString::to_string), Some(msg));
+        }
+
+        #[test]
+        fn display_elapsed_error() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let inner = rt
+                .block_on(async {
+                    // Instant::now() doit être évalué dans le runtime (reactor), d'où l'async.
+                    tokio::time::timeout_at(tokio::time::Instant::now(), std::future::pending::<()>()).await
+                })
+                .unwrap_err();
+            let err = Error::Elapsed(inner);
+            assert_eq!(err.to_string(), "Elapsed wait error: deadline has elapsed");
+            assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        #[test]
+        fn display_finalizer_error_is_recursive() {
+            // FinalizerError porte Box<finalizer::Error<Error>> : la récursion est le
+            // contrat (une erreur de reconciliation est elle-même une crate Error).
+            // finalizer::Error<Error> n'est pas Clone (Error ne l'est pas) : on reconstruit
+            // le feuillage plutôt que de le cloner.
+            let inner: Box<kube::runtime::finalizer::Error<Error>> = Box::new(
+                kube::runtime::finalizer::Error::ApplyFailed(Error::Other("reconcile failed".to_string())),
+            );
+            let msg = inner.to_string();
+            let err = Error::FinalizerError(inner);
+            assert_eq!(err.to_string(), format!("Finalizer error: {msg}"));
+            assert_eq!(err.source().map(ToString::to_string), Some(msg));
+            // second niveau : une FinalizerError dans une FinalizerError
+            let nested = Error::FinalizerError(Box::new(kube::runtime::finalizer::Error::ApplyFailed(err)));
+            assert_eq!(
+                nested.to_string(),
+                "Finalizer error: failed to apply object: Finalizer error: failed to apply object: Error: reconcile failed"
+            );
+        }
+
+        // ── Scenario « update_cache ne monte à la racine que sous k8s » (partie positive) ──
+        #[test]
+        fn update_cache_root_alias_is_the_k8s_module_fn() {
+            let root: fn() = crate::update_cache;
+            let module: fn() = crate::k8s::update_cache;
+            assert!(
+                std::ptr::fn_addr_eq(root, module),
+                "l'alias racine doit pointer vers k8s::update_cache"
+            );
+        }
+    }
+
+    // ── Seam « surface compilable sans aucune feature » + « RawHTTP et UnsupportedMethod
+    // survivent sans la feature http » : compilé et exécuté uniquement par un run
+    // `cargo test --no-default-features` (k8s/oci/s3/http impliquent rhai, donc tout build
+    // sans rhai est aussi sans http). ──
+    #[cfg(not(feature = "rhai"))]
+    mod surface_without_features {
+        #[test]
+        fn ungated_surface_compiles_without_any_feature() {
+            let r: crate::Result<()> = Ok(());
+            assert!(r.is_ok());
+            let sv: crate::Semver = crate::semver::Semver::parse("1.2.3").unwrap();
+            assert_eq!(sv.to_string(), "1.2.3");
+            let _: Option<crate::chrono::DateTimeHandler> = None;
+            let h: u32 = crate::hashes::crc32_hash("vynil".to_string());
+            assert_ne!(h, 0);
+            let j: serde_json::Value = crate::yaml::yaml_str_to_json("ok: true").unwrap();
+            assert_eq!(j["ok"], serde_json::json!(true));
+            // set_client_name/get_client_name référencés sans être appelés : la client name
+            // est un OnceLock global, l'appeler ici rendrait l'ordre des tests sensible.
+            let set_cn: fn(fn() -> String) = crate::set_client_name;
+            std::hint::black_box(set_cn);
+            std::hint::black_box(crate::get_client_name);
+            std::hint::black_box(crate::client_name_is_set);
+            std::hint::black_box(
+                crate::password::generate as fn(usize, usize, usize, usize, usize) -> crate::Result<String>,
+            );
+            assert_eq!(
+                crate::error_chain(&crate::Error::UnsupportedMethod),
+                "Unsupported method"
+            );
+        }
+
+        #[test]
+        fn raw_http_and_unsupported_method_survive_without_http_feature() {
+            let inner: ::http::Error = ::http::Method::from_bytes(b"bad method").unwrap_err().into();
+            let msg = inner.to_string();
+            assert_eq!(
+                crate::Error::RawHTTP(inner).to_string(),
+                format!("RAW api error {msg}")
+            );
+            assert_eq!(crate::Error::UnsupportedMethod.to_string(), "Unsupported method");
+        }
     }
 }
