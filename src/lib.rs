@@ -296,18 +296,40 @@ pub type RhaiRes<T> = std::result::Result<T, Box<rhai::EvalAltResult>>;
 /// (i.e. visible in `{:?}` but not `{}`). Without walking the chain, a script (and whatever surfaces
 /// its error, e.g. a `JukeBox` `Updated` condition) only ever sees an opaque
 /// "error sending request for url (...)" with no indication of *why* the request failed.
-/// A source already restating an ancestor's message verbatim (e.g. `Error::ReqwestError`'s
-/// `#[error("Reqwest error: {0}")]` Display, which embeds its wrapped `reqwest::Error`'s own
-/// Display) is skipped rather than appended again.
+///
+/// Deduplication rule: a source message is skipped only when it is contained in the message of
+/// the **immediately preceding** level (whether that level was appended or itself skipped) —
+/// never against the whole accumulated string. A short message that appears only in a distant
+/// ancestor (e.g. "timeout" inside "request failed after timeout") therefore does not erase a
+/// distinct cause two levels down. This still collapses a source restating its parent's message
+/// verbatim (e.g. `Error::ReqwestError`'s `#[error("Reqwest error: {0}")]` Display, which embeds
+/// its wrapped `reqwest::Error`'s own Display).
+///
+/// Termination guarantee: the walk is capped at 32 sources; beyond that it stops and appends
+/// the suffix `": …"`. The function always returns, even on a self-referencing (`source()`
+/// cyclic) chain, never panics and never fails.
+#[must_use]
 pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    /// Maximum number of sources walked before the chain is cut with the `": …"` suffix.
+    const MAX_SOURCES: usize = 32;
     let mut acc = err.to_string();
+    // Message of the immediately preceding level (appended or already skipped) — the only
+    // dedup reference point.
+    let mut prev = acc.clone();
     let mut source = err.source();
+    let mut walked = 0_usize;
     while let Some(e) = source {
+        if walked == MAX_SOURCES {
+            acc.push_str(": …");
+            break;
+        }
+        walked = walked.saturating_add(1);
         let msg = e.to_string();
-        if !acc.contains(&msg) {
+        if !prev.contains(&msg) {
             acc.push_str(": ");
             acc.push_str(&msg);
         }
+        prev = msg;
         source = e.source();
     }
     acc
@@ -490,7 +512,6 @@ mod tests {
 
     // ── Scenario « error_chain n'efface pas une cause distincte par faux positif » ──
     #[test]
-    #[ignore = "src/lib.sdd: en attente de la tâche « Réécrire error_chain : dédup contre le niveau précédent seulement, plafond de 32 niveaux, #[must_use] »"]
     fn error_chain_keeps_distinct_cause_lost_by_false_positive() {
         let err = Layered {
             msg: "request failed after timeout",
@@ -524,27 +545,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "src/lib.sdd: en attente de la tâche « Réécrire error_chain : dédup contre le niveau précédent seulement, plafond de 32 niveaux, #[must_use] ». Depuis le watchdog ci-dessous, le test ÉCHOUE en ~5 s (la marche ne termine pas) au lieu de geler la batterie."]
     fn error_chain_terminates_on_cyclic_source() {
-        // Watchdog : `error_chain` n'a encore ni plafond à 32 ni visited-set (c'est la tâche 3
-        // de src/lib.sdd), donc la marche sur `Cyclic` boucle à l'infini. On l'exécute dans un
-        // thread et on n'attend que ~5 s : le test échoue vite et nomme la cause au lieu de
-        // geler. `Cyclic` est un unit type : 'static + Send.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let chain = error_chain(&Cyclic);
-            let _ = tx.send(chain);
-        });
-        let chain = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap_or_else(|_timeout| {
-                panic!(
-                    "la marche error_chain ne termine pas sur une source cyclique (~5 s écoulées) : \
-                 plafond de 32 niveaux et visited-set manquants, en attente de la tâche 3 de \
-                 src/lib.sdd (« Réécrire error_chain : dédup contre le niveau précédent seulement, \
-                 plafond de 32 niveaux, #[must_use] »)"
-                )
-            });
+        // La marche est bornée à 32 sources : sur `Cyclic` (dont `source()` revient sur
+        // elle-même), elle termine d'elle-même et finit par le suffixe « : … ».
+        let chain = error_chain(&Cyclic);
         assert!(
             chain.ends_with(": …"),
             "une source cyclique doit s'arrêter au plafond de 32 sources avec le suffixe « : … », \
@@ -553,7 +557,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "src/lib.sdd: en attente de la tâche « Réécrire error_chain : dédup contre le niveau précédent seulement, plafond de 32 niveaux, #[must_use] »"]
     fn error_chain_caps_walk_at_32_sources() {
         let mut err = Layered {
             msg: "layer-40",
