@@ -59,12 +59,20 @@ cargo clippy --no-default-features --features oci --all-targets -- -D warnings
 cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
 cargo clippy --no-default-features --features k8s,oci,s3 --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
+cargo hack check --each-feature --no-dev-deps             # matrice chaque feature isolée
+cargo hack clippy --each-feature --no-dev-deps -- -D warnings
 cargo +nightly fmt -- --check                         # voir rustfmt.toml
 ```
 
 Le harnais clippy doit tourner sur **toutes** ces combinaisons : des lints `pedantic`
 (`must_use_candidate` en premier) dépendent du graphe de features et peuvent ne se déclencher
 que sur l'une d'elles (voir `tooling.sdd`).
+
+Les deux commandes `cargo hack --each-feature` sont une **règle**, non une liste : elles
+compilent et lintent chaque feature isolée (y compris `fs`, `shell`, `password`, `crypto`,
+`http`, `hbs` sans `rhai`…), là où la liste explicite ci-dessus ne couvre que `k8s`/`oci`/`s3`.
+Elles **ne remplacent pas** les combinaisons explicites qui portent un sens (`k8s,oci,s3`,
+`--all-features`), qui restent en plus (voir `tooling.sdd`).
 
 Contraintes de features à préserver (voir racine `vyvil-core.sdd`) : `k8s`/`oci`/`s3`/`http`
 impliquent `rhai` (leurs types cœur sont des API Rhai directes) ; `hbs-scripting` doit rester

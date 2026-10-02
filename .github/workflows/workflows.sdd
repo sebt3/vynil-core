@@ -25,8 +25,18 @@ Must:
   Vérifier le formatage avec rustfmt nightly (`cargo fmt -- --check`), `rustfmt.toml`
   contenant des options instables.
   Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
-  lints bloquants étant portés par la table `[lints]` de `Cargo.toml` et les warnings rustc
-  résiduels escaladés par le flag (`../../tooling.sdd`).
+    lints bloquants étant portés par la table `[lints]` de `Cargo.toml` et les warnings rustc
+    résiduels escaladés par le flag (`../../tooling.sdd`).
+  Compiler et linter chaque feature isolément par une REGLE et non une liste, dans un job dédié
+    `feature-matrix` : installer `cargo-hack` puis lancer `cargo hack check --each-feature
+    --no-dev-deps` et `cargo hack clippy --each-feature --no-dev-deps -- -D warnings`, de sorte
+    que les gates hors de la matrice explicite (`fs`, `shell`, `password`, `crypto`, `http`,
+    `hbs` sans `rhai`, `rhai` seul, `hbs-scripting`) soient compilées seules et que l'invariant
+    d'isolabilité de `hbs` soit vérifié en CI (`../../tooling.sdd`, règle actée).
+  Conserver le job `clippy` à combinaisons explicites EN PLUS de `feature-matrix` : la regle
+    `--each-feature` compile sans dépendances de développement et ne rejoue donc ni les tests
+    ni les cibles de test, et les combinaisons porteuses de sens (`k8s,oci,s3`,
+    `--all-features`) restent contractuelles.
   Refuser un tag `v*` dont la version ne correspond pas à celle de `Cargo.toml` avant toute
   publication.
   Lancer `cargo test --all-features` avant `cargo publish --all-features`.
@@ -34,14 +44,37 @@ Must:
 
 Must not:
   Publier alors que les tests `--all-features` du job de publication ont échoué.
+  Retirer le job `clippy` à combinaisons explicites au profit seul de `feature-matrix` : la
+    regle `--each-feature` ne couvre ni les dépendances de développement ni les associations de
+    features porteuses de sens.
 
 Tasks:
   [x] Remettre `-- -D warnings` sur le job clippy quand `../../tooling.sdd` l'autorise.
+  [x] Ajouter le job `feature-matrix` (`taiki-e/install-action` pour `cargo-hack`, puis
+    `cargo hack check --each-feature --no-dev-deps` et `cargo hack clippy --each-feature
+    --no-dev-deps -- -D warnings`), en gardant le job `clippy` explicite intact.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut
   When le job de tests court sur l'entrée de matrice `k8s`
   Then la combinaison k8s seule échoue et bloque le merge
+
+Scenario: feature isolée cassée hors de la matrice explicite
+  Given un changement qui ne compile que lorsque `rhai` est activé, dans du code gated `shell`
+    seul
+  When le job `feature-matrix` lance `cargo hack check --each-feature --no-dev-deps`
+  Then l'entrée `--features shell` sans `rhai` échoue et bloque le merge, alors même que la
+    matrice de tests explicite et le job `clippy` passent
+
+Scenario: isolabilité de hbs préservée
+  Given une modification de dépendance qui fait remonter `handlebars/script_helper` (donc rhai
+    et smartstring) dans le graphe de `hbs` seul
+  When le validateur lance `cargo tree -e features --no-default-features --features hbs` de sa
+    batterie
+  Then la vérification échoue et bloque la tâche : le graphe de `hbs` seul ne doit contenir ni
+    `handlebars/script_helper`, ni `rhai`, ni `smartstring` (issue #9 du dépôt)
+  And le job `feature-matrix` ne tient que la compilation de `hbs` seul, il ne tranche pas cet
+    invariant
 
 Scenario: tag désaligné
   Given un tag `v0.8.0` est poussé alors que `Cargo.toml` porte la version `0.7.7`

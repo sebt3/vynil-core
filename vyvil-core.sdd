@@ -10,9 +10,10 @@ Purpose:
 
 Owns:
   ./Cargo.toml
+  ./AGENTS.md
+  ./.opencode/agents/
 
 Can read:
-  ./AGENTS.md
   ./.specdd/bootstrap.project.md
 
 References:
@@ -37,6 +38,12 @@ Must:
   identité au démarrage — ; et les paniques d'infrastructure de ./src/k8s.sdd (contexte k8s
   non câblé, discovery initiale impossible), un API server injoignable au premier accès se
   résolvant par le redémarrage du pod. Ces exigences priment sur la règle.
+  Reconnaître ./AGENTS.md et ./.opencode/agents/ (définitions des rôles `spec-dd`,
+  `spec-reverse`, `implementer`, `validator`) comme le harnais d'orchestration de la crate :
+  leur liste de commandes de vérification, leurs permissions et leur format de synthèse sont
+    modifiables par le rôle `spec-dd` seul, sur décision de Sébastien, et jamais par un rôle
+    qui exécute une tâche de spec. Les deux fichiers et ./tooling.sdd évoluent en lockstep :
+    une commande ajoutée à la batterie l'est aux trois endroits dans le même commit.
   Exiger qu'aucune ligne de code source ne soit écrite sans spec `.sdd` cible approuvée par
   Sébastien et sans tests dérivés de ses `Scenario` écrits et exécutés d'abord (flux
   spec → test → implémentation, `.specdd/bootstrap.project.md`).

@@ -29,6 +29,10 @@ et produire une SYNTHÈSE honnête — si ce n'est pas bon, l'écart remonte, il
 
 ## 2. Batterie (tout lancer, tout citer)
 
+Prérequis outil : `cargo-hack` doit être installé (`cargo install cargo-hack --locked`) — sinon
+les deux commandes `cargo hack` de la batterie échouent en « no such command » et la synthèse
+doit le signaler comme prérequis manquant, pas comme une régression de la crate.
+
 ```bash
 cargo test
 cargo test --all-features
@@ -42,6 +46,8 @@ cargo clippy --no-default-features --features oci --all-targets -- -D warnings
 cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
 cargo clippy --no-default-features --features k8s,oci,s3 --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
+cargo hack check --each-feature --no-dev-deps
+cargo hack clippy --each-feature --no-dev-deps -- -D warnings
 cargo +nightly fmt -- --check
 ```
 
@@ -50,6 +56,10 @@ cargo +nightly fmt -- --check
   exemptés par `src/lib.rs`. Les COMBINAISONS de features comptent : des lints `pedantic`
   (`must_use_candidate` en tête) ne se déclenchent que sur un graphe de features donné, donc
   le harnais doit être lancé sur chaque entrée de la matrice, pas seulement `--all-features`.
+- La matrice `cargo hack --each-feature` est une **règle** qui couvre chaque feature isolée
+  (`fs`, `shell`, `password`, `crypto`, `http`, `hbs` sans `rhai`…), là où les combinaisons
+  explicites ne testent que `k8s`/`oci`/`s3` ; elle ne remplace pas ces combinaisons, qui
+  restent en plus (voir `tooling.sdd`).
 - Si la tâche touche `rhai`/`hbs`/`hbs-scripting`/`http`/`crypto`/`k8s`/`oci`/`s3` :
   aussi `cargo test --no-default-features --features "hbs crypto"`, et vérifier par
   `cargo tree -e features` que `hbs` seul n'introduit pas `handlebars/script_helper`

@@ -76,3 +76,32 @@ jobs:
             cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
           done
           cargo clippy --all-features --all-targets -- -D warnings
+
+  # Règle d'isolation de chaque feature (tooling.sdd) : --each-feature compile et linte
+  # chaque feature seule, y compris les gates non couvertes par les combinaisons explicites
+  # du job `clippy` (fs, shell, password, crypto, http, hbs sans rhai…) et vérifie ainsi
+  # l'invariant d'isolabilité de `hbs` (vyvil-core.sdd). Ce job complète le job `clippy` :
+  # les combinaisons explicites qui portent un sens (k8s,oci,s3 / --all-features) restent.
+  feature-matrix:
+    name: Feature matrix (cargo hack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          components: clippy
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo hack check --each-feature
+        run: cargo hack check --each-feature --no-dev-deps
+
+      - name: cargo hack clippy --each-feature
+        run: cargo hack clippy --each-feature --no-dev-deps -- -D warnings
