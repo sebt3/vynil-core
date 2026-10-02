@@ -148,9 +148,12 @@ Must not:
     n'entre par la racine (les macros `#[macro_export]` de ./k8s.sdd vivent sous leur module).
   Re-contractualiser le harnais `[lints]` ni le mécanisme d'exemption `cfg(test)` —
     ./tooling.sdd les détient.
-  Encoder un gate croisé `cfg(all(feature = ...))` dans une déclaration : la seule
-    occurrence est dans la fence du doctest Quick start ; les implications
-    `k8s`/`oci`/`s3`/`http` ⇒ `rhai` sont portées par ../Cargo.toml seul.
+  Encoder un gate croisé `cfg(all(feature = ...))` dans une déclaration de module, de
+    variante ou de fonction : les implications `k8s`/`oci`/`s3`/`http` ⇒ `rhai` sont portées par
+    ../Cargo.toml seul. Le doctest « Quick start » de la doc de crate est la seule occurrence
+    admise d'un gate croisé `all(...)` porté par la racine elle-même, et il doit l'exprimer par un
+    attribut de codeblock que rustdoc accepte : `cfg(...)` dans la liste d'attributs d'une fence
+    n'en est pas un, d'où le warning `invalid_codeblock_attributes` (décision actée).
   Aucun `unwrap`/`expect`/`panic!`/`todo!`/`println!` de production dans ./lib.rs (les
     lints deny le garantissent, aucun `#[allow]` de la famille n'y figure hors de
     l'exemption test).
@@ -218,6 +221,17 @@ Tasks:
     sources (l'extérieur exclu), `#[must_use]` ; corriger sa rustdoc (« contenu dans l'ancêtre
     immédiat »), test d'abord depuis les deux Scenario ajoutés (décisions actées).
   [x] Noter dans la rustdoc de @crate::glob que son gate est `rhai` par intention.
+  [ ] Verrouiller par un test le Scenario « error_chain compare au niveau précédent, pas à
+    l'accumulé » (quatre niveaux, sous-chaîne à cheval sur le séparateur) : c'est le seul test qui
+    distingue la clause « immédiatement précédent (ajouté ou lui-même déjà effacé) » d'une dérive
+    comparant la source à tout l'accumulé (décision du développeur principal après la synthèse du
+    validateur).
+  [ ] Corriger la fence du doctest « Quick start » de la doc de crate : sa liste d'attributs
+    `rust,no_run,cfg(all(feature = "rhai", feature = "hbs"))` est un attribut de codeblock
+    invalide, d'où un warning `rustdoc::invalid_codeblock_attributes` à chaque run de doctests. Le
+    gate doit rester effectif (doctest exécuté seulement sous `rhai`+`hbs`, conforme au `Must`) et
+    le warning disparaître. Amendment du `Must not` qui nommait cette fence comme seule occurrence
+    de `cfg(all(feature = ...))` (décision du développeur principal).
   Décisions figées sans changement de code : mocks publics, module `password` ungated,
     gate `rhai` de `glob`, `error_chain` sans gate.
 
@@ -239,6 +253,17 @@ Scenario: error_chain n'efface pas une cause distincte par faux positif
   When @fn-error_chain les rend
   Then les trois messages sont présents, « timeout » n'étant contenu que dans le niveau
     lointain et non dans son ancêtre immédiat « connection error »
+
+Scenario: error_chain compare au niveau précédent, pas à l'accumulé
+  Given quatre niveaux : extérieur « foo », puis « foo » (doublon du précédent), « bar », puis
+    « foo: bar » — une sous-chaîne qui chevauche la frontière du séparateur et n'appartient donc
+    à aucun niveau pris seul
+  When @fn-error_chain la rend
+  Then le doublon « foo » est effacé et « foo: bar » est CONSERVÉ : la chaîne rendue est
+    exactement `foo: bar: foo: bar`
+  And ce Then est le verrou de la clause « immédiatement précédent (ajouté ou lui-même déjà
+    effacé) » : une dérive qui comparerait la source à tout l'accumulé effacerait le dernier
+    niveau et passerait tous les autres Scenario
 
 Scenario: error_chain se termine sur une chaîne trop profonde ou cyclique
   Given une erreur dont @core::error::Error::source revient sur elle-même
