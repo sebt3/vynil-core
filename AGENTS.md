@@ -49,6 +49,8 @@ Avant toute `Tasks` `[x]`, la batterie complète (définie par `validator`, repr
 ```bash
 cargo test                                            # default
 cargo test --all-features
+cargo test --no-default-features                      # seam racine : seule porte sans `rhai`
+cargo test --no-default-features --features hbs       # graphe `hbs` seul (isolabilité #9)
 cargo test --no-default-features --features k8s       # matrice de features
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3

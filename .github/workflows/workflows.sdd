@@ -19,8 +19,16 @@ References:
   ../../tooling.sdd: état du harnais et calendrier du retour à `-D warnings`
 
 Must:
-  Tester la matrice de features `default`, `k8s`, `oci`, `s3`, `k8s,oci,s3` — chaque entrée
-  non vide avec `--no-default-features --features X`, l'entrée vide avec les défauts.
+  Tester la matrice de features `default`, `no-default`, `hbs`, `k8s`, `oci`, `s3`,
+    `k8s,oci,s3` — chaque entrée non vide avec `--no-default-features --features X`, l'entrée
+    `default` avec les défauts, l'entrée `no-default` avec `--no-default-features` seul. Les
+    deux portes sans `rhai` (`no-default`, `hbs` seul) sont contractuelles : ce sont les seules
+    où le seam de la racine (`src/lib.sdd`) et le graphe `hbs` isolé sont joués en exécution
+    (`../../tooling.sdd`).
+  Porter le matrix par une liste d'objets `{ name, args }` où `args` est la ligne de flags
+    complète, l'intitulé du job étant `Tests (<name>)` : la forme « liste de chaînes de
+    features » ne peut pas exprimer `--no-default-features` sans feature sans le confondre avec
+    l'entrée « défauts ».
   Utiliser `fail-fast: false` pour que chaque entrée de matrice remonte indépendamment.
   Vérifier le formatage avec rustfmt nightly (`cargo fmt -- --check`), `rustfmt.toml`
   contenant des options instables.
@@ -53,6 +61,9 @@ Tasks:
   [x] Ajouter le job `feature-matrix` (`taiki-e/install-action` pour `cargo-hack`, puis
     `cargo hack check --each-feature --no-dev-deps` et `cargo hack clippy --each-feature
     --no-dev-deps -- -D warnings`), en gardant le job `clippy` explicite intact.
+  [x] Restructurer le matrix du job `test` en objets `{ name, args }` et y ajouter les deux
+    portes sans `rhai` (`no-default`, `hbs` seul), sans toucher aux jobs `fmt`, `clippy` et
+    `feature-matrix`.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut

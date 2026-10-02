@@ -11,12 +11,30 @@ on:
 
 jobs:
   test:
-    name: Tests (${{ matrix.features == '' && 'default' || matrix.features }})
+    name: Tests (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Liste d'objets { name, args } : `args` porte la ligne de flags complète, ce que la
+      # forme « features: [...] » ne pouvait pas exprimer pour `--no-default-features` seul
+      # (confondu avec l'entrée vide). Les deux portes sans `rhai` (no-default, hbs) sont
+      # contractualisées par tooling.sdd et workflows.sdd.
       matrix:
-        features: ["", "k8s", "oci", "s3", "k8s,oci,s3"]
+        include:
+          - name: default
+            args: ""
+          - name: no-default
+            args: "--no-default-features"
+          - name: hbs
+            args: "--no-default-features --features hbs"
+          - name: k8s
+            args: "--no-default-features --features k8s"
+          - name: oci
+            args: "--no-default-features --features oci"
+          - name: s3
+            args: "--no-default-features --features s3"
+          - name: k8s,oci,s3
+            args: "--no-default-features --features k8s,oci,s3"
     steps:
       - uses: actions/checkout@v7
 
@@ -29,7 +47,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: cargo test
-        run: cargo test ${{ matrix.features != '' && format('--no-default-features --features {0}', matrix.features) || '' }}
+        run: cargo test ${{ matrix.args }}
 
   fmt:
     name: Format

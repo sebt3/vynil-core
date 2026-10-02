@@ -30,6 +30,14 @@ Must:
   isolée, `k8s,oci,s3`, `--all-features`) : les analyses `pedantic` dépendent du graphe de
   features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
   uniquement en `--all-features` laisse passer des avertissements.
+  Compter dans les combinaisons testées les deux runs de tests que la matrice explicite ne
+  couvre pas : `--no-default-features` seul (seule porte où `rhai` est éteinte, donc où le seam
+  de la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
+    réellement exécutés) et `--no-default-features --features hbs` seul (seule porte qui joue
+    le graphe `hbs` sans `rhai` et tient donc l'invariant d'isolabilité de l'issue #9 en
+    exécution, pas seulement en compilation). Ces deux runs figurent dans la batterie de
+    l'agent `validator`, dans la liste de commandes de ./AGENTS.md et dans la matrice de jobs de
+    ./.github/workflows/test.yml, en lockstep (./vyvil-core.sdd).
   Compiler et linter chaque feature isolément par une règle, non par une liste manuelle :
   `cargo hack check --each-feature --no-dev-deps` puis le harnais clippy de même (décision
   actée), de sorte que chaque module gated (`fs`, `shell`, `password`, `crypto`, `http`, `hbs`

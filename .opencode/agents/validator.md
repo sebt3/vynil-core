@@ -36,6 +36,8 @@ doit le signaler comme prérequis manquant, pas comme une régression de la crat
 ```bash
 cargo test
 cargo test --all-features
+cargo test --no-default-features
+cargo test --no-default-features --features hbs
 cargo test --no-default-features --features k8s
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
@@ -60,6 +62,13 @@ cargo +nightly fmt -- --check
   (`fs`, `shell`, `password`, `crypto`, `http`, `hbs` sans `rhai`…), là où les combinaisons
   explicites ne testent que `k8s`/`oci`/`s3` ; elle ne remplace pas ces combinaisons, qui
   restent en plus (voir `tooling.sdd`).
+- Les deux runs sans `rhai` (`--no-default-features` seul et `--features hbs` seul) ne sont pas
+  redondants avec la matrice : `k8s`/`oci`/`s3`/`http` impliquent `rhai`, donc ce sont les
+  seules portes où le seam de la racine et le graphe `hbs` isolé s'exécutent (voir `tooling.sdd`).
+- Ne lance JAMAIS `cargo test --ignored` sans filtre : les tests `#[ignore]` du dépôt décrivent
+  des comportements pas encore implémentés et l'un d'eux (`error_chain` sur source cyclique,
+  `src/lib.sdd`) est un échec volontaire. Un test ignoré qui te semble suspect se lance filtré
+  (`-- --ignored <nom-du-test>`).
 - Si la tâche touche `rhai`/`hbs`/`hbs-scripting`/`http`/`crypto`/`k8s`/`oci`/`s3` :
   aussi `cargo test --no-default-features --features "hbs crypto"`, et vérifier par
   `cargo tree -e features` que `hbs` seul n'introduit pas `handlebars/script_helper`
