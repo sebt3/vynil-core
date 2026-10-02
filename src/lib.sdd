@@ -200,7 +200,7 @@ Tasks:
     (assertions de texte par feature), la surface compilable à `--no-default-features`,
     le 3ᵉ champ caché de @variant-Error::MethodFailed, l'enrichissement de chaîne par
     @fn-rhai_err, la visibilité de @fn-update_cache sous `k8s` seul.
-  [ ] Ajouter @fn-Error::http_body (décision actée) ; documenter dans la rustdoc de
+  [x] Ajouter @fn-Error::http_body (décision actée) ; documenter dans la rustdoc de
     @variant-Error que le corps de `MethodFailed` est hors Display par choix, et que
     `KEY-ALGO-001` / `KEY-OPENSSL-001` sont des identifiants stables.
   [ ] Réécrire @fn-error_chain : dédup contre le niveau précédent seulement, plafond de 32

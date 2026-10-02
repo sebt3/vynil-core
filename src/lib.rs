@@ -112,6 +112,15 @@ use thiserror::Error;
 /// Errors returned by `vynil-core` operations.
 ///
 /// Variants behind feature gates are only available when that feature is enabled.
+///
+/// The third field of [`Error::MethodFailed`] (the HTTP response body) is deliberately
+/// kept out of its [`std::fmt::Display`] — bodies can carry tokens or personal data that
+/// must not leak into logs — and is reachable only through [`Error::http_body`].
+///
+/// Two Display texts embed a raw searchable code, frozen in the format string and exposed
+/// with no constant (settled decision): `KEY-ALGO-001` ([`Error::UnsupportedKeyAlgorithm`],
+/// ungated) and `KEY-OPENSSL-001` ([`Error::OpenSSL`], feature `crypto`). They are stable
+/// identifiers meant to be searched for by consumers — part of the API contract.
 #[derive(Error, Debug)]
 pub enum Error {
     /// JSON serialization / deserialization failure.
@@ -251,6 +260,23 @@ pub enum Error {
     #[cfg_attr(docsrs, doc(cfg(feature = "k8s")))]
     #[error("Finalizer error: {0}")]
     FinalizerError(#[from] Box<kube::runtime::finalizer::Error<Error>>),
+}
+
+impl Error {
+    /// HTTP response body carried by this error, if any.
+    ///
+    /// Returns [`Some`] the third field of [`Error::MethodFailed`] — the response body of
+    /// the failed query — and [`None`] for every other variant. The body is deliberately
+    /// absent from the [`std::fmt::Display`] of `MethodFailed` (it can carry tokens or
+    /// personal data that must not leak into logs); this accessor is the documented way to
+    /// reach it.
+    #[must_use]
+    pub fn http_body(&self) -> Option<&str> {
+        match self {
+            Self::MethodFailed(_, _, body) => Some(body),
+            _ => None,
+        }
+    }
 }
 
 /// Crate result type. `E` defaults to [`enum@Error`].
@@ -580,7 +606,7 @@ mod tests {
     }
 
     // ── Scenario « MethodFailed cache son corps de réponse mais l'expose par accesseur »
-    // (partie Display seulement) ──
+    // (partie Display ; l'accesseur est verrouillé par le test nommé ci-dessous) ──
     #[test]
     fn display_method_failed_hides_body_field() {
         let err = Error::MethodFailed("GET".to_string(), 503, "body".to_string());
@@ -592,17 +618,43 @@ mod tests {
         assert!(err.source().is_none());
     }
 
-    // La partie « And fn-Error::http_body rend Some("body"), et None pour tout autre variant »
-    // du Scenario ne compile pas avant la tâche 2 (l'accesseur n'existe pas ; #[ignore] ne
-    // suffit pas, c'est la compilation qui échoue) — test garrotté ci-dessous, à libérer
-    // (retirer le #[cfg(any())]) quand l'accesseur est implémenté.
-    #[cfg(any())] // src/lib.sdd: en attente de la tâche « Ajouter Error::http_body (décision actée) »
+    // ── Scenario « MethodFailed cache son corps de réponse mais l'expose par accesseur »
+    // (partie accesseur : Some pour MethodFailed, None pour tout autre variant) ──
     #[test]
     fn http_body_exposes_body_field_only_for_method_failed() {
+        use base64::Engine as _;
         let e = Error::MethodFailed("GET".to_string(), 503, "body".to_string());
         assert_eq!(e.http_body(), Some("body"));
-        assert_eq!(Error::UnsupportedMethod.http_body(), None);
-        assert_eq!(Error::Other("x".to_string()).http_body(), None);
+        // Les 14 autres variantes non gated (les 13 gated sont couvertes dans leurs modules
+        // `#[cfg(feature = ...)]`).
+        let cases: Vec<Error> = vec![
+            Error::SerializationError(serde_err()),
+            Error::YamlError("bad indent".to_string()),
+            Error::JsonError(serde_err()),
+            Error::UnsupportedMethod,
+            Error::MissingScript(std::path::PathBuf::from("/scripts/run.rhai")),
+            Error::UTF8(String::from_utf8(vec![0xC3, 0x28]).unwrap_err()),
+            Error::Semver(::semver::Version::parse("not-a-version").unwrap_err()),
+            Error::Stdio(std::io::Error::other("disk gone")),
+            Error::Base64DecodeError(
+                base64::engine::general_purpose::STANDARD
+                    .decode("!!")
+                    .unwrap_err(),
+            ),
+            Error::RawHTTP(::http::Method::from_bytes(b"bad method").unwrap_err().into()),
+            Error::ParseInt("x".parse::<i32>().unwrap_err()),
+            Error::UnsupportedKeyAlgorithm("ed9999".to_string()),
+            Error::PasswordSpec("minimum length 8".to_string()),
+            Error::Other("x".to_string()),
+        ];
+        assert_eq!(cases.len(), 14);
+        for case in &cases {
+            assert_eq!(
+                case.http_body(),
+                None,
+                "http_body doit être None hors MethodFailed : {case:?}"
+            );
+        }
     }
 
     #[test]
@@ -764,6 +816,19 @@ mod tests {
             assert_eq!(err.to_string(), format!("Renderer error: {msg}"));
             assert!(err.source().is_some(), "From alimente source()");
         }
+
+        // http_body = None sur les 2 variantes gated `hbs`.
+        #[test]
+        fn http_body_is_none_for_hbs_variants() {
+            let inner = handlebars::Handlebars::new()
+                .register_template_string("t", "{{#if}}x{{/each}}")
+                .unwrap_err();
+            assert_eq!(Error::HbsTemplateError(inner).http_body(), None);
+            let inner = handlebars::Handlebars::new()
+                .render_template("{{#myblock}}x{{/myblock}}", &serde_json::json!({}))
+                .unwrap_err();
+            assert_eq!(Error::HbsRenderError(inner).http_body(), None);
+        }
     }
 
     #[cfg(feature = "rhai")]
@@ -777,6 +842,13 @@ mod tests {
             let err = Error::RhaiError(inner);
             assert_eq!(err.to_string(), format!("Rhai script error: {msg}"));
             assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        // http_body = None sur la variante gated `rhai`.
+        #[test]
+        fn http_body_is_none_for_rhai_error() {
+            let inner: Box<rhai::EvalAltResult> = "script exploded".into();
+            assert_eq!(Error::RhaiError(inner).http_body(), None);
         }
 
         // ── Scenario « rhai_err enrichit la chaîne visible du script » ──
@@ -829,6 +901,13 @@ mod tests {
             assert_eq!(err.to_string(), format!("Reqwest error: {msg}"));
             assert!(err.source().is_some(), "From alimente source()");
         }
+
+        // http_body = None sur la variante gated `http` (ReqwestError ne porte aucun corps).
+        #[test]
+        fn http_body_is_none_for_reqwest_error() {
+            let inner = reqwest::Client::new().post("http://:bad").build().unwrap_err();
+            assert_eq!(Error::ReqwestError(inner).http_body(), None);
+        }
     }
 
     #[cfg(feature = "crypto")]
@@ -870,6 +949,19 @@ mod tests {
             );
             assert!(err.source().is_some(), "From alimente source()");
         }
+
+        // http_body = None sur les 3 variantes gated `crypto`.
+        #[test]
+        fn http_body_is_none_for_crypto_variants() {
+            let inner = argon2::password_hash::SaltString::from_b64("ab").unwrap_err();
+            assert_eq!(Error::Argon2hash(inner).http_body(), None);
+            assert_eq!(
+                Error::BcryptError(bcrypt::BcryptError::CostNotAllowed(2)).http_body(),
+                None
+            );
+            let inner = openssl::bn::BigNum::from_dec_str("not a number").unwrap_err();
+            assert_eq!(Error::OpenSSL(inner).http_body(), None);
+        }
     }
 
     #[cfg(feature = "oci")]
@@ -894,6 +986,17 @@ mod tests {
             let err = Error::OCIParseError(inner);
             assert_eq!(err.to_string(), "OCI parse error invalid reference format");
             assert!(err.source().is_some(), "From alimente source()");
+        }
+
+        // http_body = None sur les 2 variantes gated `oci`.
+        #[test]
+        fn http_body_is_none_for_oci_variants() {
+            let inner = oci_client::errors::OciDistributionError::AuthenticationFailure("no token".into());
+            assert_eq!(Error::OCIDistrib(inner).http_body(), None);
+            assert_eq!(
+                Error::OCIParseError(oci_client::ParseError::ReferenceInvalidFormat).http_body(),
+                None
+            );
         }
     }
 
@@ -971,6 +1074,36 @@ mod tests {
                 std::ptr::fn_addr_eq(root, module),
                 "l'alias racine doit pointer vers k8s::update_cache"
             );
+        }
+
+        // http_body = None sur les 4 variantes gated `k8s`.
+        #[test]
+        fn http_body_is_none_for_k8s_variants() {
+            let http_err: ::http::Error = ::http::Method::from_bytes(b"bad method").unwrap_err().into();
+            assert_eq!(
+                Error::KubeError(kube::Error::HttpError(http_err)).http_body(),
+                None
+            );
+            let wait_err =
+                kube::runtime::wait::Error::ProbeFailed(kube::runtime::watcher::Error::WatchStartFailed(
+                    kube::Error::HttpError(::http::Method::from_bytes(b"bad method").unwrap_err().into()),
+                ));
+            assert_eq!(Error::KubeWaitError(wait_err).http_body(), None);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let elapsed = rt
+                .block_on(async {
+                    // Instant::now() doit être évalué dans le runtime (reactor), d'où l'async.
+                    tokio::time::timeout_at(tokio::time::Instant::now(), std::future::pending::<()>()).await
+                })
+                .unwrap_err();
+            assert_eq!(Error::Elapsed(elapsed).http_body(), None);
+            let finalizer: Box<kube::runtime::finalizer::Error<Error>> = Box::new(
+                kube::runtime::finalizer::Error::ApplyFailed(Error::Other("reconcile failed".to_string())),
+            );
+            assert_eq!(Error::FinalizerError(finalizer).http_body(), None);
         }
     }
 
