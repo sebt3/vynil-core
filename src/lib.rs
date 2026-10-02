@@ -376,6 +376,10 @@ pub mod engine;
 #[cfg(feature = "rhai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
 /// Glob matching (`glob` Rhai helper).
+///
+/// Gated by `rhai`, not `fs`, on purpose: this module never touches the disk. It only
+/// hands the `glob` matching pattern to Rhai scripts; actual filesystem access is the
+/// `fs` feature's domain, registered through [`engine`](crate::engine).
 pub mod glob;
 
 #[cfg(feature = "hbs")]

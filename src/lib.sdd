@@ -26,8 +26,8 @@ References:
     (avec son mock ./http_mock.sdd via ./http.sdd), ./oci.sdd, ./s3.sdd, ./shell.sdd — tous
     déclarés ici ;
   ../Cargo.toml — l.50 `default` = http/crypto/rhai/hbs/hbs-scripting ; 11 features au
-    total, la table de doc des features (l.14-26) les énumère toutes avec le même statut
-    default que le manifest.
+    total, la table de doc des features de ./lib.rs (l.14-26) les énumère toutes avec le même
+    statut default que le manifest.
 
 Must:
   Dériver @variant-Error de @thiserror (import @use l.110) et de @core::fmt::Debug
@@ -111,14 +111,17 @@ Must:
     @crate::k8s et @crate::k8s_mock (`k8s`) ; @crate::shell (`shell`).
   Un module PRIVÉ `rt` (pont async → sync, ./rt.sdd), sous
     `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]`, sans `pub` : il n'entre
-    pas dans le décompte des modules publics.
+    pas dans le décompte des modules publics ni des ré-exports. Ce paragraphe décrit l'état visé
+    par ./rt.sdd : la déclaration n'existe pas encore dans ./lib.rs et naîtra avec la tâche de
+    ./rt.sdd qui crée ./rt.rs (tant qu'elle n'est pas faite, la clause est à lire comme une
+    contrainte sur cette tâche, non comme un fait vérifiable dans ./lib.rs).
   Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : façade livrée volontairement aux
     tests des consommateurs (vynil s'appuie sur `oci_mock` et `k8s_mock`) — décision actée ;
     les isoler derrière une feature serait un autre contrat.
   Le module @crate::password est compilé SANS la feature `password` : la feature n'opte que
     les enregistrements Rhai/Handlebars (./engine.sdd et ./hbs.sdd) ; ce module ungated est figé
     (décision actée).
-  Ré-exports racine : 9 symboles en 5 énoncés — @fn-client_name_is_set, @fn-get_client_name,
+  Ré-exports racine : 7 symboles en 5 énoncés — @fn-client_name_is_set, @fn-get_client_name,
     @fn-set_client_name et @struct-Semver sans gate ; @struct-Script gate `rhai` ;
     @struct-HandleBars gate `hbs` ; @fn-update_cache gate `k8s` — SEUL symbole k8s qui monte
     à la racine, tout le reste reste sous @crate::k8s::.
@@ -214,7 +217,7 @@ Tasks:
   [x] Réécrire @fn-error_chain : dédup contre le niveau précédent seulement, plafond de 32
     sources (l'extérieur exclu), `#[must_use]` ; corriger sa rustdoc (« contenu dans l'ancêtre
     immédiat »), test d'abord depuis les deux Scenario ajoutés (décisions actées).
-  [ ] Noter dans la rustdoc de @crate::glob que son gate est `rhai` par intention.
+  [x] Noter dans la rustdoc de @crate::glob que son gate est `rhai` par intention.
   Décisions figées sans changement de code : mocks publics, module `password` ungated,
     gate `rhai` de `glob`, `error_chain` sans gate.
 
