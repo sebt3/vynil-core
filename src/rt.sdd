@@ -21,9 +21,11 @@ References:
     toutes deux non gated.
   ./http.sdd, ./oci.sdd, ./s3.sdd, ./k8s.sdd — les quatre appelants ; chacun y renvoie par
     « voir ./rt.sdd ».
-  ./Cargo.toml — @tokio optionnel `1.48`, features `macros` et `rt-multi-thread` ; les drivers
-    IO et temps requis par le runtime temporaire (`enable_all`) sont déjà tirés par @reqwest et
-    @object_store, à VÉRIFIER lors de l'implémentation (sinon ajouter `time` et `net`).
+  ./Cargo.toml — @tokio optionnel `1.48`, features `macros`, `rt-multi-thread`, `net` et `time` :
+    les deux dernières sont verrouillées au manifest (décision du développeur principal) parce que
+    @tokio::runtime::Builder::enable_all en a besoin pour le runtime temporaire de `block_on`, et
+    que sous la porte `oci` seule elles ne seraient sinon tirées que par la chaîne amont
+    (@oci-client → @reqwest) — une chaîne qui peut changer sans que notre contrat change.
 
 Must:
   Être `pub(crate)` seulement : la fonction `block_on` n'est jamais exportée, aucun consommateur

@@ -1,6 +1,6 @@
 Spec: vyvil-core
 
-Platform: Rust edition 2024, toolchain stable 1.92.0, rustfmt nightly
+Platform: Rust edition 2024, toolchain stable 1.97, rustfmt nightly
 
 Purpose:
   Boîte à outils Rust générique combinant un moteur de scripts Rhai et un moteur de templates
@@ -83,6 +83,12 @@ Tasks:
     `block_in_place` ; sans runtime → runtime courant temporaire ; `current_thread` →
     `Error::Other` `requires a multi-thread tokio runtime`), utilisé par `s3`, `oci` et
     `http` (décision actée : plus de panique tokio depuis un script).
+  [x] Déclarer `net` et `time` dans les features @tokio de ./Cargo.toml (`macros`,
+    `rt-multi-thread`, `net`, `time`) : @tokio::runtime::Builder::enable_all, appelé par le secours
+    « aucun runtime » de ./src/rt.rs, en a besoin ; aujourd'hui ces deux drivers ne sont effectifs
+    sous la porte `oci` seule que parce que @oci-client tire @reqwest, ce qui n'est pas notre
+    contrat (décision du développeur principal, vérification des deux portes par l'agent
+    `validator`).
   [ ] Créer `src/rt.rs` depuis `src/rt.sdd` (tests d'abord) et migrer les quatre modules
     (`http`, `oci`, `s3`, `k8s`).
 
