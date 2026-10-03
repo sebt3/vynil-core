@@ -134,9 +134,12 @@ Must:
   La doc de crate est la carte du crate : statut API instable avant 1.0, table des 11
     features miroir exact du manifest, doctest « Client identity » en fence `rust` NON gate
     (compile sans aucune feature) qui exige les ré-exports @fn-set_client_name et
-    @fn-client_name_is_set racine, et doctest « Quick start » exécuté seulement sous
-    `rhai`+`hbs`, qui dépend de l'export racine @variant-Error pour son
-    doctest terminal `Ok::<(), vynil_core::Error>`.
+    @fn-client_name_is_set racine, et doctest « Quick start » gate a la source par
+    `#![cfg_attr(all(feature = "rhai", feature = "hbs"), doc = ...)]` : son TITRE et son bloc sont
+    collectés ensemble — il n'y a jamais de titre orphelin dans la doc rendue — et le doctest
+    n'existe (doc, TOC et compteurs) que sous `rhai`+`hbs`, en fence `rust,no_run` : il COMPILE
+    sous ces deux features sans s'exécuter, et disparaît entièrement ailleurs. Il depend de
+    l'export racine @variant-Error pour son doctest terminal `Ok::<(), vynil_core::Error>`.
 
 Must not:
   Définir ici @fn-set_client_name, @struct-Script, @struct-HandleBars, @struct-Semver ou
@@ -151,9 +154,12 @@ Must not:
   Encoder un gate croisé `cfg(all(feature = ...))` dans une déclaration de module, de
     variante ou de fonction : les implications `k8s`/`oci`/`s3`/`http` ⇒ `rhai` sont portées par
     ../Cargo.toml seul. Le doctest « Quick start » de la doc de crate est la seule occurrence
-    admise d'un gate croisé `all(...)` porté par la racine elle-même, et il doit l'exprimer par un
-    attribut de codeblock que rustdoc accepte : `cfg(...)` dans la liste d'attributs d'une fence
-    n'en est pas un, d'où le warning `invalid_codeblock_attributes` (décision actée).
+    admise d'un gate croisé `all(...)` porté par la racine elle-même. Ce gate s'exprime par un
+    `#![cfg_attr(all(feature = "rhai", feature = "hbs"), doc = ...)]` à la racine — aucun attribut
+    de codeblock n'est capable de porter un `cfg`, et `cfg(...)` dans la liste d'attributs d'une
+    fence n'est pas un attribut reconnu : rustdoc jette alors le doctest dans TOUTES les
+    configurations, ce qui était le cas avant correction (warning `invalid_codeblock_attributes` +
+    doctest jamais joué ni compilé nulle part).
   Aucun `unwrap`/`expect`/`panic!`/`todo!`/`println!` de production dans ./lib.rs (les
     lints deny le garantissent, aucun `#[allow]` de la famille n'y figure hors de
     l'exemption test).
@@ -221,17 +227,21 @@ Tasks:
     sources (l'extérieur exclu), `#[must_use]` ; corriger sa rustdoc (« contenu dans l'ancêtre
     immédiat »), test d'abord depuis les deux Scenario ajoutés (décisions actées).
   [x] Noter dans la rustdoc de @crate::glob que son gate est `rhai` par intention.
-  [ ] Verrouiller par un test le Scenario « error_chain compare au niveau précédent, pas à
+  [x] Verrouiller par un test le Scenario « error_chain compare au niveau précédent, pas à
     l'accumulé » (quatre niveaux, sous-chaîne à cheval sur le séparateur) : c'est le seul test qui
     distingue la clause « immédiatement précédent (ajouté ou lui-même déjà effacé) » d'une dérive
     comparant la source à tout l'accumulé (décision du développeur principal après la synthèse du
     validateur).
-  [ ] Corriger la fence du doctest « Quick start » de la doc de crate : sa liste d'attributs
-    `rust,no_run,cfg(all(feature = "rhai", feature = "hbs"))` est un attribut de codeblock
-    invalide, d'où un warning `rustdoc::invalid_codeblock_attributes` à chaque run de doctests. Le
-    gate doit rester effectif (doctest exécuté seulement sous `rhai`+`hbs`, conforme au `Must`) et
-    le warning disparaître. Amendment du `Must not` qui nommait cette fence comme seule occurrence
-    de `cfg(all(feature = ...))` (décision du développeur principal).
+  [x] Corriger le gate du doctest « Quick start » de la doc de crate : sa fence portait une liste
+    d'attributs `rust,no_run,cfg(all(feature = "rhai", feature = "hbs"))`, et `cfg(...)` n'est pas
+    un attribut de codeblock reconnu — rustdoc jetait le doctest dans TOUTES les configurations
+    (jamais compilé, jamais joué, même sous `rhai`+`hbs`) en plus du warning
+    `rustdoc::invalid_codeblock_attributes`. Le gate doit se faire à la source par
+    `#![cfg_attr(all(feature = "rhai", feature = "hbs"), doc = ...)]`, TITRE inclus, de sorte que
+    le doctest soit collecté et compilé (fence `rust,no_run`) seulement sous ces deux features et
+    que ni le titre ni le bloc n'apparaissent sous les autres portes. Amendment du `Must not` qui
+    nommait cette fence comme seule occurrence de `cfg(all(feature = ...))` (décision du
+    développeur principal).
   Décisions figées sans changement de code : mocks publics, module `password` ungated,
     gate `rhai` de `glob`, `error_chain` sans gate.
 
@@ -261,9 +271,12 @@ Scenario: error_chain compare au niveau précédent, pas à l'accumulé
   When @fn-error_chain la rend
   Then le doublon « foo » est effacé et « foo: bar » est CONSERVÉ : la chaîne rendue est
     exactement `foo: bar: foo: bar`
-  And ce Then est le verrou de la clause « immédiatement précédent (ajouté ou lui-même déjà
-    effacé) » : une dérive qui comparerait la source à tout l'accumulé effacerait le dernier
-    niveau et passerait tous les autres Scenario
+  And ce Then est le verrou propre de la clause « immédiatement précédent (ajouté ou lui-même
+    déjà effacé) » : sous une dérive qui comparerait la source à tout l'accumulé, « foo: bar »
+    serait effacé parce que contenu dans la chaîne déjà rendue. C'est le seul test qui prend la
+    dérive par ce motif-là (un doublon déjà effacé plus une sous-chaîne à cheval sur le
+    séparateur) ; @scenario-error_chain n'efface pas une cause distincte par faux positif la
+    prend aussi en défaut, mais par un autre motif (cause distincte d'un niveau lointain)
 
 Scenario: error_chain se termine sur une chaîne trop profonde ou cyclique
   Given une erreur dont @core::error::Error::source revient sur elle-même

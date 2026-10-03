@@ -34,22 +34,27 @@
 //! vynil-core = { version = "0.7", default-features = false, features = ["hbs", "crypto"] }
 //! ```
 //!
-//! # Quick start
-//!
-//! ```rust,no_run,cfg(all(feature = "rhai", feature = "hbs"))
-//! vynil_core::set_client_name(|| "my-app.example.com".to_string());
-//!
-//! // Rhai
-//! let mut script = vynil_core::engine::Script::new_bare(vec!["scripts/".into()]);
-//! script.engine.register_fn("my_fn", |s: String| s.len() as i64);
-//! // script.run_file(&std::path::PathBuf::from("scripts/run.rhai"))?;
-//!
-//! // Handlebars
-//! let mut hbs = vynil_core::hbs::HandleBars::new();
-//! let out = hbs.render("Hello {{ name }}!", &serde_json::json!({"name": "world"})).unwrap();
-//! assert_eq!(out, "Hello world!");
-//! # Ok::<(), vynil_core::Error>(())
-//! ```
+#![cfg_attr(
+    all(feature = "rhai", feature = "hbs"),
+    doc = r#"
+# Quick start
+
+```rust,no_run
+vynil_core::set_client_name(|| "my-app.example.com".to_string());
+
+// Rhai
+let mut script = vynil_core::engine::Script::new_bare(vec!["scripts/".into()]);
+script.engine.register_fn("my_fn", |s: String| s.len() as i64);
+// script.run_file(&std::path::PathBuf::from("scripts/run.rhai"))?;
+
+// Handlebars
+let mut hbs = vynil_core::hbs::HandleBars::new();
+let out = hbs.render("Hello {{ name }}!", &serde_json::json!({"name": "world"})).unwrap();
+assert_eq!(out, "Hello world!");
+# Ok::<(), vynil_core::Error>(())
+```
+"#
+)]
 //!
 //! # Client identity
 //!
@@ -377,9 +382,9 @@ pub mod engine;
 #[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
 /// Glob matching (`glob` Rhai helper).
 ///
-/// Gated by `rhai`, not `fs`, on purpose: this module never touches the disk. It only
-/// hands the `glob` matching pattern to Rhai scripts; actual filesystem access is the
-/// `fs` feature's domain, registered through [`engine`](crate::engine).
+/// Gated by `rhai`, not `fs`, on purpose: this module performs the pattern match itself
+/// (`wildmatch`, returning a [`bool`]) and never touches the disk; actual filesystem
+/// access is the `fs` feature's domain, registered through [`engine`](crate::engine).
 pub mod glob;
 
 #[cfg(feature = "hbs")]
@@ -531,6 +536,35 @@ mod tests {
             error_chain(&err),
             "request failed after timeout: connection error: timeout",
             "« timeout » n'est contenu que dans le niveau lointain, pas dans l'ancêtre immédiat"
+        );
+    }
+
+    // ── Scenario « error_chain compare au niveau précédent, pas à l'accumulé » ──
+    // Verrou de la clause « immédiatement précédent (ajouté ou lui-même déjà effacé) » :
+    // seule la sous-chaîne « foo: bar » chevauche la frontière du séparateur et n'appartient
+    // à aucun niveau pris seul. C'est le seul test qui prend la dérive « comparé à l'accumulé »
+    // par ce motif-là ; le Scenario « faux positif » la prend aussi en défaut, par un autre
+    // motif (cause distincte d'un niveau lointain).
+    #[test]
+    fn error_chain_dedups_against_previous_level_not_whole_accumulated_string() {
+        let err = Layered {
+            msg: "foo",
+            source: Some(Box::new(Layered {
+                msg: "foo",
+                source: Some(Box::new(Layered {
+                    msg: "bar",
+                    source: Some(Box::new(Layered {
+                        msg: "foo: bar",
+                        source: None,
+                    })),
+                })),
+            })),
+        };
+        assert_eq!(
+            error_chain(&err),
+            "foo: bar: foo: bar",
+            "le doublon « foo » est effacé mais « foo: bar », absent du seul niveau précédent \
+             (« bar »), est conservé — il ne doit jamais être comparé à l'accumulé"
         );
     }
 
