@@ -393,6 +393,12 @@ pub mod glob;
 pub mod hbs;
 #[cfg(feature = "hbs")] mod hbs_json;
 
+#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]
+/// Internal async → sync bridge (`rt::block_on`) shared by the `http`, `oci`, `s3`
+/// and `k8s` modules. Private: not part of the public API, and only compiled where
+/// the optional `tokio` dependency is enabled (those four features, and nothing else).
+mod rt;
+
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 /// HTTP client ([`http::RestClient`]).

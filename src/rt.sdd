@@ -79,11 +79,15 @@ Handles:
     module n'en ajoute aucune.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants, puis créer ./rt.rs et migrer les appels de
-    ./http.rs (28), ./oci.rs (4), ./s3.rs (2) et ./k8s.rs (33) ; retirer `use
-    tokio::{runtime::Handle, task::block_in_place}` des quatre fichiers. Dans les `LazyLock` de
-    ./k8s.rs (`CLIENT`, `RAW_CLIENT`, `CACHE`), l'erreur de `block_on` reste un `expect`
-    (panic d'infrastructure acceptée, ./k8s.sdd).
+  [x] Créer ./rt.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs (module PRIVÉ,
+    sous `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]`,
+    sans `pub`) : tests d'abord. Cette tâche ne MIGRE AUCUN APPELANT : le remplacement des
+    ponts `block_in_place` + `Handle::current` est la tâche propre de chaque appelant — ./http.rs
+    (28 ponts, voir ./http.sdd), ./oci.rs (4, ./oci.sdd), ./s3.rs (2, ./s3.sdd), ./k8s.rs
+    (33, ./k8s.sdd) — ces specs étant `Owns` de leurs fichiers et cet `Owns` n'étant pas
+    transférable (décision du développeur principal, découpage de la campagne).
+    Dans les `LazyLock` de ./k8s.rs (`CLIENT`, `RAW_CLIENT`, `CACHE`), l'erreur de `block_on`
+    reste un `expect` (panic d'infrastructure acceptée, ./k8s.sdd).
 
 Scenario: multi-thread, le futur s'exécute
   Given un `#[tokio::test(flavor = "multi_thread")]`
