@@ -433,7 +433,10 @@ Tasks:
     exception rendue au timeout ; y migrer les onze waits ; tests sur un client
     `tower-test` (déjà en dev-dependencies) — décision actée.
   [ ] Migrer les 33 ponts `block_in_place` de ./k8s.rs vers `crate::rt::block_on` (voir
-    ./rt.sdd) ; le gate de `rt` passe à `any(http, oci, s3, k8s)`.
+    ./rt.sdd) ; le gate de `rt` est déjà `any(http, oci, s3, k8s)` depuis sa création, rien à y
+    changer.
+    Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
+    justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
   [ ] Cargo : retirer `dep:futures` de la feature `k8s` (vérifier `cargo hack`), déclarer
     `tokio` avec `time` (décision actée).
   [ ] StatefulSet : corriger la spec (`unwrap_or(1)`, déjà le code) et son Scenario.
