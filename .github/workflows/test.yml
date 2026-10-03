@@ -95,6 +95,14 @@ jobs:
           done
           cargo clippy --all-features --all-targets -- -D warnings
 
+      # Lints rustdoc (tooling.sdd, lockstep des quatre emplacements) : RUSTDOCFLAGS
+      # « -D warnings » promeut les warnings rustdoc (liens intra-doc cassés, fences de
+      # doctest invalides…) en erreurs. Porte `--all-features` seule, décision du
+      # développeur principal : sous portes réduites, les liens de la doc de crate
+      # pointeraient vers des modules gated absents.
+      - name: rustdoc lints
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
   # Règle d'isolation de chaque feature (tooling.sdd) : --each-feature compile et linte
   # chaque feature seule, y compris les gates non couvertes par les combinaisons explicites
   # du job `clippy` (fs, shell, password, crypto, http, hbs sans rhai…) et vérifie ainsi

@@ -24,6 +24,16 @@ Must:
   Contenir dans `[lints.rust]` `unsafe_code = forbid` et `missing_docs = warn` sur toute la crate.
   Maintenir la famille stricte et les groupes `pedantic`/`cargo` au niveau `deny` : la dette est
   purgée sur toute la crate, et tout nouveau warning du harnais bloque la validation.
+  Lancer les lints rustdoc en plus des lints clippy/rustc : `RUSTDOCFLAGS="-D warnings"
+    cargo doc --no-deps --all-features` fait partie de la batterie (./AGENTS.md, l'agent
+    `validator`, et un job de ./.github/workflows/test.yml), parce que les fences de doc de crate
+      et les liens internes sont du contrat exécutable : un `invalid_codeblock_attributes` laisse
+      passer une doc qui ment sur le gate d'un doctest (décision actée).
+    Cette règle ne court que sur `--all-features` : sous portes réduites, la table des features et
+    les liens de modules de la doc de crate pointent vers des modules absents du graphe (5 liens
+    non résolus à `default`, 10 à 14 sous les portes isolées), ce qui n'est pas un mensonge pour
+    le consommateur — docs.rs build en toutes features, et c'est la porte des liens. Gate les
+    liens pour tendre la règle à toutes les portes serait un autre contrat, non voulu.
   Tolérer la famille panic/unwrap uniquement sous `cfg(test)` via l'exemption portée par
   `src/lib.rs` à la racine du crate.
   Lancer le harnais sur chaque combinaison de features testée (défaut, chaque `k8s`/`oci`/`s3`
@@ -71,6 +81,11 @@ Tasks:
   [x] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand
     `/.github/workflows/test.yml` le prévoit (voir sa spec).
   [x] Purger les warnings `missing_docs` (177 pub items non documentés au point de départ).
+  [x] Ajouter les lints rustdoc à la batterie, en lockstep sur les quatre emplacements
+    (`./tooling.sdd` par ce `Must`, ./AGENTS.md, l'agent `validator`, ./.github/workflows/test.yml) :
+    `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`, à la porte `--all-features`
+    seule (décision du développeur principal — sous portes réduites les liens de la doc de crate
+    pointent vers des modules gated absents).
   [ ] Mettre en place la matrice `cargo hack --each-feature` (check et clippy) : vérifier que
     `cargo-hack` s'installe en CI, l'ajouter à `/.github/workflows/test.yml` (avec sa spec
     `workflows.sdd`), à la batterie de l'agent `validator` et à la liste de commandes de

@@ -35,6 +35,10 @@ Must:
   Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
     lints bloquants étant portés par la table `[lints]` de `Cargo.toml` et les warnings rustc
     résiduels escaladés par le flag (`../../tooling.sdd`).
+  Lancer dans le même job `clippy`, en étape dédiée, les lints rustdoc
+    `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features` : la fence d'un doctest de la
+    doc de crate est du contrat exécutable, et seule `--all-features` est tendue (sous portes
+    réduites, la doc de crate lie des modules gated absents — dette acceptée, `../../tooling.sdd`).
   Compiler et linter chaque feature isolément par une REGLE et non une liste, dans un job dédié
     `feature-matrix` : installer `cargo-hack` puis lancer `cargo hack check --each-feature
     --no-dev-deps` et `cargo hack clippy --each-feature --no-dev-deps -- -D warnings`, de sorte
@@ -64,6 +68,8 @@ Tasks:
   [x] Restructurer le matrix du job `test` en objets `{ name, args }` et y ajouter les deux
     portes sans `rhai` (`no-default`, `hbs` seul), sans toucher aux jobs `fmt`, `clippy` et
     `feature-matrix`.
+  [x] Ajouter l'étape `rustdoc lints` (`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+    --all-features`) au job `clippy`, en gardant ses combinaisons explicites intactes.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut

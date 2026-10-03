@@ -64,6 +64,7 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps             # matrice chaque feature isolée
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings
 cargo +nightly fmt -- --check                         # voir rustfmt.toml
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features   # lints rustdoc, porte unique
 ```
 
 Le harnais clippy doit tourner sur **toutes** ces combinaisons : des lints `pedantic`
