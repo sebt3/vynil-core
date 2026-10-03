@@ -1,6 +1,6 @@
 Spec: Harnais qualité (clippy, fmt, lints)
 
-Platform: clippy (stable 1.92.0), rustfmt nightly, table Cargo.toml [lints]
+Platform: clippy (stable 1.97), rustfmt nightly, table Cargo.toml [lints]
 
 Purpose:
   Définir le harnais qui guide les agents d'implémentation : formatage rustfmt, lints stricts

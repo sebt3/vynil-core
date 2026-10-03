@@ -1,6 +1,6 @@
 Spec: CI et publication (GitHub Actions)
 
-Platform: GitHub Actions, ubuntu-latest, toolchain stable 1.92.0 + rustfmt nightly
+Platform: GitHub Actions, ubuntu-latest, toolchain stable 1.97 + rustfmt nightly
 
 Purpose:
   Galler la crate par les tests sur la matrice de features, vérifier le formatage nightly,
@@ -30,6 +30,9 @@ Must:
     features » ne peut pas exprimer `--no-default-features` sans feature sans le confondre avec
     l'entrée « défauts ».
   Utiliser `fail-fast: false` pour que chaque entrée de matrice remonte indépendamment.
+  Épingler le toolchain stable des jobs de test, clippy et publication sur `1.97`, la version que
+    la batterie vérifie réellement (`../tooling.sdd`, `../vyvil-core.sdd`), l'écriture étant
+    chainée (`"1.97"`) pour que YAML ne la réduise pas en nombre. Le job `fmt` reste en nightly.
   Vérifier le formatage avec rustfmt nightly (`cargo fmt -- --check`), `rustfmt.toml`
   contenant des options instables.
   Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
@@ -70,6 +73,8 @@ Tasks:
     `feature-matrix`.
   [x] Ajouter l'étape `rustdoc lints` (`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
     --all-features`) au job `clippy`, en gardant ses combinaisons explicites intactes.
+  [x] Épingler les jobs stables de test, clippy, feature-matrix et publication sur
+    `toolchain: "1.97"` (chaîne, pas un nombre YAML), le job `fmt` restant en nightly.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut
