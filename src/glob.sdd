@@ -72,7 +72,7 @@ Handles:
   Texte vide — ne correspond qu'au motif vide et aux motifs que `*` réduit à rien.
 
 Tasks:
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant, dans un `mod tests`
+  [x] Convertir chaque Scenario de cette spec en test Rust passant, dans un `mod tests`
     sous `#[cfg(test)]` de ./glob.rs, évaluant la fonction de script sur un engine enregistré
     par @glob::glob_rhai_register, la fonction privée restant privée et testée via `super` ;
     les Scenario de gating `rhai` et d'intégration @Script::new_bare peuvent vivre dans
