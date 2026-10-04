@@ -7,8 +7,19 @@ Purpose:
     fallback embarqué : toute lecture trop précoce panique avec un message actionnable
     (vyvil-core.sdd).
 
+  Regroupement justifié (règle « une spec par fichier source », ../.specdd/bootstrap.project.md) :
+    ./client_name.rs et les binaires ../tests/client_name_*.rs forment un seul contrat, celui de
+    l'identité globale. @CLIENT_NAME est un @std::sync::OnceLock de processus : quatre Scenario
+    (@scenario-état avant toute configuration, @scenario-la lecture qui rate ne verrouille pas la
+    configuration, @scenario-la première configuration gagne sans bruit, @scenario-la chaîne vide
+    est une configuration comme une autre) exigent un état neuf et sont donc mutuellement exclusifs
+    dans un même binaire de test — un binaire d'intégration est un processus, et c'est le seul seam
+    honnête sans exposer d'effacement dans la production (décision du développeur principal). Les
+    Scenario qui ne dépendent pas de l'état neuf restent inline dans ./client_name.rs.
+
 Owns:
   ./client_name.rs
+  ../tests/client_name_*.rs
 
 References:
   ./lib.rs — déclaration `pub mod client_name;` et réexport complète sous
@@ -110,7 +121,7 @@ Handles:
     identique avec ou sans `rhai`, `http`, `k8s` ou `hbs` actives.
 
 Tasks:
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant, le statique @CLIENT_NAME
+  [x] Convertir chaque Scenario de cette spec en test Rust passant, le statique @CLIENT_NAME
     restant privé et observé uniquement par les trois fonctions publiques, les panics étant
     rattrapés par @std::panic::catch_unwind. Aucun test inline n'existe à ce jour dans
     ./client_name.rs : les onze Scenario sont à convertir.
