@@ -393,4 +393,429 @@ mod tests {
             assert_eq!(actual, data);
         }
     }
+
+    // ── Scenario « la table des portes limite le module à hbs » (membres jouables) ──
+    // Le Given « crate compilée sans aucune feature » et le membre « @crate::hbs_json
+    // ne cite ni crypto, ni rhai, ni hbs-scripting » sont des verrous de compilation :
+    // les portes sont jouées par la batterie (`cargo check/test --no-default-features
+    // --features hbs`), pas par un test. Seuls les noms listés se verrouillent ici.
+    #[test]
+    fn gating_core_helpers_enumerate_the_six() {
+        for name in [
+            "json_to_str",
+            "str_to_json",
+            "from_json",
+            "to_json",
+            "json_query",
+            "json_str_query",
+        ] {
+            assert!(
+                crate::hbs::CORE_HBS_HELPERS.contains(&name),
+                "{name} absent de CORE_HBS_HELPERS"
+            );
+        }
+    }
+
+    // ── Table complète des cinq formats en lecture ET en écriture (face privée, dont
+    // `JsonPretty` en lecture acceptée par le même bras que `Json`) + casse de `format` ──
+    #[test]
+    fn data_format_table_reads_and_writes_all_five_formats() {
+        let doc = serde_json::json!({"a": 1});
+        assert_eq!(DataFormat::Json.read_string(r#"{"a":1}"#).unwrap(), doc);
+        assert_eq!(DataFormat::JsonPretty.read_string(r#"{"a":1}"#).unwrap(), doc);
+        assert_eq!(DataFormat::Yaml.read_string("a: 1\n").unwrap(), doc);
+        assert_eq!(DataFormat::Toml.read_string("a = 1\n").unwrap(), doc);
+        assert_eq!(DataFormat::TomlPretty.read_string("a = 1\n").unwrap(), doc);
+        assert_eq!(DataFormat::Json.write_string(&doc).unwrap(), r#"{"a":1}"#);
+        assert_eq!(
+            DataFormat::JsonPretty.write_string(&doc).unwrap(),
+            "{\n  \"a\": 1\n}"
+        );
+        assert_eq!(DataFormat::Yaml.write_string(&doc).unwrap(), "a: 1\n");
+        assert_eq!(DataFormat::Toml.write_string(&doc).unwrap(), "a = 1\n");
+        assert_eq!(DataFormat::TomlPretty.write_string(&doc).unwrap(), "a = 1\n");
+        // casse indifférente : la valeur est lowercasée avant comparaison
+        for (raw, debug_expected) in [
+            ("JSON", "Json"),
+            ("Json_Pretty", "JsonPretty"),
+            ("YAML", "Yaml"),
+            ("Toml", "Toml"),
+            ("TOML_PRETTY", "TomlPretty"),
+        ] {
+            assert_eq!(
+                format!("{:?}", DataFormat::from_str(raw).unwrap()),
+                debug_expected
+            );
+        }
+    }
+
+    // ── Scenario « le format se lit en hash et résiste à la casse » ──
+    #[test]
+    fn format_hash_survives_case_and_rejects_aliases_and_empty() {
+        // membre 1 : le nom survit à la casse — lu en TOML, écrit en json_pretty
+        assert_eq!(
+            render(r#"{{#to_json format="TOML"}}b=1{{/to_json}}"#),
+            "{\n  \"b\": 1\n}"
+        );
+        // membre 2 : l'alias `yml` n'est pas reconnu, message exact à la casse brute
+        let err = render_err(r#"{{ json_to_str {"a":1} format="yml" }}"#);
+        assert_eq!(nested(&err).to_string(), "data format unknown 'yml'");
+        // membre 3 (`And`) : la valeur vide n'est pas le défaut, message entre quotes vides
+        let err = render_err(r#"{{ json_to_str {"a":1} format="" }}"#);
+        assert_eq!(nested(&err).to_string(), "data format unknown ''");
+    }
+
+    // ── Scenario « vide et null rendent vide quel que soit le format » (complément de
+    // `empty_input_returns_empty`/`null_input_returns_empty` : « quel que soit le format ») ──
+    #[test]
+    fn empty_and_null_short_circuit_every_format() {
+        for fmt in [
+            DataFormat::Json,
+            DataFormat::JsonPretty,
+            DataFormat::Yaml,
+            DataFormat::Toml,
+            DataFormat::TomlPretty,
+        ] {
+            assert_eq!(
+                fmt.read_string("").unwrap(),
+                Json::String(String::new()),
+                "la lecture vide rend la chaîne vide quel que soit le format"
+            );
+            assert_eq!(
+                fmt.write_string(&Json::Null).unwrap(),
+                "",
+                "l'écriture Null rend vide quel que soit le format"
+            );
+            assert_eq!(
+                fmt.write_string(&Json::String(String::new())).unwrap(),
+                "",
+                "l'écriture chaîne vide rend vide quel que soit le format"
+            );
+        }
+        // membre 2 (`Given` écriture Null avec format explicite) : le format n'atteint jamais le Null
+        assert_eq!(render(r#"{{ json_to_str null format="toml" }}"#), "");
+    }
+
+    // ── Scenario « str_to_json rend une valeur et json_to_str sa chaîne » ──
+    #[test]
+    fn str_to_json_renders_navigable_value_and_roundtrip_compares_parsed() {
+        // membre 1 : le rendu est la valeur JSON elle-même (navigable dans le template),
+        // pas sa chaîne échappée — un objet rendu en chaîne ne résoudrait pas `foo`
+        assert_eq!(
+            render(r#"{{#with (str_to_json "{\"foo\":true}")}}{{foo}}{{/with}}"#),
+            "true"
+        );
+        // membres 2 + 3 : le nidé rend la chaîne compacte et l'assertion compare des
+        // @serde_json::Value parsées — l'ordre des clés n'est pas contractuel
+        let out = render(r#"{{ json_to_str ( str_to_json "{\"foo\":true,\"zed\":2}" ) }}"#);
+        assert_eq!(
+            serde_json::from_str::<Json>(&out).unwrap(),
+            serde_json::json!({"foo": true, "zed": 2}),
+        );
+    }
+
+    // ── Scenario « le paramètre chaîne manquant ou non textuel parle » ──
+    #[test]
+    fn missing_string_params_report_their_position() {
+        // membre 1 : aucune position → param 0
+        assert_eq!(
+            other_msg(&render_err(r"{{ json_str_query }}")),
+            "param 0 (the string) not found"
+        );
+        // membre 2 : un seul paramètre → la même message cite la position 1
+        assert_eq!(
+            other_msg(&render_err(r#"{{ json_str_query "x" }}"#)),
+            "param 1 (the string) not found"
+        );
+    }
+
+    // Tâche 2 de hbs_json.sdd : `find_str_param` doit refuser le non-chaîne en
+    // `param 0 (the string) is not a string` au lieu de `unwrap_or("")`. L'existant
+    // coerce `5` en chaîne vide et le gabarit rend "" — rouge jusqu'à la tâche 2.
+    #[test]
+    #[ignore = "attend la tâche 2 de hbs_json.sdd : find_str_param coerce encore le non-chaîne en \"\""]
+    fn non_string_string_param_is_not_coerced_to_empty() {
+        // membre 3 : un nombre en position de chaîne échoue, sans coercition
+        assert_eq!(
+            other_msg(&render_err(r"{{ str_to_json 5 }}")),
+            "param 0 (the string) is not a string"
+        );
+    }
+
+    // ── Scenario « la rognure --- precède le yaml écrit seulement » ──
+    #[test]
+    fn yaml_doc_prefix_is_trimmed_on_write_only() {
+        // membre 1 : écriture yaml → `a: 1` immédiatement, sans préfixe de document
+        assert_eq!(render(r#"{{ json_to_str {"a":1} format="yaml" }}"#), "a: 1\n");
+        // membre 2 : à la lecture, `---\na: 1\n` est accepté sans aucune découpe
+        assert_eq!(
+            render(r#"{{ json_to_str ( str_to_json "---\na: 1\n" format="yaml" ) }}"#),
+            r#"{"a":1}"#
+        );
+    }
+
+    // ── Scenario « json_query rend la valeur nulle au non-match et l'erreur au mauvais chemin » ──
+    #[test]
+    fn json_query_non_match_renders_null_value() {
+        // non une chaîne "null" : la valeur nulle JMESPath est faux dans un `#if`
+        // (coercition exacte laissée à @jmespath 0.5.0)
+        assert_eq!(
+            render(r#"{{#if (json_query "missing.field" {"foo":"bar"})}}set{{else}}unset{{/if}}"#),
+            "unset"
+        );
+    }
+
+    #[test]
+    fn json_query_invalid_expression_nests_jmespath_failure() {
+        // membre 2 : NestedError portant JsonQueryFailure à l'affichage exact, source
+        // @jmespath::JmespathError nichée telle quelle
+        let err = render_err(r#"{{ json_query "foo..bar" {"foo":"bar"} }}"#);
+        let inner = nested(&err);
+        assert_eq!(inner.to_string(), "query failure for expression 'foo..bar'");
+        assert!(
+            inner
+                .source()
+                .is_some_and(|s| s.downcast_ref::<jmespath::JmespathError>().is_some()),
+            "la source @jmespath::JmespathError doit rester nichée telle quelle"
+        );
+    }
+
+    // ── Scenario « json_str_query force le scalaire en json trim et garde le format conteneur » ──
+    #[test]
+    fn json_str_query_scalars_force_trimmed_compact_json() {
+        // membre 1 (booléen) : le format demandé (yaml) est IGNORE pour un scalaire : le
+        // yaml aurait rendu "true\n" (et "---" rogné) ; equality verrouille json compact ET trim
+        assert_eq!(
+            render(r#"{{ json_str_query "foo.bar.baz" "foo:\n bar:\n  baz: true\n" format="yaml" }}"#),
+            "true"
+        );
+        // membre 2 (chaîne, discriminant du membre 1) : le rendu porte les guillemets du
+        // json compact — un impl défectueux qui garderait le format puis rognerait rendrait
+        // `bar` sans guillemets (serde_yaml d'une chaîne n'en émet pas) ; equality exacte
+        assert_eq!(
+            render(r#"{{ json_str_query "a.b" "a:\n  b: bar\n" format="yaml" }}"#),
+            r#""bar""#
+        );
+    }
+
+    #[test]
+    fn json_str_query_container_keeps_format_without_trim() {
+        // membre 3 (tableau → yaml) : réencodé dans le format demandé (et non du json
+        // compact), newline final compris — la forme conteneur ne rogne pas
+        assert_eq!(
+            render(r#"{{ json_str_query "foo.bar" "foo:\n bar:\n  - 1\n  - 2\n" format="yaml" }}"#),
+            "- 1\n- 2\n"
+        );
+        // conteneur objet en toml : réencodé en toml (`baz = true\n`, forme impossible en
+        // json), newline finale conservée — pas de trim
+        assert_eq!(
+            render(r#"{{ json_str_query "foo" "[foo]\nbaz=true\n" format="toml" }}"#),
+            "baz = true\n"
+        );
+    }
+
+    // membre 4 (`But`) : conteneur non-table en toml — @toml 0.8 exige une table racine
+    // et son sérialiseur retourne son `UnsupportedType` (branche `into_table`). L'échec
+    // remonte en Reason::NestedError nichant l'erreur d'écriture @toml, nature verrouillée.
+    #[test]
+    fn json_str_query_array_container_fails_as_toml_document_root() {
+        let err = render_err(r#"{{ json_str_query "foo.bar" "foo.bar=[1,2]\n" format="toml" }}"#);
+        let inner = nested(&err);
+        assert!(
+            inner.downcast_ref::<toml::ser::Error>().is_some(),
+            "l'erreur d'écriture @toml (UnsupportedType) doit rester nichée telle quelle, \
+             obtenu {inner:?}"
+        );
+    }
+
+    // ── Scenario « to_json lit le format demandé et écrit du json joli » (membres non
+    // couverts par `to_json_block_wraps_rendered_content`) ──
+    #[test]
+    fn to_json_reads_the_requested_format_and_fails_on_unparsable_content() {
+        // membre 1 : contenu lu en toml, écriture toujours json_pretty (indentation deux espaces)
+        assert_eq!(
+            render("{{#to_json format=\"toml\"}}[foo.bar]\nbaz=true\n{{/to_json}}"),
+            "{\n  \"foo\": {\n    \"bar\": {\n      \"baz\": true\n    }\n  }\n}"
+        );
+        // membre 3 (`But`) : contenu non vide qui ne parse pas dans le format demandé échoue
+        let err = render_err(r#"{{#to_json format="json"}}not json{{/to_json}}"#);
+        assert!(
+            nested(&err).downcast_ref::<serde_json::Error>().is_some(),
+            "l'échec de lecture doit remonter la nature de l'erreur du parser"
+        );
+    }
+
+    // ── Scenario « from_json lit dur json et écrit dans le format » (membres non couverts
+    // par `from_json_block_converts_to_yaml`) ──
+    #[test]
+    fn from_json_writes_toml_and_reads_body_as_hard_json() {
+        // membre 2 : sortie toml avec la table repoussée selon l'ordonnancement local
+        assert_eq!(
+            render(r#"{{#from_json format="toml"}}{"foo":{"bar":true}}{{/from_json}}"#),
+            "[foo]\nbar = true\n"
+        );
+        // membre 3 (`And`) : le lecteur de corps est JSON en dur — une erreur de corps
+        // est un @serde_json::Error quel que soit `format`, jamais une erreur yaml
+        let err = render_err(r#"{{#from_json format="yaml"}}not json{{/from_json}}"#);
+        let inner = nested(&err);
+        assert!(
+            inner.downcast_ref::<serde_json::Error>().is_some(),
+            "le corps se lit en JSON dur : la nature de l'erreur est @serde_json"
+        );
+        assert!(inner.downcast_ref::<serde_yaml::Error>().is_none());
+    }
+
+    // ── Scenario « vers toml les null sortent et les tables descendent » (membres
+    // observables dans cette build de @toml) ──
+    #[test]
+    fn toml_conversion_drains_nulls_and_pushes_tables_last() {
+        // membres 1–2 : `b` disparaît, `arr` perd son élément null, le reste survit
+        let converted = to_ordored_toml_value(&serde_json::json!(
+            {"z": 1, "b": null, "arr": [1, null], "tab": {"k": 2}}
+        ))
+        .unwrap()
+        .expect("la table non vide survit à l'égouttage");
+        let toml::Value::Table(table) = &converted else {
+            panic!("attendait une table, obtenu {converted:?}");
+        };
+        assert!(!table.contains_key("b"), "la clé null doit disparaître");
+        assert_eq!(
+            table.get("arr"),
+            Some(&toml::Value::Array(vec![toml::Value::Integer(1)])),
+            "le tableau doit perdre son élément null"
+        );
+        assert_eq!(
+            table.get("tab"),
+            Some(&{
+                let mut t = Table::new();
+                t.insert("k".to_owned(), toml::Value::Integer(2));
+                toml::Value::Table(t)
+            })
+        );
+        // membre 3 (`And`) : l'ordre observable est celui de la SÉRIALISATION @toml —
+        // scalaires avant sous-tables — pas l'ordre d'insertion du tri local (@toml sans
+        // `preserve_order` backingue en BTreeMap). Verrou : la sortie sérialisée exacte,
+        // pas une liste de clés.
+        let converted = to_ordored_toml_value(&serde_json::json!({"tab": {"k": 2}, "z": 1}))
+            .unwrap()
+            .expect("conversion");
+        assert_eq!(toml::to_string(&converted).unwrap(), "z = 1\n\n[tab]\nk = 2\n");
+    }
+
+    // ── Scenario « le paramètre valeur de json_to_str n'a pas besoin d'être une chaîne »
+    // (l'objet littéral est verrouillé par `json_to_str_roundtrip`) ──
+    #[test]
+    fn json_to_str_value_param_takes_any_value_and_names_the_missing_one() {
+        // membre 1 : non-chaînes acceptées brutes (le littéral objet est ailleurs)
+        assert_eq!(render(r"{{ json_to_str 5 }}"), "5");
+        assert_eq!(render(r"{{ json_to_str true }}"), "true");
+        // membre 2 : invocation sans paramètre → message exact nommant `the json`
+        assert_eq!(
+            other_msg(&render_err(r"{{ json_to_str }}")),
+            "param 0 (the json) not found"
+        );
+    }
+
+    // ── Scenario « block sans bloc et corps vide ne craschent pas » ──
+    #[test]
+    fn block_helpers_without_body_render_empty() {
+        // corps vide : lecture de la chaîne vide court-circuitée à l'écriture, quel que soit `format`
+        assert_eq!(render(r"{{#from_json}}{{/from_json}}"), "");
+        assert_eq!(render(r#"{{#from_json format="toml"}}{{/from_json}}"#), "");
+        assert_eq!(render(r"{{#to_json}}{{/to_json}}"), "");
+        assert_eq!(render(r#"{{#to_json format="yaml"}}{{/to_json}}"#), "");
+        // absence de bloc (template() == None) : même cour-circuit, jamais d'erreur d'absence
+        assert_eq!(render(r"{{from_json}}"), "");
+        assert_eq!(render(r"{{to_json}}"), "");
+    }
+
+    // ── Scenario « les six noms vivent dans le HandleBars public après new_hbs » ──
+    #[test]
+    fn public_engine_resolves_the_six_unescaped_and_register_is_idempotent() {
+        let mut hb = crate::hbs::HandleBars::new();
+        // Le `no_escape` vient de @new_hbs en amont (./hbs.rs::new) : ce module ne pose
+        // jamais l'échappement — seul l'auxiliaire local `render` le pose explicitement.
+        // Le chevron doit rester non échappé dans le moteur public.
+        let out = hb
+            .render(r#"{{ json_to_str "{\"x\":\"<y>\"}" }}"#, &Json::Null)
+            .unwrap();
+        assert_eq!(out, r#""{\"x\":\"<y>\"}""#);
+        assert!(!out.contains("&lt;"), "le chevron doit rester non échappé");
+        // les six noms se résolvent par un template sur le moteur public
+        assert_eq!(
+            hb.render(r#"{{ json_to_str {"a":1} }}"#, &Json::Null).unwrap(),
+            r#"{"a":1}"#
+        );
+        assert_eq!(
+            hb.render(
+                r#"{{#with (str_to_json "{\"foo\":true}")}}{{foo}}{{/with}}"#,
+                &Json::Null
+            )
+            .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            hb.render(
+                r#"{{#from_json format="yaml"}}{"a":1}{{/from_json}}"#,
+                &Json::Null
+            )
+            .unwrap(),
+            "a: 1\n"
+        );
+        assert_eq!(
+            hb.render(r#"{{#to_json}}{"a":1}{{/to_json}}"#, &Json::Null)
+                .unwrap(),
+            "{\n  \"a\": 1\n}"
+        );
+        assert_eq!(
+            hb.render(r#"{{ json_to_str ( json_query "a" {"a":[1]} ) }}"#, &Json::Null)
+                .unwrap(),
+            "[1]"
+        );
+        assert_eq!(
+            hb.render(r#"{{ json_str_query "a" "a: 1\n" format="yaml" }}"#, &Json::Null)
+                .unwrap(),
+            "1"
+        );
+        // `register` rappelé deux fois : remplacement des homonymes, sans accumulation ni erreur
+        super::register(hb.engine_mut());
+        assert_eq!(
+            hb.render(r#"{{ json_to_str {"a":1} }}"#, &Json::Null).unwrap(),
+            r#"{"a":1}"#
+        );
+        assert_eq!(
+            hb.render(r#"{{#to_json}}{"a":1}{{/to_json}}"#, &Json::Null)
+                .unwrap(),
+            "{\n  \"a\": 1\n}"
+        );
+        assert_eq!(
+            hb.render(r#"{{ json_str_query "a" "a: 1\n" format="yaml" }}"#, &Json::Null)
+                .unwrap(),
+            "1"
+        );
+    }
+
+    // auxiliaires d'échec : la forme d'habillage finale (préfixe @handlebars) est exclue,
+    // on assert sur le `RenderErrorReason` nu
+    fn render_err(tmpl: &str) -> RenderError {
+        let mut hb = Handlebars::new();
+        hb.register_escape_fn(handlebars::no_escape);
+        register(&mut hb);
+        hb.render_template(tmpl, &Json::Null)
+            .expect_err("le gabarit devait échouer")
+    }
+
+    fn other_msg(err: &RenderError) -> String {
+        match err.reason() {
+            RenderErrorReason::Other(msg) => msg.clone(),
+            other => panic!("attendait Reason::Other, obtenu {other:?}"),
+        }
+    }
+
+    fn nested<'a>(err: &'a RenderError) -> &'a (dyn std::error::Error + 'static) {
+        match err.reason() {
+            RenderErrorReason::NestedError(inner) => &**inner,
+            other => panic!("attendait Reason::NestedError, obtenu {other:?}"),
+        }
+    }
 }

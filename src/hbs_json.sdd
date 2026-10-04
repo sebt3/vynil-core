@@ -83,9 +83,15 @@ Must:
     faute de frappe du code source) transforme chaîne, nombre, booléen et tableau en
     @toml::Value, et égoutte silencieusement les valeurs @serde_json::Value::Null — les clés
     disparaissent des tables, les éléments disparaissent des tableaux — puis la tri prive
-    `sort_toml_map` range récursivement scalars d'abord, tableaux ensuite, tables enfin : cette
-    contrainte d'ordre vient de @toml, qui sérialise un « table après non-table » en erreur
-    `ValueAfterTable`, comme le dit le commentaire de la fonction. Les nombres deviennent un
+    `sort_toml_map` range récursivement scalars d'abord, tableaux ensuite, tables enfin. Cette tri
+    est un HÉRITAGE et non une nécessité du graphe courant : la faute `ValueAfterTable` qu'invoque
+    son commentaire de source n'existe plus dans @toml 0.8.23 ni @toml_edit 0.22.27 (0 occurrence
+    dans leurs sources), et @toml sans sa feature `preserve_order` — hors de ./Cargo.toml — backingue
+    ses maps par @std::collections::BTreeMap, donc le tri n'y est observable nulle part. Il le
+    redeviendrait si l'unification de features @cargo activait `preserve_order` chez un consommateur
+    (`IndexMap` : l'ordre d'insertion devient visible et l'ordre TOML valeurs-avant-tables devient
+    une exigence). Son sort est tranché par la tâche dédiée ci-dessous, pas par ce `Must`. Les
+    nombres deviennent un
     entier si @serde_json::Number::as_i64 en sort un, sinon un flottant si `as_f64` en sort
     un ; le troisième bras, message `to_other_error`
     `to_toml: can not convert a Json Number: <v>`, est défensif et inatteignable pour un
@@ -236,7 +242,7 @@ Handles:
     remplace les six homonymes sans erreur ni accumulation.
 
 Tasks:
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant dans le `mod tests` sous
+  [x] Convertir chaque Scenario de cette spec en test Rust passant dans le `mod tests` sous
     `#[cfg(test)]` de ./hbs_json.rs, via l'auxiliaire `render` existant ou la face privée
     `DataFormat` directement ; rien n'atteint ces helpers hors templates Handlebars. Neuf tests
     existent : `empty_input_returns_empty` couvre les quatre cour-circuits vides ;
@@ -258,9 +264,21 @@ Tasks:
     erreur de gabarit doit se voir) ; test d'abord depuis le Scenario dédié.
   [ ] Corriger ../docs/handlebars_helpers.md section 8 : « All accept format= » est faux pour
     `json_query`, où `format=` est un no-op (décision actée : la requête ne lit pas de format).
-  [ ] Réécrire les assertions de test dont le résultat dépend de l'ordre des clés JSON pour
+  [ ] Trancher le sort de @fn-sort_toml_map, tri privé no-op observable dans le graphe courant
+    (voir le `Must` de la conversion TOML) : le retirer avec son commentaire de source, le garder
+    en corrigeant ce commentaire qui invoque une faute `ValueAfterTable` disparue de @toml 0.8.23
+    et @toml_edit 0.22.27, ou activer `toml/preserve_order` au manifest — dans ce dernier cas le
+    reproducteur @indexmap entre dans le graphe de la porte `hbs` et l'ordre d'insertion devient
+    un comportement observable promis aux consommateurs. Les trois issues sont compatibles avec la
+    spec courante ; la troisième est un changement de contrat, pas une purge (à instruire).
+  [x] Réécrire les assertions de test dont le résultat dépend de l'ordre des clés JSON pour
     comparer des @serde_json::Value parsées, non des chaînes (décision actée : l'ordre n'est
-    jamais contractuel).
+    jamais contractuel). FERMÉE SANS CHANGEMENT, sur vérification de l'agent `validator` : les neuf
+    tests existants n'assertionnent que des objets mono-clés (`{"foo":{"bar":{"baz":true}}}`,
+    `a: 1`) ou des scalaires, donc aucun ne dépend de l'ordre des clés et aucun ne casserait sous
+    une unification `preserve_order` par un consommateur. Les assertions multi-clés introduites par
+    la conversion des Scenario comparent déjà des @serde_json::Value parsées. La décision de
+    rédaction reste acquise pour les tests futurs.
 
 Scenario: la table des portes limite le module à hbs
   Given la crate compilée sans aucune feature
@@ -329,11 +347,23 @@ Scenario: json_query rend la valeur nulle au non-match et l'erreur au mauvais ch
 
 Scenario: json_str_query force le scalaire en json trim et garde le format conteneur
   Given un engine de test avec les six helpers
-  When un template évalue `{{ json_str_query "foo.bar.baz" "a:\n  b:\n    c: true\n" format="yaml" }}`
-    dont un scalaire est le résultat
-  Then le rendu est exactement `true` en json compact après trim, pas en YAML
-  When un template évalue la même requête dont le résultat est un tableau en `format="toml"`
-  Then le tableau est réencodé en toml, sans trim, la forme conteneur gardant le format demandé
+  When un template évalue `{{ json_str_query "foo.bar.baz" "foo:\n bar:\n  baz: true\n"
+    format="yaml" }}` dont un scalaire booléen est le résultat
+  Then le rendu est exactement `true` en json compact après trim, sans newline final, donc pas en
+    YAML
+  When il évalue `{{ json_str_query "a.b" "a:\n  b: bar\n" format="yaml" }}`, dont le résultat est
+    une chaîne
+  Then le rendu porte les guillemets du json compact (`"bar"`), preuve que le `format` est ignoré
+    pour un scalaire et non appliqué puis rogné — le YAML d'une chaîne, lui, n'a aucun guillemet
+  When il évalue `{{ json_str_query "foo.bar" "foo:\n bar:\n  - 1\n  - 2\n" format="yaml" }}` dont
+    le résultat est un tableau
+  Then le tableau est réencodé en yaml (`- 1`, `- 2`, newline final compris), la forme conteneur
+    gardant le format demandé et n'étant pas rognée
+  But un résultat conteneur qui ne peut pas être la racine d'un document @toml — un tableau en
+    `format="toml"` — échoue le rendu en `Reason::NestedError` nichant l'erreur d'écriture
+    @toml (même famille que les erreurs d'écriture plus haut) : @toml 0.8 exige une table racine
+    et son sérialiseur retourne son `UnsupportedType` sur la branche `into_table`, aucune racine
+    non-table n'est rendable dans ce format
 
 Scenario: to_json lit le format demandé et écrit du json joli
   Given un engine de test avec les six helpers
@@ -357,8 +387,11 @@ Scenario: vers toml les null sortent et les tables descendent
   Given un @serde_json::Value `{"z":1,"b":null,"arr":[1,null],"tab":{"k":2}}`
   When la conversion privée vers @toml::Value est exercée depuis le module sous `hbs`
   Then la clé `b` disparaît et le tableau perd son élément null
-  And les clés scalaires `z` précèdent `arr`, qui précède `tab` — l'ordre d'insertion source
-    n'est pas préservé, la faute `ValueAfterTable` de @toml étant la raison d'être du tri
+  And l'ordre observable est celui de la SÉRIALISATION @toml — les valeurs scalaires précèdent
+    les sous-tables — et non l'ordre d'insertion du tri local : @toml 0.8 sans sa feature
+    `preserve_order` (hors de ./Cargo.toml) backingue ses maps par @std::collections::BTreeMap, si
+    bien que l'ordre d'insertion n'est observable nulle part dans ce graphe. Le test verrouille
+    donc la sortie sérialisée exacte, pas une liste de clés
 
 Scenario: le paramètre valeur de json_to_str n'a pas besoin d'être une chaîne
   Given un engine de test avec les six helpers
