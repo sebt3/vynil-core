@@ -1,6 +1,6 @@
 Spec: vyvil-core
 
-Platform: Rust edition 2024, toolchain stable 1.97, rustfmt nightly
+Platform: Rust edition 2024, toolchain stable 1.99.0, rustfmt nightly
 
 Purpose:
   Boîte à outils Rust générique combinant un moteur de scripts Rhai et un moteur de templates

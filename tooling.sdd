@@ -1,6 +1,6 @@
 Spec: Harnais qualité (clippy, fmt, lints)
 
-Platform: clippy (stable 1.97), rustfmt nightly, table Cargo.toml [lints]
+Platform: clippy (stable 1.99.0), rustfmt nightly, table Cargo.toml [lints]
 
 Purpose:
   Définir le harnais qui guide les agents d'implémentation : formatage rustfmt, lints stricts
@@ -24,6 +24,15 @@ Must:
   Contenir dans `[lints.rust]` `unsafe_code = forbid` et `missing_docs = warn` sur toute la crate.
   Maintenir la famille stricte et les groupes `pedantic`/`cargo` au niveau `deny` : la dette est
   purgée sur toute la crate, et tout nouveau warning du harnais bloque la validation.
+  Porter le `Platform` à la version de stable réellement épinglée en CI (./.github/workflows
+  workflows.sdd) : un toolchain plus neuf peut rendre déclenchables des lints déjà couverts par
+  des groupes `deny`, sans rien changer à la table. `double_must_use` (dont la détection ne
+  voyait pas en 1.97.0 la caisse `Box<T>` avec `T` déjà `must_use` amont) et
+  `rustdoc::redundant_explicit_links` en sont la preuve : les deux lints existent et jouent en
+  1.97.0, c'est la baseline 1.99.0 qui les a fait tomber (../src/lib.sdd). La montée d'outillage
+  est donc un événement du harnais : elle se juge par la batterie complète, pas par un `#[allow]`
+  de circonstance, et elle se prouve en jouant la baseline sur LES DEUX toolchains (décision
+  actée).
   Lancer les lints rustdoc en plus des lints clippy/rustc : `RUSTDOCFLAGS="-D warnings"
     cargo doc --no-deps --all-features` fait partie de la batterie (./AGENTS.md, l'agent
     `validator`, et un job de ./.github/workflows/test.yml), parce que les fences de doc de crate

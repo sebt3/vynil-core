@@ -343,7 +343,7 @@ pub fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 /// Convert a [`enum@Error`] into a Rhai `EvalAltResult`, including its full `source()` chain
 /// (see [`error_chain`]) so the real cause of a connection-level failure isn't swallowed.
 #[cfg(feature = "rhai")]
-#[must_use]
+#[must_use = "returned conversion must be propagated"]
 #[allow(clippy::needless_pass_by_value)] // callback `map_err` impose `Error` par valeur (vyvil-core.sdd, erreur enrichie de la chaîne `source()`)
 pub fn rhai_err(e: Error) -> Box<rhai::EvalAltResult> {
     error_chain(&e).into()
@@ -351,7 +351,7 @@ pub fn rhai_err(e: Error) -> Box<rhai::EvalAltResult> {
 
 /// Convert a string into a Rhai `EvalAltResult`.
 #[cfg(feature = "rhai")]
-#[must_use]
+#[must_use = "returned conversion must be propagated"]
 pub fn rhai_err_str(e: String) -> Box<rhai::EvalAltResult> {
     e.into()
 }
@@ -384,7 +384,7 @@ pub mod engine;
 ///
 /// Gated by `rhai`, not `fs`, on purpose: this module performs the pattern match itself
 /// (`wildmatch`, returning a [`bool`]) and never touches the disk; actual filesystem
-/// access is the `fs` feature's domain, registered through [`engine`](crate::engine).
+/// access is the `fs` feature's domain, registered through [`engine`].
 pub mod glob;
 
 #[cfg(feature = "hbs")]

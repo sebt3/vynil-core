@@ -94,11 +94,16 @@ Must:
     cause distincte (décision actée) ; la profondeur est bornée à 32 sources, au-delà de quoi
     la marche s'arrête en ajoutant `: …` — garantie de terminaison même sur un `source()` cyclique
     (décision actée) ; totale : ne panique jamais, ne retourne jamais d'erreur.
-  @fn-rhai_err (gate `rhai`, @core::marker::must_use) : consomme @variant-Error PAR VALEUR
+  @fn-rhai_err (gate `rhai`, @core::marker::must_use porté avec le message exact
+    `"returned conversion must be propagated"` — le harnais 1.99.0 proscrit l'attribut nu sur un
+    type déjà `must_use`, voir ./tooling.sdd ; le message est visible dans les avertissements de
+    compilation du consommateur, il est donc contracté littéralement) : consomme
+    @variant-Error PAR VALEUR
     (le rappel `map_err` l'impose ; seul `#[allow]` de production de la racine, justifié en
     une ligne, conforme ./tooling.sdd) et retourne `error_chain(&e).into()` : le message vu
     par le script est la chaîne complète enrichie.
-  @fn-rhai_err_str (gate `rhai`, @core::marker::must_use) : conversion directe
+  @fn-rhai_err_str (gate `rhai`, @core::marker::must_use porté avec le même message exact,
+    même règle) : conversion directe
     @std::string::String → @std::boxed::Box de @rhai::EvalAltResult, sans chaîne.
   Déclarations de modules, 20 au total (18 publics, @crate::hbs_json et `rt` privés),
     exactement deux familles. Sans gate (toujours
@@ -227,6 +232,13 @@ Tasks:
     sources (l'extérieur exclu), `#[must_use]` ; corriger sa rustdoc (« contenu dans l'ancêtre
     immédiat »), test d'abord depuis les deux Scenario ajoutés (décisions actées).
   [x] Noter dans la rustdoc de @crate::glob que son gate est `rhai` par intention.
+  [x] Purger la dette de harnais révélée par le passage à stable 1.99.0 (./tooling.sdd) : muer le
+    `#[must_use]` de @fn-rhai_err et @fn-rhai_err_str en `#[must_use = "…"]` (le lint
+    `double_must_use` ne vise que l'attribut nu sur un type déjà `must_use` : @std::boxed::Box de
+    @rhai::EvalAltResult, `must_use` amont — le contrat ci-dessus est donc conservé, pas affaibli)
+    et supprimer la cible explicite redondante de la rustdoc de @crate::glob
+    (`rustdoc::redundant_explicit_links`, lui aussi rendu déclenchable par 1.99.0). Verrou : les deux
+    batteries clippy default et `--all-features` plus les lints rustdoc en `-D warnings`.
   [x] Verrouiller par un test le Scenario « error_chain compare au niveau précédent, pas à
     l'accumulé » (quatre niveaux, sous-chaîne à cheval sur le séparateur) : c'est le seul test qui
     distingue la clause « immédiatement précédent (ajouté ou lui-même déjà effacé) » d'une dérive

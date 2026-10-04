@@ -1,6 +1,6 @@
 Spec: CI et publication (GitHub Actions)
 
-Platform: GitHub Actions, ubuntu-latest, toolchain stable 1.97 + rustfmt nightly
+Platform: GitHub Actions, ubuntu-latest, toolchain stable 1.99.0 + rustfmt nightly
 
 Purpose:
   Galler la crate par les tests sur la matrice de features, vérifier le formatage nightly,
@@ -30,9 +30,12 @@ Must:
     features » ne peut pas exprimer `--no-default-features` sans feature sans le confondre avec
     l'entrée « défauts ».
   Utiliser `fail-fast: false` pour que chaque entrée de matrice remonte indépendamment.
-  Épingler le toolchain stable des jobs de test, clippy et publication sur `1.97`, la version que
-    la batterie vérifie réellement (`../tooling.sdd`, `../vyvil-core.sdd`), l'écriture étant
-    chainée (`"1.97"`) pour que YAML ne la réduise pas en nombre. Le job `fmt` reste en nightly.
+  Épingler le toolchain stable des jobs de test, clippy, matrice de features et publication sur
+    `1.99.0`, la version que la batterie vérifie réellement (`../tooling.sdd`,
+    `../vyvil-core.sdd`), l'écriture étant chainée (`"1.99.0"`) pour que YAML ne la réduise pas en
+    nombre. Le job `fmt` reste en nightly. L'épinglage est une règle et non un confort : sans lui,
+    chaque machine joue le harnais sous son propre stable et `stable` a bougé de 1.97.1 à 1.99.0 en
+    cours de campagne, ce qui a fait apparaître des lints inconnus de la CI.
   Vérifier le formatage avec rustfmt nightly (`cargo fmt -- --check`), `rustfmt.toml`
   contenant des options instables.
   Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
@@ -75,6 +78,10 @@ Tasks:
     --all-features`) au job `clippy`, en gardant ses combinaisons explicites intactes.
   [x] Épingler les jobs stables de test, clippy, feature-matrix et publication sur
     `toolchain: "1.97"` (chaîne, pas un nombre YAML), le job `fmt` restant en nightly.
+  [x] Re-épingler les quatre mêmes jobs sur `toolchain: "1.99.0"` après la montée d'outillage
+    (../tooling.sdd) : `stable` a glissé de 1.97.1 à 1.99.0 sur la machine de développement sans
+    `rust-toolchain.toml` ni épinglage correspondant, et la batterie a été jouée hors du contrat
+    pendant plusieurs tâches. L'écriture chainée (et non un nombre YAML) reste exigée.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut

@@ -41,7 +41,7 @@ jobs:
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.97"
+          toolchain: "1.99.0"
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -75,7 +75,7 @@ jobs:
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.97"
+          toolchain: "1.99.0"
           components: clippy
 
       - name: Cache Cargo
@@ -117,7 +117,7 @@ jobs:
       - name: Setup Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.97"
+          toolchain: "1.99.0"
           components: clippy
 
       - name: Install cargo-hack
