@@ -18,8 +18,6 @@ use std::str::FromStr;
 use thiserror::Error;
 use toml::value::Table;
 
-type TablePartition = Vec<(String, toml::Value)>;
-
 #[derive(Debug, Error)]
 enum JsonError {
     #[error("query failure for expression '{expression}'")]
@@ -80,9 +78,6 @@ fn to_opt_res<T, E>(v: Result<Option<T>, E>) -> Option<Result<T, E>> {
     }
 }
 
-// `toml` serializes tables-after-non-tables as an error (ValueAfterTable), so a plain
-// `Json -> toml::Value` conversion needs its map keys reordered: scalars first, arrays next,
-// tables last (recursively, since a table's own entries face the same constraint).
 fn to_ordored_toml_value(data: &Json) -> Result<Option<toml::Value>, RenderError> {
     match data {
         Json::String(v) => Ok(Some(toml::Value::from(v.as_str()))),
@@ -97,7 +92,7 @@ fn to_ordored_toml_value(data: &Json) -> Result<Option<toml::Value>, RenderError
                 to_opt_res(to_ordored_toml_value(kv.1)).map(|rnv| rnv.map(|nv| (kv.0.to_owned(), nv)))
             })
             .collect::<Result<Table, _>>()
-            .map(|m| Some(toml::Value::Table(sort_toml_map(m)))),
+            .map(|m| Some(toml::Value::Table(m))),
         Json::Number(v) => {
             if let Some(i) = v.as_i64() {
                 Ok(Some(toml::Value::Integer(i)))
@@ -112,18 +107,6 @@ fn to_ordored_toml_value(data: &Json) -> Result<Option<toml::Value>, RenderError
         Json::Bool(v) => Ok(Some(toml::Value::Boolean(*v))),
         Json::Null => Ok(None),
     }
-}
-
-fn sort_toml_map(data: Table) -> Table {
-    let (tables, non_tables): (TablePartition, TablePartition) =
-        data.into_iter().partition(|v| v.1.is_table());
-    let (arrays, others): (TablePartition, TablePartition) =
-        non_tables.into_iter().partition(|v| v.1.is_array());
-    let mut m = Table::new();
-    m.extend(others);
-    m.extend(arrays);
-    m.extend(tables);
-    m
 }
 
 impl DataFormat {
@@ -469,6 +452,38 @@ mod tests {
         assert_eq!(nested(&err).to_string(), "data format unknown ''");
     }
 
+    // ── Scenario « le format passe sur json_query sans rien changer » ──
+    #[test]
+    fn format_passes_through_json_query_changing_nothing() {
+        // Then : les trois rendus IDENTIQUES par equality ENTRE EUX (verrou demandé :
+        // une dérive qui décalerait les trois rougit ici même si elle épargnait la
+        // constante) et rendant `bar`. Le paramètre `data` de json_query est une VALEUR
+        // qu'aucun format ne parse — d'où l'objet littéral ; la forme « chaîne échappée »
+        // (`"{\"foo\":\"bar\"}"`) y resterait une chaîne et la requête ne correspondrait
+        // à rien (mesuré : rendu vide).
+        let bare = render(r#"{{ json_query "foo" {"foo":"bar"} }}"#);
+        let yaml = render(r#"{{ json_query "foo" {"foo":"bar"} format="yaml" }}"#);
+        let pretty = render(r#"{{ json_query "foo" {"foo":"bar"} format="json_pretty" }}"#);
+        assert_eq!(bare, "bar");
+        assert_eq!(bare, yaml);
+        assert_eq!(bare, pretty);
+        // And : un hash que rien ne lit ne peut pas être refusé — bogus passe sans erreur
+        assert_eq!(
+            render(r#"{{ json_query "foo" {"foo":"bar"} format="bogus" }}"#),
+            "bar"
+        );
+        // Contraste : la même valeur de hash est refusée chez les cinq autres, message
+        // exact — sans ce membre, faire lire `format` à tout le monde laisserait le test
+        // vert sur ses trois premiers membres.
+        assert_eq!(
+            nested(&render_err(
+                r#"{{ str_to_json "{\"foo\":\"bar\"}" format="bogus" }}"#
+            ))
+            .to_string(),
+            "data format unknown 'bogus'"
+        );
+    }
+
     // ── Scenario « vide et null rendent vide quel que soit le format » (complément de
     // `empty_input_returns_empty`/`null_input_returns_empty` : « quel que soit le format ») ──
     #[test]
@@ -498,6 +513,37 @@ mod tests {
         }
         // membre 2 (`Given` écriture Null avec format explicite) : le format n'atteint jamais le Null
         assert_eq!(render(r#"{{ json_to_str null format="toml" }}"#), "");
+    }
+
+    // ── Scenario « l'expression vide échoue là où la donnée vide courte-circuite » ──
+    #[test]
+    fn empty_expression_fails_where_empty_data_short_circuits() {
+        // Then : les deux doubles-vides échouent sur l'erreur de requête. Nature
+        // verrouillée par `nested` (Reason::NestedError) : c'est @JsonError::JsonQueryFailure
+        // que le `Raises:` contracte (affichage exact + source @jmespath::JmespathError
+        // nichée), pas l'habillage @handlebars (préfixe « Render error »), explicitement
+        // non verrouillé. Un simple is_err() ne distinguerait pas d'un échec de parsing
+        // de la donnee ou d'un refus de format.
+        for tmpl in [r#"{{ json_query "" "" }}"#, r#"{{ json_str_query "" "" }}"#] {
+            let err = render_err(tmpl);
+            let inner = nested(&err);
+            assert_eq!(inner.to_string(), "query failure for expression ''");
+            assert!(
+                inner
+                    .source()
+                    .is_some_and(|s| s.downcast_ref::<jmespath::JmespathError>().is_some()),
+                "la source @jmespath::JmespathError doit rester nichée telle quelle"
+            );
+        }
+        // And : la MEME donnée vide est un succès à chaîne vide dès que l'expression est
+        // tenante — sans ce membre, un futur court-circuit global de l'expression vide
+        // laisserait les deux échecs ci-dessus verts par accident inverse.
+        assert_eq!(render(r#"{{ json_query "foo" "" }}"#), "");
+        assert_eq!(render(r#"{{ json_str_query "foo" "" }}"#), "");
+        // But : json_query ne valide jamais le hash que les cinq autres valident avant
+        // tout rendu — bogus passe ici, alors qu'il échoue sur str_to_json/json_str_query
+        // vides (verrouillé par format_hash_survives_case_and_rejects_aliases_and_empty).
+        assert_eq!(render(r#"{{ json_query "foo" "" format="zzz" }}"#), "");
     }
 
     // ── Scenario « str_to_json rend une valeur et json_to_str sa chaîne » ──
@@ -556,6 +602,38 @@ mod tests {
         // But : `{{ json_str_query "x" }}` (position absente) rend toujours
         // `param 1 (the string) not found` — une position absente précède le refus de type ;
         // membre tenu par `missing_string_params_report_their_position`, non empilé ici
+    }
+
+    // ── Scenario « l'expression de json_query parle la famille de la macro et non
+    // celle de find_str_param » ──
+    #[test]
+    fn json_query_expression_speaks_macro_family_not_find_str_param() {
+        // Then : raison ParamTypeMismatchForName, equality sur ses trois champs — le
+        // premier paramètre est lu par la voie typée de handlebars_helper (expr: str),
+        // pas par find_str_param. Si les familles étaient unifiées (en un Reason::Other
+        // « is not a string » ou inversement), ce match rougit dans le bras inattendu.
+        let err = render_err(r#"{{ json_query null {"a":1} }}"#);
+        match err.reason() {
+            RenderErrorReason::ParamTypeMismatchForName(helper, param, expected) => {
+                assert_eq!(*helper, "json_query_fct");
+                assert_eq!(param, "expr");
+                assert_eq!(expected, "str");
+            }
+            other => panic!("attendait Reason::ParamTypeMismatchForName, obtenu {other:?}"),
+        }
+        // And : le message ne porte PAS la marque de find_str_param — premier sens de
+        // la distinction ; l'assertion rougit si la voie typée empruntait ce message.
+        assert!(
+            !err.to_string().contains("is not a string"),
+            "la famille macro ne doit pas porter le message de find_str_param, obtenu {err}"
+        );
+        // But : même valeur non-chaîne (null) en position de Chaîne rend l'AUTRE famille,
+        // verrouillée par other_msg qui panique si la raison n'est pas Reason::Other —
+        // second sens de la distinction. La frontière est la voie de lecture, pas la valeur.
+        assert_eq!(
+            other_msg(&render_err(r#"{{ json_str_query null "{\"a\":1}" }}"#)),
+            "param 0 (the string) is not a string"
+        );
     }
 
     // ── Scenario « la rognure --- precède le yaml écrit seulement » ──

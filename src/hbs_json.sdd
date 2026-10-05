@@ -63,8 +63,16 @@ Must:
     les erreurs à message texte par `to_other_error` (Reason::Other). Le seul repli silencieux
     du module est la voie vide décrit plus bas.
   Courte-circuiter les entrées vides avant tout parser ou encoder : lire la chaîne vide rend
-    un @serde_json::Value de type chaîne vide quel que soit `format` ; écrire une valeur
-    @serde_json::Value::Null ou une chaîne vide rend la chaîne vide quel que soit `format`.
+    un @serde_json::Value de type chaîne vide dans les cinq formats reconnus ; écrire une valeur
+    @serde_json::Value::Null ou une chaîne vide rend la chaîne vide dans les cinq formats reconnus.
+    « Quel que soit `format` » se lit sur les formats VALIDES seulement : le `format` est d'abord
+    validé par `find_data_format`, donc une valeur inconnue échoue en `data format unknown '<brut>'`
+    MÊME sur une entrée vide ou Null — `{{ json_to_str null format="zzz" }}` est une erreur, pas la
+    chaîne vide. Le court-circuit dispense du rendu, jamais de la validation. Portée : les CINQ
+    helpers qui lisent `format`. @crate::hbs_json::json_query n'en fait PAS partie, il n'appelle
+    jamais `find_data_format` — donc `{{ json_query "foo" "" format="zzz" }}` rend la chaîne vide
+    sans aucune validation du hash (MESURÉ, et c'est ce que promet déjà `Exposes:` : « ne lit pas
+    `format` »).
   Garder les sens de conversion câblés dans un seul sens : `from_json` lit toujours le corps
     du bloc en JSON dur et écrit dans `format` ; `to_json` lit le corps du bloc dans `format`
     et écrit toujours en `json_pretty` (@serde_json::to_string_pretty). Le corps de
@@ -83,15 +91,20 @@ Must:
   Convertir vers TOML en deux passes : la conversion privée `to_ordored_toml_value` (nom avec
     faute de frappe du code source) transforme chaîne, nombre, booléen et tableau en
     @toml::Value, et égoutte silencieusement les valeurs @serde_json::Value::Null — les clés
-    disparaissent des tables, les éléments disparaissent des tableaux — puis la tri prive
-    `sort_toml_map` range récursivement scalars d'abord, tableaux ensuite, tables enfin. Cette tri
-    est un HÉRITAGE et non une nécessité du graphe courant : la faute `ValueAfterTable` qu'invoque
-    son commentaire de source n'existe plus dans @toml 0.8.23 ni @toml_edit 0.22.27 (0 occurrence
-    dans leurs sources), et @toml sans sa feature `preserve_order` — hors de ./Cargo.toml — backingue
-    ses maps par @std::collections::BTreeMap, donc le tri n'y est observable nulle part. Il le
-    redeviendrait si l'unification de features @cargo activait `preserve_order` chez un consommateur
-    (`IndexMap` : l'ordre d'insertion devient visible et l'ordre TOML valeurs-avant-tables devient
-    une exigence). Son sort est tranché par la tâche dédiée ci-dessous, pas par ce `Must`. Les
+    disparaissent des tables, les éléments disparaissent des tableaux — SANS AUCUNE TRI du module. La
+    tri prive `sort_toml_map` que le portage héritait est RETIRÉE (décision actée) : elle réinsérait
+    les entrées dans une @toml::Table déjà triée, @toml sans sa feature `preserve_order` — hors de
+    ./Cargo.toml — backinguant ses maps par @std::collections::BTreeMap, ce qui rendait sa réécriture
+    sans effet observable dans ce graphe ; la faute `ValueAfterTable` qu'invoquait son commentaire de
+    source n'existe d'ailleurs plus dans @toml 0.8.23 ni @toml_edit 0.22.27 (0 occurrence dans leurs
+    sources). L'ordre que rend @toml::ser vient de @toml::ser lui-même — pas de l'itération de la
+    map : le @toml::ser écrit les valeurs NON-TABLE (tableaux compris, entrelacés alphabétiquement
+    avec les scalaires) avant les SECTIONS de sous-tables ; l'alphabétisation de
+    @std::collections::BTreeMap ne classe qu'À L'INTÉRIEUR de chaque classe. C'est ce que verrouille
+    @scenario-vers toml les null sortent et les tables descendent — jamais un ordre d'insertion que ce module promettrait. Si
+    l'unification de features @cargo activait `preserve_order` chez un consommateur, l'ordre
+    d'insertion redeviendrait visible et ce `Must` serait à réécrire : le module, lui, ne promet
+    toujours rien. Les
     nombres deviennent un
     entier si @serde_json::Number::as_i64 en sort un, sinon un flottant si `as_f64` en sort
     un ; le troisième bras, message `to_other_error`
@@ -211,7 +224,13 @@ Raises:
     NestedError ; l'absence de paramètre chaîne requis en Reason::Other
     `param <N> (the string) not found` ; un paramètre chaîne présent mais non textuel en
     Reason::Other `param <N> (the string) is not a string` ; l'absence de la valeur `json_to_str` en
-    `param 0 (the json) not found`. La forme d'habillage finale du @handlebars::RenderError
+    `param 0 (the json) not found`. Le PREMIER paramètre de `json_query` (l'expression) fait exception
+    à la famille `Reason::Other` : il est lu par la voie typée de @handlebars_helper (`expr: str`), et
+    une valeur non-chaîne y rend MESURÉ un @handlebars::RenderError de raison
+    `ParamTypeMismatchForName`, non un message `is not a string`. C'est contracté comme tel : la
+    frontière est la voie de lecture (macro typée contre `find_str_param`), pas une préférence de
+    message, et ramener ce site vers `Reason::Other` serait un changement de comportement des gabarits
+    plutôt qu'une purge (décision actée). La forme d'habillage finale du @handlebars::RenderError
     (préfixe « Render error ») appartient à @handlebars et n'est pas verrouillée.
   `to_ordored_toml_value` — Reason::Other `to_toml: can not convert a Json Number: <v>` :
     branche défensive, inatteignable par @serde_json::Number standard, aucune Scenario ne la
@@ -226,13 +245,29 @@ Handles:
     est rogné par la découpe locale ; à la lecture, aucune rognage n'existe, @serde_yaml accepte
     le document avec ou sans préfixe. ./yaml.sdd documente la même asymétrie de son côté ; les
     deux modules restent indépendants.
-  Chaîne vide partout — `{{ json_to_str "" }}`, `{{ str_to_json "" }}`,
-    `{{ json_query "" "" }}` et `{{ json_str_query "" "" }}` rendent la chaîne vide sans
-    atteindre les parsers ; `{{ json_to_str null }}` et `{{ json_str_query "x" "null" }}`...
-    la valeur Null côté écriture rend aussi la chaîne vide.
-  Requêtes JMESPath sans correspondance — le résultat est `null` ; `json_query` le rend comme
-    valeur nulle dans le template, `json_str_query` le force en `json` compact « null » après
-    trim — la coercition JMESPath exacte appartient à @jmespath 0.5.0.
+  Chaîne vide PARTOUT OÙ C'EST LE CONTENU QUI EST VIDE — `{{ json_to_str "" }}`,
+    `{{ str_to_json "" }}`, `{{ json_query "foo" "" }}` et `{{ json_str_query "foo" "" }}`
+    rendent la chaîne vide sans atteindre aucun parser ni aucun encodeur de format ;
+    `{{ json_to_str null }}` et
+    `{{ json_str_query "x" "null" }}`... la valeur Null côté écriture rend aussi la chaîne vide.
+    La cour-circuit porte sur la DONNÉE, jamais sur l'EXPRESSION : une expression vide est une
+    expression @jmespath invalide et rend MESURÉ l'erreur `query failure for expression ''`, y
+    compris sur une donnée elle-même vide (`{{ json_query "" "" }}` et
+    `{{ json_str_query "" "" }}` sont deux erreurs, pas deux chaînes vides — décision actée).
+    Une formulation antérieure de cette clause rangeait ces deux doubles-vides dans le court-circuit :
+    démentie par mesure, et aucun test ne la jouait puisque tous les gabarits du module passent
+    `"foo"` comme expression.
+  Requêtes JMESPath sans correspondance — le résultat est `null` : `json_query` le rend comme
+    VALEUR nulle dans le template (faux dans un `@handlebars::if`, la coercition exacte appartenant à
+    @jmespath 0.5.0), `json_str_query` rend la CHAÎNE VIDE. Cette asymétrie est mesurée et contractée
+    telle quelle : `json_str_query` passe par la même écriture que `json_to_str`, dont le bras
+    `Json::Null` précède le DISPATCH du format — donc `null` y devient `""` dans les cinq formats
+    reconnus, comme partout ailleurs dans le module (le triptyque de `Returns:` est le seul repli
+    silencieux). Précision mesurée, ma formulation précédente était fausse : le court-circuit ne
+    précède pas la VALIDATION du format, `find_data_format` s'exécutant avant l'écriture dans les deux
+    helpers — `{{ json_to_str null format="zzz" }}` rend l'erreur `data format unknown 'zzz'` et non
+    la chaîne vide, idem côté `json_str_query`. Une formulation antérieure de cette clause promettait un `json` compact « null » :
+    démentie par mesure (`{{ json_str_query "missing" "{\"foo\":\"bar\"}" }}` rend `""`), retirée.
   Valeur non textuelle sur les paramètres de chaîne — `find_str_param` la refuse en erreur
     explicite (`{{str_to_json 5}}` échoue), une erreur de gabarit ne se masque pas en résultat
     vide. `null` en position de chaîne EST une valeur non textuelle et tombe sous le même refus :
@@ -272,15 +307,12 @@ Tasks:
     non-coercition des non-chaînes en paramètres, l'égouttage Null et l'ordonnancement TOML,
     la sortie trim/compacte du `json_str_query` scalaire vs tableau-vs-format, la rognure
     `---\n` à l'écriture yaml seule, et la branche échec de `json_query`.
-  [ ] Trancher la famille d'erreur du premier paramètre de `json_query` : @serde_json::Value et
-    l'expression sont lus par la macro @handlebars_helper (voie typée, distincte de
-    `find_str_param`), et `{{ json_query null {"a":1} }}` rend MESURÉ `ParamTypeMismatchForName` —
-    une famille que `Raises:` ne nomme pas. Trois issues : contracter `ParamTypeMismatchForName` dans
-    `Raises:` pour ce site, ramener ce site vers la famille `Reason::Other` des autres helpers (un
-    changement de comportement, pas une purge), ou le laisser hors contrat comme détail @handlebars.
-    Écart PRÉEXISTANT, trouvé en sondant autre chose : aucun comportement n'a bougé ici, et aucune des
-    trois issues n'est décidée — à instruire par le développeur principal avant d'écrire quoi que ce
-    soit.
+  [x] Verrouiller par test @scenario-l'expression de json_query parle la famille de la macro et non
+    celle de `find_str_param`, la décision étant prise (contracter `ParamTypeMismatchForName`, voir
+    `Raises:`) : equality sur la raison de l'échec, et assertion que le message ne porte PAS
+    `is not a string` — les deux voies d'erreur doivent rester distinguishables dans les deux sens, un
+    test qui se contenterait de `is_err()` ne prouverait rien. Écart PRÉEXISTANT trouvé en sondant
+    autre chose : ce verrou n'accompagne aucun changement de comportement.
   [x] `find_str_param` : refuser un paramètre non-chaîne en erreur explicite
     `param <N> (the string) is not a string` au lieu de `unwrap_or("")` (décision actée : une
     erreur de gabarit doit se voir) ; test d'abord depuis le Scenario dédié. Portée ajoutée par
@@ -290,20 +322,40 @@ Tasks:
     absente, le second n'étant nommé par aucun test avant cette tâche. Le `Must` les couvrait, les
     rendre nommément joués évite qu'un futur passage en 1-based ou qu'inversion des deux refus
     reste vert.
-  [ ] Corriger ../docs/handlebars_helpers.md section 8 SUR SES DEUX AFFIRMATIONS FAUSSES :
+  [x] Corriger ../docs/handlebars_helpers.md section 8 SUR SES DEUX AFFIRMATIONS FAUSSES :
     d'une part « All accept format= », faux pour `json_query` où `format=` est un no-op (décision
     actée : la requête ne lit pas de format) ; d'autre part, l.212, « Empty or `null` input to any of
     these returns an empty string rather than an error », faux depuis que `find_str_param` refuse le
     non-chaîne — `null` en paramètre chaîne échoue (`{{ str_to_json null }}`), le `""` sans erreur
-    étant réservé aux paramètres valeur typés JSON et aux chaînes vides. La section doit décrire ce
-    que la spec contracte, pas ce que le code faisait avant.
-  [ ] Trancher le sort de @fn-sort_toml_map, tri privé no-op observable dans le graphe courant
-    (voir le `Must` de la conversion TOML) : le retirer avec son commentaire de source, le garder
-    en corrigeant ce commentaire qui invoque une faute `ValueAfterTable` disparue de @toml 0.8.23
-    et @toml_edit 0.22.27, ou activer `toml/preserve_order` au manifest — dans ce dernier cas le
-    reproducteur @indexmap entre dans le graphe de la porte `hbs` et l'ordre d'insertion devient
-    un comportement observable promis aux consommateurs. Les trois issues sont compatibles avec la
-    spec courante ; la troisième est un changement de contrat, pas une purge (à instruire).
+    étant réservé aux paramètres valeur typés JSON et aux chaînes vides, et un `format` inconnu
+    échouant avant même le court-circuit. La section doit décrire ce que la spec contracte, pas ce que
+    le code faisait avant. Troisième point à couvrir, ajouté après
+    mesure : l'asymétrie du NON-MATCH JMESPath entre `json_query` (valeur nulle dans le template, donc
+    faux dans un `if`) et `json_str_query` (chaîne vide), contractée par le `Handles:` « Requêtes
+    JMESPath sans correspondance » — la première mouture du doc est restée muette dessus, ce qui
+    laisse le lecteur deviner laquelle des deux faces il tient. Quatrième point : dire que le PREMIER
+    paramètre de `json_query` refuse aussi le non-chaîne, mais par la famille `ParamTypeMismatchForName`
+    de la macro typée et non par `is not a string` (voir `Raises:`) — le silence actuel du doc se lit
+    comme une exclusion alors que les paramètres chaîne de la famille `find_str_param` y sont nommés.
+  [x] Verrouiller par test @scenario-le format passe sur json_query sans rien changer : les trois
+    rendus identiques et l'absence d'erreur sur `format="bogus"` côté `json_query`, en regard du
+    `data format unknown 'bogus'` que rendent les cinq autres sur la même valeur. Contrat déjà écrit
+    dans `Exposes:` et `Accepts:`, documenté, mesuré vert par l'agent `validator` — mais jamais joué
+    par un test du module depuis l'écriture de la spec.
+  [x] Verrouiller par test @scenario-l'expression vide échoue là où la donnée vide courte-circuite :
+    equality sur `query failure for expression ''` pour les deux doubles-vides, SUCCÈS à chaîne vide
+    pour les deux formes `"foo" ""`, et le `But` sur `format="zzz"` ignoré par `json_query`. Les
+    trois membres ensemble sont le verrou : l'échec seul ne prouverait rien si quelqu'un faisait
+    courte-circuiter l'expression vide, et les succès seuls ne prouveraient rien si quelqu'un la
+    faisait échouer.
+  [x] Retirer @fn-sort_toml_map, son type auxiliaire `TablePartition` et son commentaire de source
+    (décision actée : le garder en ne corrigeant que le commentaire laisserait du code sans effet, et
+    activer `toml/preserve_order` serait promettre l'ordre d'insertion aux consommateurs — un
+    changement de contrat, pas une purge). Retrait à périmètre NEUTRE : @toml::Table est déjà un
+    @std::collections::BTreeMap dans ce graphe, donc l'appel disparaît avec l'effet qu'il n'avait pas.
+    Verrou : @scenario-vers toml les null sortent et les tables descendent, joué et vert APRÈS le
+    retrait, sa sortie sérialisée exacte ne bougeant pas d'un octet ; et la porte `hbs` rejouée avec
+    sa matrice, seule porte qui compile ce code.
   [x] Réécrire les assertions de test dont le résultat dépend de l'ordre des clés JSON pour
     comparer des @serde_json::Value parsées, non des chaînes (décision actée : l'ordre n'est
     jamais contractuel). FERMÉE SANS CHANGEMENT, sur vérification de l'agent `validator` : les neuf
@@ -368,6 +420,51 @@ Scenario: le paramètre chaîne manquant ou non textuel parle
   But `{{ json_str_query "x" }}` rend toujours `param 1 (the string) not found` : une position
     absente précède le refus de type
 
+Scenario: l'expression de json_query parle la famille de la macro et non celle de find_str_param
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_query null {"a":1} }}`, le mot-clé `null` en position d'expression
+  Then l'échec est un @handlebars::RenderError dont la raison est `ParamTypeMismatchForName` : ce
+    paramètre est lu par la voie typée de @handlebars_helper (`expr: str`), pas par `find_str_param`
+  And le message de l'échec ne contient PAS la chaîne `is not a string`, les deux familles
+    d'erreur restant distinguishables dans les deux sens
+  But `{{ json_str_query null "{\"a\":1}" }}`, même valeur non-chaîne en position de Chaîne, rend
+    `param 0 (the string) is not a string` : la frontière est la VOIE DE LECTURE du paramètre, pas sa
+    valeur
+
+Scenario: le format passe sur json_query sans rien changer
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_query "foo" {"foo":"bar"} }}` sans `format`, puis avec
+    `format="yaml"`, puis avec `format="json_pretty"`
+  Then les trois rendus sont IDENTIQUES entre eux et rendent `bar` : `json_query` ne lit jamais le
+    hash `format`, qui est un no-op sur ce seul helper des six. L'identité EST assertée entre les
+    trois rendus et pas seulement contre une constante, pour qu'une dérive qui décale les trois
+    rougisse
+  And `{{ json_query "foo" {"foo":"bar"} format="bogus" }}` rend ENCORE `bar` sans erreur, alors que
+    `{{ str_to_json "x" format="bogus" }}` rend `data format unknown 'bogus'` — un hash que rien ne
+    lit ne peut pas être refusé, et le contraste est ce qui empêche ce verrou de devenir décoratif si
+    `format` se mettait à être lu partout
+  # Le SECOND paramètre de `json_query` est une VALEUR que rien ne parse (c'est la différence avec
+  # `json_str_query`, qui lit une chaîne) : `{{ json_query "foo" "\"foo\":\"bar\"" }}` rend la
+  # chaîne vide, pas `bar`. Un gabarit de cette Scenario écrit sur une chaîne échappée rendait donc
+  # `""` — transcription fausse, corrigée sur la forme objet littéral effectivement jouée par le test
+  # Verrouille `Exposes:` (« ne lit pas `format` »), longtemps mesuré par l'agent `validator` sans
+  # aucun test de module pour le tenir.
+
+
+Scenario: l'expression vide échoue là où la donnée vide courte-circuite
+  Given un engine de test avec les six helpers
+  When un template évalue `{{ json_query "" "" }}` et `{{ json_str_query "" "" }}`, expression ET
+    donnée vides
+  Then les deux échouent sur l'erreur `query failure for expression ''`, aucune des deux ne rendant
+    la chaîne vide : ce qui courte-circuite est la donnée, jamais l'expression
+  And `{{ json_query "foo" "" }}` et `{{ json_str_query "foo" "" }}` restent des SUCCÈS à la chaîne
+    vide, la même donnée vide étant court-circuitée dès que l'expression est tenante
+  But `{{ json_query "foo" "" format="zzz" }}` rend ENCORE la chaîne vide, @crate::hbs_json::json_query
+    ne validant jamais le hash `format` que les cinq autres valident avant tout rendu
+  # Le contraste des trois premiers membres est la matière du verrou : il ne suffit pas de tester
+  # l'échec, il faut que le succès voisin sur la même donnée empêche un futur court-circuit global.
+
+
 Scenario: la rognure --- precède le yaml écrit seulement
   Given un engine de test avec les six helpers
   When un template évalue `{{ json_to_str {"a":1} format="yaml" }}`
@@ -429,8 +526,9 @@ Scenario: vers toml les null sortent et les tables descendent
   Given un @serde_json::Value `{"z":1,"b":null,"arr":[1,null],"tab":{"k":2}}`
   When la conversion privée vers @toml::Value est exercée depuis le module sous `hbs`
   Then la clé `b` disparaît et le tableau perd son élément null
-  And l'ordre observable est celui de la SÉRIALISATION @toml — les valeurs scalaires précèdent
-    les sous-tables — et non l'ordre d'insertion du tri local : @toml 0.8 sans sa feature
+  And l'ordre observable est celui de la SÉRIALISATION @toml — les valeurs NON-TABLE (scalaires et
+    tableaux entrelacés alphabétiquement) précèdent les SECTIONS de sous-tables — et non l'ordre
+    d'insertion du tri local : @toml 0.8 sans sa feature
     `preserve_order` (hors de ./Cargo.toml) backingue ses maps par @std::collections::BTreeMap, si
     bien que l'ordre d'insertion n'est observable nulle part dans ce graphe. Le test verrouille
     donc la sortie sérialisée exacte, pas une liste de clés

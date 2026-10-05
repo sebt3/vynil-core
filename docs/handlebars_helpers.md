@@ -197,8 +197,12 @@ Vendored from `handlebars_misc_helpers` 0.17.0's json feature (CC0-1.0) into `sr
 against `jmespath 0.5.0` directly rather than the crate's own pinned `jmespath 0.3.0` — see
 "Feature tags" above for why.
 
-All accept an optional `format=` hash argument: `"json"` (default), `"json_pretty"`, `"yaml"`,
-`"toml"`, or `"toml_pretty"`.
+Five of the six accept an optional `format=` hash argument (hash argument only, never positional):
+`"json"` (default), `"json_pretty"`, `"yaml"`, `"toml"`, or `"toml_pretty"`. An absent or
+non-string `format` means `json`; the value is matched case-insensitively (`format="YAML"` works),
+and any other string value — the empty string included — fails the render with
+`data format unknown '<value>'` rather than falling back to `json`. `json_query` is the one
+exception: it never reads `format` — see its row below.
 
 | Helper | Form | Purpose |
 |---|---|---|
@@ -206,10 +210,46 @@ All accept an optional `format=` hash argument: `"json"` (default), `"json_prett
 | `json_to_str` | `(value)` | Serializes `value` to a string in `format` |
 | `{{#from_json}}…{{/from_json}}` | block | Parses the block's rendered content as JSON, re-emits it in `format` |
 | `{{#to_json}}…{{/to_json}}` | block | Parses the block's rendered content as `format`, re-emits it as pretty JSON |
-| `json_query` | `(expr, data)` | [JMESPath](https://jmespath.org/) query against a JSON value; `null` if nothing matches |
-| `json_str_query` | `(expr, s)` | Same, but parses `s` first (as `format`) and re-serializes the result in `format` (falls back to plain JSON for scalar results) |
+| `json_query` | `(expr, data)` | [JMESPath](https://jmespath.org/) query against a JSON value; renders the result as a JSON value (navigable in the template), not a string; `null` if nothing matches. Does **not** read `format` — passing one is a no-op |
+| `json_str_query` | `(expr, s)` | Same JMESPath query, but parses `s` first (as `format`); container results (arrays/objects) are re-serialized in `format`, any other result falls back to trimmed plain JSON |
 
-Empty or `null` input to any of these returns an empty string rather than an error.
+Whether empty input is tolerated depends on the *nature of the parameter*, not on emptiness alone:
+
+- Empty strings short-circuit without reaching a parser: `{{ str_to_json "" }}`,
+  `{{ json_to_str "" }}`, `{{ json_query "foo" "" }}`, `{{ json_str_query "foo" "" }}` and an
+  empty (or absent) block body all render an empty string, in any of the five recognized formats.
+- `null` in a JSON-*value* parameter renders an empty string too: `{{ json_to_str null }}` → `""`
+  in any of the five recognized formats, and `{{ json_query "foo" null }}` renders
+  the null result — empty output.
+- `null` in a *string* parameter is an error, not an empty string: the string parameters
+  (`str_to_json`'s `s`, `json_str_query`'s `expr` and `s`) reject every non-string —
+  `{{ str_to_json null }}` and `{{ str_to_json 5 }}` both fail the render with
+  `param 0 (the string) is not a string`. A missing parameter says so as well:
+  `param <N> (the string) not found`, and `param 0 (the json) not found` for `json_to_str`'s
+  value.
+
+Apart from those empty/`null` short-circuits there is no silent fallback: unparsable content, an
+unknown `format` value or an invalid JMESPath expression all fail the render — even on empty or
+`null` input. On the five helpers that read `format`, the short-circuits spare the *rendering*,
+never the `format` validation: `{{ json_to_str null format="zzz" }}` fails with
+`data format unknown 'zzz'` rather than rendering `""` (same on the empty and `json_str_query`
+sides). `json_query` reads no `format` at all and validates nothing:
+`{{ json_query "foo" "" format="zzz" }}` renders `""`.
+
+The short-circuit is on the *data*, never on the *expression*: an empty expression is simply an
+invalid JMESPath expression, so `{{ json_query "" "" }}` and `{{ json_str_query "" "" }}` fail
+with `query failure for expression ''` even though their data is empty too.
+
+A non-string *first* parameter of `json_query` is rejected too, but by a different error family:
+it is not read by the path above — it is a typed `handlebars_helper` parameter (`expr: str`), so
+the failure is a Handlebars `ParamTypeMismatchForName`, not a `param <N> (the string) is not a
+string` message.
+
+A JMESPath non-match is not an error, but the two query helpers render it asymmetrically:
+`json_query` yields a *null value* in the template — falsy, so
+`{{#if (json_query "missing" data)}}…{{else}}…{{/if}}` takes the `else` branch — while
+`json_str_query` renders the *empty string*: its result goes through the same writer as
+`json_to_str`, whose `null` branch precedes the *dispatch* on `format` — not its validation.
 
 ## 9. `handlebars_misc_helpers` — jsonnet feature
 
