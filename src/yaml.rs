@@ -139,17 +139,325 @@ pub fn yaml_rhai_register(engine: &mut Engine) {
 mod tests {
     use super::*;
 
-    // Scenario « chaîne vide, `null` côté Rust comme côté script » (yaml.sdd l.351-355),
-    // face Rust : `yaml_str_to_json("")` rend `serde_json::Value::Null` — la concordance
-    // avec l'unité côté script est jouée en `mod script` ci-dessous.
+    // Scenario « document mapping converti en JSON » : `image: nginx\nreplicas: 3\n` rend un
+    // `Value::Object` dont `image` vaut la chaîne `nginx` et `replicas` le nombre `3`.
+    #[test]
+    fn scenario_document_mapping_converti_en_json() {
+        let v = yaml_str_to_json("image: nginx\nreplicas: 3\n").expect("document valide");
+        let obj = v.as_object().expect("un Value::Object est attendu");
+        assert_eq!(obj.len(), 2);
+        assert_eq!(obj["image"], serde_json::Value::String("nginx".to_string()));
+        assert_eq!(obj["replicas"], serde_json::json!(3));
+    }
+
+    // Scenario « scalaire nu résolu en nombre JSON » : `42\n` rend un `Value::Number` valant
+    // 42, pas la chaîne `"42"`.
+    #[test]
+    fn scenario_scalaire_nu_resolu_en_nombre_json() {
+        let v = yaml_str_to_json("42\n").expect("scalaire valide");
+        assert!(v.is_number(), "`42` devait être un nombre, obtenu {v:?}");
+        assert!(!v.is_string(), "jamais la chaîne `42`");
+        assert_eq!(v, serde_json::json!(42));
+    }
+
+    // Scenario « formes booléennes restreintes et nuances numériques » (Handles « Formes
+    // booléennes », « Nombres nus ») : seules les six formes usuelles sont booléennes, `007`
+    // et les dates restent chaînes, `1e3` est un f64.
+    #[test]
+    fn scenario_formes_booleennes_restreintes_et_nuances_numeriques() {
+        let t = yaml_str_to_json("TRUE\n").expect("`TRUE` est un document valide");
+        assert!(
+            t.is_boolean(),
+            "`TRUE` devait rendre un booléen JSON, obtenu {t:?}"
+        );
+        assert_eq!(t, serde_json::json!(true));
+        assert_eq!(yaml_str_to_json("no\n").unwrap(), serde_json::json!("no"));
+        assert_eq!(yaml_str_to_json("007\n").unwrap(), serde_json::json!("007"));
+        assert_eq!(yaml_str_to_json("1e3\n").unwrap(), serde_json::json!(1000.0));
+        assert_eq!(
+            yaml_str_to_json("2024-05-06\n").unwrap(),
+            serde_json::json!("2024-05-06")
+        );
+    }
+
+    // Scenario « clé scalaire non chaîne stringifiée », face Rust (Handles « Clé scalaire non
+    // chaîne ») : `1: un` et `true: un` rendent les clés chaîne `1` et `true` sans erreur.
+    // Le membre script `yaml_decode("1: un")["1"]` est tenu par le `But` de
+    // `scenario_cle_de_mapping_non_scalaire_refusee_sans_forme_debug` (même engine).
+    #[test]
+    fn scenario_cle_scalaire_non_chaine_stringifiee() {
+        let v = yaml_str_to_json("1: un\n").expect("clé entière stringifiée, jamais une erreur");
+        assert_eq!(v.as_object().expect("une map").len(), 1);
+        assert_eq!(v["1"], serde_json::json!("un"));
+        let v = yaml_str_to_json("true: un\n").expect("clé booléenne stringifiée, jamais une erreur");
+        assert_eq!(v["true"], serde_json::json!("un"));
+    }
+
+    // Scenario « clés dupliquées, la dernière gagne côté Rust » : la map rendue a une clé `a`
+    // UNIQUE valant `2` (écrasement `serde_json`, divergence contractée avec la face script —
+    // voir `scenario_cles_dupliquees_refusees_cote_script_dernieres_gagnantes_cote_rust`).
+    #[test]
+    fn scenario_cles_dupliquees_la_derniere_gagne_cote_rust() {
+        let v = yaml_str_to_json("a: 1\na: 2\n").expect("la face Rust ne refuse pas les doublons");
+        let obj = v.as_object().expect("une map");
+        assert_eq!(obj.len(), 1, "une clé `a` unique, pas deux entrées conservées");
+        assert_eq!(obj["a"], serde_json::json!(2), "la dernière valeur lue gagne");
+    }
+
+    // Scenario « multi-document refusé par la conversion mono-document » : equality EXACTE,
+    // le Scenario promet « son affichage est exactement … sans position » (mesuré : le message
+    // `serde_yaml` de ce refus ne porte pas de position).
+    #[test]
+    fn scenario_multi_document_refuse_par_la_conversion_mono_document() {
+        let err = yaml_str_to_json("a: 1\n---\nb: 2\n")
+            .expect_err("plus d'un document doit être refusé par la voie mono-document");
+        assert!(
+            matches!(err, Error::YamlError(_)),
+            "`Error::YamlError` attendu, obtenu {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "YamlError: deserializing from YAML containing more than one document is not supported"
+        );
+    }
+
+    // Scenario « syntaxe invalide, message serde_yaml avec position » : préfixe `YamlError: `
+    // + message scanner portant la position. `starts_with` + `contains` argumentés : le
+    // Scenario contracte le préfixe et la présence de la position, pas la queue du message
+    // (`while parsing a flow sequence …`) qui est de l'idiome interne serde_yaml. La forme
+    // mesurée complète est verrouillée quand même : `did not find expected ',' or ']' at
+    // line 2 column 1`. Membre And : le `source()` est `None` — la structure `serde_yaml`
+    // est détruite par la conversion unique du module.
+    #[test]
+    fn scenario_syntaxe_invalide_message_serde_yaml_avec_position() {
+        let err = yaml_str_to_json("key: [unclosed\n")
+            .expect_err("une séquence non fermée est une syntaxe invalide");
+        assert!(
+            matches!(err, Error::YamlError(_)),
+            "`Error::YamlError` attendu, obtenu {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("YamlError: "),
+            "l'affichage devait commencer par `YamlError: `, obtenu : {msg}"
+        );
+        assert!(
+            msg.contains("did not find expected ',' or ']' at line 2 column 1"),
+            "le message scanner devait porter sa position, obtenu : {msg}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_none(),
+            "le `serde_yaml::Error` d'origine n'est joignable par aucune `source()`"
+        );
+    }
+
+    // Scenario « map JSON rendue triée, sans marqueur, newline final » : equality EXACTE sur
+    // `a: x\nb: 1\n` (le Scenario promet un ordre trié et un newline final — un `contains`
+    // ne verrouillerait ni l'ordre ni la fin), plus l'absence de tout `---`.
+    #[test]
+    fn scenario_map_json_rendue_triee_sans_marqueur_newline_final() {
+        let out = yaml_serialize_to_string(&serde_json::json!({"b": 1, "a": "x"})).expect("map sérialisable");
+        assert_eq!(out, "a: x\nb: 1\n", "clé `a` avant clé `b`, newline final");
+        assert!(!out.contains("---"), "aucun marqueur de document : {out:?}");
+    }
+
+    // Scenario « `None` et unité rendus `null` » : equality exacte `null\n` sur chacun.
+    #[test]
+    fn scenario_none_et_unite_rendus_null() {
+        assert_eq!(
+            yaml_serialize_to_string(&Option::<String>::None).unwrap(),
+            "null\n"
+        );
+        assert_eq!(yaml_serialize_to_string(&()).unwrap(), "null\n");
+    }
+
+    // Auxiliaire du Scenario « octets refusés par la face Rust sans la feature `rhai` » :
+    // type écrit à la main dont le `Serialize` émet un événement `serialize_bytes`, sans
+    // aucune dépendance de feature — exactement le chemin `serde` qu'emprunte
+    // `rhai::Dynamic` pour son propre blob.
+    struct OctetsNus;
+
+    impl serde::Serialize for OctetsNus {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(&[1u8, 2, 3])
+        }
+    }
+
+    // Scenario « octets refusés par la face Rust sans la feature `rhai` » : hors toute porte
+    // `cfg`, joué par `cargo test --no-default-features` comme les autres tests de face Rust
+    // du module — le refus d'octets n'a rien d'un comportement Rhai, c'est `serde_yaml` qui
+    // refuse l'événement `bytes`. Verrouillés : la NATURE (`Error::YamlError`) et l'équality
+    // EXACTE du message, pas un `is_err()` nu ni un `contains`. Même `Raises:` que le
+    // Scenario blob (sous `mod script`), atteint par la voie serde nue.
+    #[test]
+    fn scenario_octets_refuses_par_la_face_rust_sans_la_feature_rhai() {
+        let err = yaml_serialize_to_string(&OctetsNus).expect_err("serde_yaml refuse un événement `bytes`");
+        match err {
+            Error::YamlError(msg) => assert_eq!(
+                msg,
+                "serialization and deserialization of bytes in YAML is not implemented"
+            ),
+            other => panic!("`Error::YamlError` attendu, obtenu {other:?}"),
+        }
+    }
+
+    // Espion du Scenario « slice vide, chaîne vide, sans tentative » : consigne dans
+    // `TENTEE` le fait que sa `Serialize::serialize` a été appelée. Isolation du `static` :
+    // `Espion` et `TENTEE` sont privés à ce `mod tests` et `Espion` n'est référencé AUCUN
+    // PART ailleurs dans la crate — aucun autre test ne peut voir ni rougir `TENTEE`,
+    // l'isolation est garantie par l'espace de noms, pas par le timing. Le `store(false)`
+    // initial du test reste défensif si un futur test empruntait l'espion.
+    static TENTEE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    struct Espion;
+
+    impl serde::Serialize for Espion {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+            TENTEE.store(true, std::sync::atomic::Ordering::SeqCst);
+            serializer.serialize_i32(1)
+        }
+    }
+
+    // Scenario « slice vide, chaîne vide, sans tentative » : deux assertions distinctes.
+    // Then — `Ok` d'une chaîne vide. And — AUCUNE sérialisation n'a été tentée : le membre
+    // est observable, `yaml_all_serialize_to_string` appelant `serde_yaml::to_string` sur
+    // chaque élément — l'espion ci-dessus rend l'appel visible et son silence le verrouille
+    // (mordant montré par mutation : passer `&[Espion]` rougit `!TENTEE`).
+    #[test]
+    fn scenario_slice_vide_chaine_vide_sans_tentative() {
+        TENTEE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let out = yaml_all_serialize_to_string(&[] as &[Espion]).expect("slice vide : `Ok`");
+        assert_eq!(out, "", "Then — une chaîne vide pour un slice vide");
+        assert!(
+            !TENTEE.load(std::sync::atomic::Ordering::SeqCst),
+            "And — aucune sérialisation n'a été tentée : la boucle ne doit appeler \
+             `serde_yaml::to_string` sur aucun élément d'un slice vide"
+        );
+    }
+
+    // Scenario « série de deux valeurs marquées » : equality exacte `---\na: 1\n---\nb: 2\n`
+    // (préfixe par valeur, dans l'ordre, sans `...` final), et le membre And — la chaîne se
+    // relit comme deux documents par `serde_yaml`.
+    #[test]
+    fn scenario_serie_de_deux_valeurs_marquees() {
+        let vals = [serde_json::json!({"a": 1}), serde_json::json!({"b": 2})];
+        let out = yaml_all_serialize_to_string(&vals).expect("deux maps sérialisables");
+        assert_eq!(out, "---\na: 1\n---\nb: 2\n");
+        let docs: Vec<serde_yaml::Value> = serde_yaml::Deserializer::from_str(&out)
+            .map(|d| <serde_yaml::Value as serde::Deserialize>::deserialize(d).unwrap())
+            .collect();
+        assert_eq!(docs.len(), 2, "la chaîne rendue se relit comme deux documents");
+        assert_eq!(docs, vec![
+            serde_yaml::from_str::<serde_yaml::Value>("a: 1").unwrap(),
+            serde_yaml::from_str::<serde_yaml::Value>("b: 2").unwrap(),
+        ]);
+    }
+
+    // Auxiliaire du Scenario « série interrompue, sortie partielle abandonnée » : un type
+    // homogène sérialisable dont une variante échoue en `Serialize`, pour placer la faute en
+    // seconde position du slice et observer l'abandon de la sortie déjà construite.
+    #[derive(Debug)]
+    enum SondeSeriale {
+        Rendu(serde_json::Value),
+        Explode,
+    }
+
+    #[derive(Debug)]
+    struct FauteSonde;
+
+    impl std::fmt::Display for FauteSonde {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("sonde de test : echec de Serialize")
+        }
+    }
+
+    impl std::error::Error for FauteSonde {}
+
+    impl serde::Serialize for SondeSeriale {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+            match self {
+                Self::Rendu(v) => serde::Serialize::serialize(v, serializer),
+                Self::Explode => Err(serde::ser::Error::custom(FauteSonde)),
+            }
+        }
+    }
+
+    // Scenario « série interrompue, sortie partielle abandonnée » : contrat d'ABANDON — le
+    // `---\na: 1\n` déjà construit quand la seconde valeur échoue n'est restitué sous aucune
+    // forme : l'erreur est seule rendue, son texte porte le refus `Serialize` remonté tel
+    // quel, et ne charrie pas la sortie partielle.
+    #[test]
+    fn scenario_serie_interrompue_sortie_partielle_abandonnee() {
+        let vals = [
+            SondeSeriale::Rendu(serde_json::json!({"a": 1})),
+            SondeSeriale::Explode,
+        ];
+        let err = yaml_all_serialize_to_string(&vals)
+            .expect_err("la seconde valeur qui échoue doit interrompre la série");
+        match &err {
+            Error::YamlError(msg) => {
+                assert!(
+                    msg.contains("sonde de test"),
+                    "le refus `Serialize` devait être remonté tel quel : {msg}"
+                );
+                assert!(
+                    !msg.contains("---"),
+                    "la sortie déjà construite ne revient pas avec l'erreur : {msg}"
+                );
+            }
+            other => panic!("`Error::YamlError` attendu, obtenu {other:?}"),
+        }
+        // Double verrou d'abandon : aucune forme textuelle de l'erreur ne porte le préfixe
+        // tronqué `---\na: 1\n` (la variante `YamlError(String)` ne sait rien de la sortie).
+        assert!(
+            !format!("{err:?}").contains("---\na: 1"),
+            "l'appelant ne voit jamais un préfixe tronqué"
+        );
+    }
+
+    // Scenario « API Rust vivante sans la feature `rhai` » — verrou de COMPILATION, pas un
+    // test décoratif : `./lib.rs` déclare `pub mod yaml;` sans aucun `#[cfg]` et les trois
+    // helpers ne portent pas de porte (seuls `yaml_rhai_register`, les deux conversions
+    // privées et leurs `use` sont sous `#[cfg(feature = "rhai")]`). Ce test, placé hors de
+    // toute porte interne, EST joué sous `cargo test --no-default-features` : appeler les
+    // trois helpers sous cette porte prouve qu'ils compilent et s'appellent sans `rhai`.
+    // L'absence de `yaml_rhai_register` sous cette porte est verrouillée à la compilation
+    // par son `#[cfg]` (tout appel hors porte échouerait à compiler), et `./engine.rs` n'est
+    // pas compilé sans `rhai`. Le reste du verrou est outillage : `cargo hack --each-feature`.
+    #[test]
+    fn scenario_api_rust_vivante_sans_la_feature_rhai() {
+        assert_eq!(yaml_str_to_json("a: 1\n").unwrap(), serde_json::json!({"a": 1}));
+        assert_eq!(
+            yaml_serialize_to_string(&serde_json::json!({"a": 1})).unwrap(),
+            "a: 1\n"
+        );
+        assert_eq!(
+            yaml_all_serialize_to_string(&[] as &[serde_json::Value]).unwrap(),
+            ""
+        );
+    }
+
+    // Scenario « chaîne vide, `null` côté Rust comme côté script » (face Rust) ET Scenario
+    // « document vide, commentaire ou null rendent `null` » (les quatre entrées `""`, `---\n`,
+    // `~\n`, commentaire seul) — le test existant est complété pour couvrir tous les membres,
+    // aucun second test empilé. La concordance avec l'unité côté script est jouée en
+    // `mod script` ci-dessous.
     #[test]
     fn scenario_chaine_vide_rust_face_null() {
-        assert_eq!(yaml_str_to_json("").unwrap(), serde_json::Value::Null);
+        for input in ["", "---\n", "~\n", "# commentaire seul\n"] {
+            assert_eq!(
+                yaml_str_to_json(input)
+                    .unwrap_or_else(|e| panic!("`{input:?}` est un document valide, obtenu {e}")),
+                serde_json::Value::Null,
+                "`{input:?}` devait rendre `Value::Null` sans erreur"
+            );
+        }
     }
 
     #[cfg(feature = "rhai")]
     mod script {
         use super::*;
+
 
         // Engine fraîchement enregistré par `yaml_rhai_register` (spec : c'est l'enregistreuse
         // qui est contractuelle, pas `Script::new_bare` — réservé au Scenario d'intégration).
@@ -353,14 +661,28 @@ mod tests {
                 .expect_err("le second document fautif doit faire échouer le multi");
             let msg = err.to_string();
             let attendu = format!("YamlError: {}", refus_serde_yaml("a: 1\n---\nbroken: [\n", 2));
-            assert!(
-                msg.contains(&attendu),
-                "message attendu `{attendu}`, obtenu : {msg}"
+            // Equality exacte sur le texte porté par le module, extrait de son enveloppe rhai :
+            // `ErrorRuntime(Dynamic)` — la conversion `rhai_err` du crate (`lib.rs`) fabrique
+            // cette variante depuis la chaîne de la source ; le décorateur de rhai
+            // (« Runtime error: … (line, position) ») n'est pas un contrat du module. Le
+            // Scenario Then : « message `YamlError: ` suivi du refus serde_yaml » — le refus
+            // complet, position incluse, rien d'autre.
+            let inner = match err.as_ref() {
+                rhai::EvalAltResult::ErrorRuntime(d, _) => d.as_immutable_string_ref().unwrap().to_string(),
+                other => panic!("l'erreur devait venir de la fonction enregistrée, obtenu : {other}"),
+            };
+            assert_eq!(
+                inner, attendu,
+                "message attendu `{attendu}`, obtenu wrapper complet : {msg}"
             );
             assert!(
                 !msg.contains("a: 1"),
                 "le document valide déjà parcouru ne devait être restitué nulle part : {msg}"
             );
+            // Contrat d'abandon : `yaml_decode_multi` retourne `Result<Vec<Dynamic>, _>` — par
+            // construction, aucun `Vec` partiel ne transite par le canal d'erreur (il est jeté
+            // avec le `?`). Le seul artefact restituables est la chaîne d'erreur, verrouillée
+            // ci-dessus exacte et sans contenu de document.
         }
 
         // Must l.83-86 (« Un document null au milieu d'un flux rend l'unité à sa position ») :
@@ -618,6 +940,218 @@ mod tests {
                  FLOTTANT et non un entier (la voie d'avant saturait à i64::MAX), obtenu \
                  type `{}` : {v:?}",
                 v.type_name()
+            );
+        }
+
+        // Scenario « octets refusés par le YAML » : un blob `Dynamic` (construit en Rust par
+        // `Dynamic::from_blob` — le moteur n'enregistre aucun constructeur d'octets pour les
+        // scripts) est refusé par `yaml_serialize_to_string`. Verrouillé : la NATURE
+        // (`Error::YamlError`) et le message exact d'amont, pas un simple `is_err()`.
+        // Ce test sous `rhai` tient le `Given` blob du Scenario ; le refus lui-même n'est
+        // PAS un comportement Rhai — la voie serde nue le verrouille hors toute porte dans
+        // `scenario_octets_refuses_par_la_face_rust_sans_la_feature_rhai` (modulaire : le
+        // chemin `serde` est le même, `Dynamic` sérialise son blob par `serialize_bytes`).
+        #[test]
+        fn scenario_octets_refuses_par_le_yaml() {
+            let blob = Dynamic::from_blob(vec![1u8, 2, 3]);
+            let err = yaml_serialize_to_string(&blob).expect_err("serde_yaml ne sait pas rendre des octets");
+            match err {
+                Error::YamlError(msg) => assert_eq!(
+                    msg,
+                    "serialization and deserialization of bytes in YAML is not implemented"
+                ),
+                other => panic!("`Error::YamlError` attendu, obtenu {other:?}"),
+            }
+        }
+
+        // Scenario « map de script encodée en chaîne triée » : equality EXACTE sur
+        // `key: v\nn: 2\n` (mesuré) — le Scenario promet un ordre trié (`key` avant `n`) et
+        // le `Returns` un newline final ; un `contains` ne verrouillerait ni l'un ni l'autre.
+        // La surcharge retenue pour `#{}` est la voie `Map`.
+        #[test]
+        fn scenario_map_de_script_encodee_en_chaine_triee() {
+            let e = engine();
+            let out = eval_array(&e, r#"let s = yaml_encode(#{ key: "v", n: 2 }); [type_of(s), s]"#);
+            assert_eq!(
+                out[0].as_immutable_string_ref().unwrap().as_str(),
+                "string",
+                "`type_of` devait rendre `string`"
+            );
+            assert_eq!(
+                out[1].as_immutable_string_ref().unwrap().as_str(),
+                "key: v\nn: 2\n",
+                "clé `key` avant clé `n`, newline final"
+            );
+        }
+
+        // Scenario « scalaires et collections vides encodées » : les quatre appels réussissent
+        // (le `expect` de chacun tient le `But` : aucun n'est une erreur RhaiRes — tout est
+        // joué dans un seul snippet dont l'évaluation échouerait à la première erreur) et
+        // rendent exactement `42\n`, `true\n`, `{}\n`, `[]\n` (mesuré), chacun visible comme
+        // `string`.
+        #[test]
+        fn scenario_scalaires_et_collections_vides_encodees() {
+            let e = engine();
+            let out = eval_array(
+                &e,
+                r"[
+                    type_of(yaml_encode(42)), yaml_encode(42),
+                    type_of(yaml_encode(true)), yaml_encode(true),
+                    type_of(yaml_encode(#{})), yaml_encode(#{}),
+                    type_of(yaml_encode([])), yaml_encode([])
+                ]",
+            );
+            for (label, kind, attendu) in [
+                ("42", 0usize, "42\n"),
+                ("true", 2, "true\n"),
+                ("#{}", 4, "{}\n"),
+                ("[]", 6, "[]\n"),
+            ] {
+                assert_eq!(
+                    out[kind].as_immutable_string_ref().unwrap().as_str(),
+                    "string",
+                    "`yaml_encode({label})` devait être visible comme `string`"
+                );
+                assert_eq!(
+                    out[kind + 1].as_immutable_string_ref().unwrap().as_str(),
+                    attendu,
+                    "rendu exact attendu pour `yaml_encode({label})` (newline final inclus)"
+                );
+            }
+        }
+
+        // Scenario « chaîne ressemblant à un nombre citée au rendu » : equality EXACTE sur
+        // `'42'\n` — citée pour ne pas redevenir un nombre au retour (Handles « Rendu des
+        // chaînes ambiguës » : le module ne verrouille aucun style de citation, c'est la
+        // forme mesurée de serde_yaml qui est figée ici).
+        #[test]
+        fn scenario_chaine_ressemblant_a_un_nombre_citee_au_rendu() {
+            let e = engine();
+            let out = e
+                .eval::<String>(r#"yaml_encode("42")"#)
+                .expect("une chaîne s'encode");
+            assert_eq!(out, "'42'\n");
+        }
+
+        // Scenario « aller-retour sur une map de script » : comparaison de VALEURS parsées
+        // (leçon `hbs_json.sdd` : pas de comparaison de chaînes quand l'ordre des clés n'est
+        // pas contractuel) — `name` revient en chaîne `test` (Then) ET `count` en entier 3,
+        // la map étant revenue de même forme.
+        #[test]
+        fn scenario_aller_retour_sur_une_map_de_script() {
+            let e = engine();
+            let out = eval_array(
+                &e,
+                r#"let m = #{"name": "test", "count": 3};
+                    let r = yaml_decode(yaml_encode(m));
+                    [type_of(r), r["name"], type_of(r["count"]), r["count"]]"#,
+            );
+            assert_eq!(out[0].as_immutable_string_ref().unwrap().as_str(), "map");
+            assert_eq!(out[1].as_immutable_string_ref().unwrap().as_str(), "test");
+            assert_eq!(out[2].as_immutable_string_ref().unwrap().as_str(), "i64");
+            assert!(out[3].is_int(), "`count` devait revenir entier, pas chaîne");
+            assert_eq!(out[3].as_int().unwrap(), 3);
+        }
+
+        // Scenario « valeur décodée typée côté script » : le typage est laissé à serde
+        // (Must « le module ne corrige ni ne normalise rien ») — on compare des VALEURS et
+        // des types parsés, pas des chaînes : `count` entier 42, `enabled` booléen vrai,
+        // `items[1]` chaîne `second`, `type_of(m)` = `map`. Second And : suite YAML →
+        // `array`, second élément la chaîne `deux`.
+        #[test]
+        fn scenario_valeur_decodee_typree_cote_script() {
+            let e = engine();
+            let out = eval_array(
+                &e,
+                r#"let m = yaml_decode("count: 42\nenabled: true\nitems:\n  - first\n  - second\n");
+                    [type_of(m), m["count"], m["enabled"], m["items"][1]]"#,
+            );
+            assert_eq!(out[0].as_immutable_string_ref().unwrap().as_str(), "map");
+            assert!(out[1].is_int(), "`count` devait être un nombre, pas une chaîne");
+            assert_eq!(out[1].as_int().unwrap(), 42);
+            assert!(out[2].is_bool(), "`enabled` devait être un booléen");
+            assert!(out[2].as_bool().unwrap(), "`enabled` devait être `true`");
+            assert_eq!(out[3].as_immutable_string_ref().unwrap().as_str(), "second");
+            // Second And — suite : `array`, second élément la chaîne `deux`.
+            let out = eval_array(
+                &e,
+                r#"let d = yaml_decode("- 1\n- deux"); [type_of(d), d.len(), d[1]]"#,
+            );
+            assert_eq!(out[0].as_immutable_string_ref().unwrap().as_str(), "array");
+            assert_eq!(out[1].as_int().unwrap(), 2);
+            assert_eq!(out[2].as_immutable_string_ref().unwrap().as_str(), "deux");
+        }
+
+        // Scenario « noms absents d'un engine nu, présents après enregistrement » : avant/
+        // après sur le MÊME engine (patron `client_name`/`glob`). Le `But` verrouille que
+        // seuls les trois noms de script sont posés : les noms des helpers Rust n'apparaissent
+        // pas sur l'engine.
+        #[test]
+        fn scenario_noms_absents_dun_engine_nu_present_apres_enregistrement() {
+            let mut e = Engine::new();
+            // Avant enregistrement : fonction inconnue.
+            let err = e
+                .eval::<Dynamic>(r#"yaml_decode("a: 1")"#)
+                .expect_err("un engine nu ne connaît pas `yaml_decode`");
+            assert!(
+                err.to_string().contains("Function not found: yaml_decode"),
+                "l'échec devait être une erreur de fonction inconnue, obtenu : {err}"
+            );
+            // Après enregistrement sur le MÊME engine : le même script réussit.
+            crate::yaml::yaml_rhai_register(&mut e);
+            let v = e
+                .eval::<Dynamic>(r#"yaml_decode("a: 1")["a"]"#)
+                .expect("après enregistrement, `yaml_decode` doit réussir");
+            assert_eq!(v.as_int().unwrap(), 1);
+            // … et les trois noms sont présents.
+            for snippet in [r"type_of(yaml_encode(42))", r#"yaml_decode_multi("a: 1").len()"#] {
+                let _v = e
+                    .eval::<Dynamic>(snippet)
+                    .unwrap_or_else(|err| panic!("`{snippet}` devait réussir, obtenu : {err}"));
+            }
+            // But — aucun nom des helpers Rust n'apparaît sur cet engine.
+            for name in ["yaml_to_json", "yaml_to_string", "yaml_all_serialize_to_string"] {
+                let err = e
+                    .eval::<Dynamic>(&format!("{name}(\"a: 1\")"))
+                    .expect_err(&format!("`{name}` ne doit pas être enregistré sur l'engine"));
+                assert!(
+                    err.to_string().contains("Function not found"),
+                    "`{name}` ne devait pas exister sur l'engine, obtenu : {err}"
+                );
+            }
+        }
+
+        // Scenario « engine de `Script::new_bare` livré avec les trois noms » — seul Scenario
+        // d'intégration : engine construit par `Script::new_bare` (chemin de résolution vide),
+        // les trois noms ayant été posés par `yaml_rhai_register`.
+        #[test]
+        fn scenario_engine_new_bare_livre_avec_les_trois_noms() {
+            let mut s = crate::engine::Script::new_bare(vec![]);
+            let v = s
+                .eval(r#"yaml_decode(yaml_encode(yaml_decode_multi("a: 1\n---\na: 2\n")[0]))["a"]"#)
+                .expect("les trois noms doivent être présents sur un Script nu");
+            assert!(v.is_int(), "`a` devait être un nombre, type {}", v.type_name());
+            assert_eq!(
+                v.as_int().unwrap(),
+                1,
+                "le premier document, encodé puis redécodé"
+            );
+        }
+
+        // Scenario « argument non chaîne jamais converti » : l'échec doit être une erreur de
+        // FONCTION INCONNUE nommant la surcharge `(i64)` — preuve qu'aucune coercition
+        // scalaire vers String n'existe pour ce paramètre (si coercition il y avait, l'appel
+        // réussirait, et l'erreur serait d'une autre nature).
+        #[test]
+        fn scenario_argument_non_chaine_jamais_converti() {
+            let e = engine();
+            let err = e
+                .eval::<Dynamic>("yaml_decode(42)")
+                .expect_err("aucune surcharge scalaire vers String n'existe pour `yaml_decode`");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Function not found: yaml_decode (i64)"),
+                "l'échec devait nommer la surcharge absente `(i64)`, obtenu : {msg}"
             );
         }
     }

@@ -270,12 +270,24 @@ Handles:
     trois noms n'existe sur l'engine.
 
 Tasks:
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant, dans un `mod tests` sous
+  [x] Convertir chaque Scenario de cette spec en test Rust passant, dans un `mod tests` sous
     `#[cfg(test)]` de ./yaml.rs — appels Rust directs pour les helpers Rust, engine construit
     par @crate::yaml::yaml_rhai_register pour les noms de script, un engine @Script::new_bare
-    seulement pour le Scenario d'intégration ; garder les onze `test_yaml_*` existants de
-    ./engine.rs qui font déjà foi d'une partie des comportements. Aucun test inline n'existe à
-    ce jour dans ./yaml.rs : les trente Scenario sont à convertir.
+    seulement pour le Scenario d'intégration. Le terrain n'est plus vierge : les deux tâches de
+    contrat déjà closes y ont laissé quatorze tests (dont cinq nommés d'après leur Scenario), et
+    DIX `test_yaml_*` vivent encore dans le `mod tests` de ./engine.rs et font foi d'une partie des
+    comportements — les garder intacts et verts, le onzième étant mort avec le seuil (voir la tâche
+    dédiée). Sont donc à convertir les Scenario de @scenario-document mapping converti en JSON à
+    @scenario-API Rust vivante sans la feature `rhai` qui n'ont encore aucun test nommé — vérifier
+    Scenario par Scenario, et dire pour ceux qui le sont déjà quel test les tient plutôt que d'en
+    empiler un second. Restes à verrouiller à la date de cette tâche (trouvés par l'agent
+    `validator`, ses deux affirmations d'implementer étant infirmées par mesure) : le refus d'octets
+    par la face Rust SANS @rhai (@scenario-octets refusés par la face Rust sans la feature `rhai`,
+    test hors toute porte `cfg`), et le membre « aucune sérialisation n'a été tentée » de
+    @scenario-slice vide, chaîne vide, sans tentative, verrouillable par un @serde::Serialize espion.
+    Fermée à trente-six Scenario tous tenants, trente-sept tests dans ./yaml.rs dont QUINZE joués sous
+    `cargo test --no-default-features` (les faces Rust hors toute porte `cfg`), les dix `test_yaml_*`
+    d'./engine.rs intacts et verts, et zéro membre `And` ou `But` laissé sans verrou.
   [x] Retirer le seuil `val.len() <= 5` de `yaml_decode_multi` et faire passer `yaml_decode` /
     `yaml_decode_multi` par @serde_yaml::Value puis @rhai::Dynamic (null → unité), test
     d'abord depuis les Scenario ci-dessous ; retirer le quirk de ../docs/rhai_helpers.md
@@ -334,10 +346,12 @@ Scenario: clé scalaire non chaîne stringifiée
   And de même `true: un\n` rend la clé `true` chaîne
   And en script, `yaml_decode("1: un")["1"]` rend la chaîne `un`
 
-Scenario: clés dupliquées, la dernière gagne
+Scenario: clés dupliquées, la dernière gagne côté Rust
   Given la chaîne `a: 1\na: 2\n`
   When @crate::yaml::yaml_str_to_json est appelé dessus
   Then la map retournée a une clé `a` unique valant `2`
+  # Face Rust seulement : la face script refuse le doublon, voir @scenario-clés dupliquées
+  # refusées côté script, dernières gagnantes côté Rust
 
 Scenario: multi-document refusé par la conversion mono-document
   Given la chaîne `a: 1\n---\nb: 2\n`
@@ -368,6 +382,10 @@ Scenario: slice vide, chaîne vide, sans tentative
   When @crate::yaml::yaml_all_serialize_to_string est appelé dessus
   Then `Ok` d'une chaîne vide est retourné
   And aucune sérialisation n'a été tentée
+  # « Aucune tentative » EST observable : un @serde::Serialize écrit à la main dans le test consigne
+  # son appel (un @std::sync::atomic::AtomicBool suffit) et rend le membre verrouillable sans changer
+  # la production. L'appeler « inobservable » serait faux — @crate::yaml::yaml_all_serialize_to_string
+  # appelle @serde_yaml::to_string sur chaque élément, donc l'absence d'appel se voit.
 
 Scenario: série de deux valeurs marquées
   Given le slice de deux objets JSON `{"a": 1}` et `{"b": 2}`
@@ -385,6 +403,19 @@ Scenario: octets refusés par le YAML
   Given un @rhai::Dynamic blob construit en Rust avec `@rhai::Dynamic::from_blob`
   When @crate::yaml::yaml_serialize_to_string est appelé dessus
   Then un @crate::Error::YamlError est retourné portant exactement le message `serialization and deserialization of bytes in YAML is not implemented`
+
+Scenario: octets refusés par la face Rust sans la feature `rhai`
+  Given un type de test dont @serde::Serialize appelle @serde::Serializer::serialize_bytes, écrit à la
+    main en Rust et ne dépendant d'aucune feature
+  When @crate::yaml::yaml_serialize_to_string est appelé dessus
+  Then @crate::Error::YamlError porte exactement le MÊME message `serialization and deserialization
+    of bytes in YAML is not implemented` que @scenario-octets refusés par le YAML : les deux
+    Scenario verrouillent le même `Raises:` de deux faces d'entrée différentes : MESURÉ, le message
+    est identique au caractère près, ce qui est le seul garant — que @rhai::Dynamic sérialise son blob
+    par `serialize_bytes` est une inférence sur ce chemin @serde, pas une lecture du code de @rhai
+  And le test de ce Scenario est joué par `cargo test --no-default-features`, sans `#[cfg(feature =
+    "rhai")]`, comme les autres tests de face Rust du module ; le refus d'octets n'a rien d'un
+    comportement Rhai
 
 Scenario: map de script encodée en chaîne triée
   Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
