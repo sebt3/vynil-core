@@ -15,11 +15,15 @@ References:
   ./lib.rs — déclare `pub mod yaml;` sans aucune porte `cfg` et ne réexporte aucun item du
     module à la racine de la crate ; le module y puise @crate::Error, @crate::Result,
     @crate::RhaiRes et @crate::rhai_err.
-  ./engine.rs — @Script::new_bare est l'unique appelant de @crate::yaml::yaml_rhai_register ;
-    les onze tests `test_yaml_*` existants vivent dans son `mod tests`, ./yaml.rs n'en a aucun.
+  ./engine.rs — @Script::new_bare est l'unique appelant de @crate::yaml::yaml_rhai_register ; des
+    onze tests `test_yaml_*` qui y vivent, dix font foi de comportements du présent module et
+    restent verts sans modification ; le onzième,
+    @test_yaml_decode_multi_short_string_returns_empty, verrouille le seuil `val.len() <= 5` et meurt
+    avec lui (tâche dédiée ci-dessous). ./yaml.rs n'avait aucun test avant la conversion.
   ../docs/rhai_helpers.md — section 6, même surface `yaml_encode` / `yaml_decode` /
-    `yaml_decode_multi` ; le court-circuit des entrées de cinq octets ou moins y est documenté
-    comme un quirk, à retirer de la doc avec le seuil.
+    `yaml_decode_multi`, désalignée du quirk et donc ressynchronisée sur le comportement réel : un
+    élément par document, entrées courtes comprises, document vide ou en commentaires seul rendant
+    l'unité.
   ./hbs_json.rs — le `format="yaml"` des helpers Handlebars `json_to_str`, `str_to_json`,
     `from_json`, `to_json` appelle @serde_yaml directement, avec sa propre découpe du préfixe
     `---\n`, et ne transite jamais par ce module.
@@ -28,11 +32,13 @@ References:
 
 Must:
   @crate::yaml compile dans toutes les combinaisons de features : sa déclaration dans ./lib.rs
-    ne porte aucun `#[cfg]`, et ./yaml.rs ne porte que trois portes `#[cfg(feature = "rhai")]` —
-    le `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
-    `use rhai::{@rhai::Dynamic, @rhai::Engine, @rhai::ImmutableString, @rhai::Map}` et
-    @crate::yaml::yaml_rhai_register — les trois helpers Rust étant donc appelables sous
-    `cargo test --no-default-features`.
+    ne porte aucun `#[cfg]`, et ./yaml.rs ne porte que CINQ portes `#[cfg(feature = "rhai")]` en
+    production — le `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
+    `use rhai::{@rhai::Dynamic, @rhai::Engine, @rhai::ImmutableString, @rhai::Map}`, les deux
+    conversions privées @dynamic_from_yaml_value et @yaml_key_to_string que la voie
+    @serde_yaml::Value a fait naître, et @crate::yaml::yaml_rhai_register — les trois helpers Rust
+    étant donc appelables sous `cargo test --no-default-features`. Le `#[cfg(test)]` du `mod tests`
+    et ses portes internes ne comptent pas ici.
   Il n'existe qu'une seule conversion d'erreur dans le module, appliquée sur chaque appel
     @serde_yaml : `map_err(|e| @crate::Error::YamlError(e.to_string()))`. Le @serde_yaml::Error
     structuré est détruit là — ni @std::error::Error::source conservée, ni
@@ -82,8 +88,11 @@ Must:
     « null » pour un document vide.
   `yaml_decode_multi` itère @serde_yaml::Deserializer::from_str, un élément par document, et
     s'arrête à la première erreur : les documents déjà rassemblés sont jetés avec elle. Un
-    document null au milieu d'un flux rend l'unité à sa position ; le nombre de documents
-    d'un flux vide est celui qu'énumère @serde_yaml, figé par un test.
+    document null au milieu d'un flux rend l'unité à sa position. Le nombre de documents d'un flux
+    « vide » est celui qu'énumère @serde_yaml et non ce que le bon sens lui prêterait : la chaîne
+    vide `""` comme `---\n` comme un fichier de commentaires seul donnent CHACUN un document,
+    réduit à l'unité — pas zéro document (mesuré, figé par @scenario-un flux vide énumère un document unité ;
+    @serde_yaml::Deserializer::from_str émet un item pour un flux sans contenu, décision actée).
   Le typage YAML → valeur est laissé à serde, le module ne corrige ni ne normalise rien :
     @rhai::Dynamic accepte booléen, chaîne, entier, flottant, map, array et unité, @serde_yaml
     ne reconnaît comme booléens que les six formes `true`/`TRUE`/`True`/`false`/`FALSE`/`False`
@@ -187,6 +196,10 @@ Raises:
   @crate::yaml::yaml_all_serialize_to_string — les mêmes erreurs, portées dès la première
     valeur qui refuse d'être rendue, avec la sortie déjà construite perdue.
   @crate::yaml::yaml_rhai_register — rien : les quatre enregistrements ne peuvent échouer.
+  `yaml_decode` — une erreur @crate::RhaiRes `YamlError: ...` pour une syntaxe @serde_yaml
+    refusée, pour un document contenant plus d'un document, et pour les trois refus de valeur nés
+    de la voie @serde_yaml::Value : clé dupliquée, clé de mapping non scalaire, entier hors de la
+    gamme que @serde_yaml sait typer.
   `yaml_encode` — une erreur @crate::RhaiRes `YamlError: ...` pour toute valeur
     @rhai::Dynamic que @serde_yaml ne sait pas rendre, le blob en tête avec le message des
     octets susdit ; un blob n'est néanmoins pas atteignable depuis un script par les seuls
@@ -206,12 +219,49 @@ Handles:
   Nombres nus — décimal signé tenu en `i64`, formes `0x`, `0o`, `0b` résolues en entiers,
     flottants comme `1e3` rendus `1000.0` en `f64`, chiffres à zéros guidés (`007`) et dates
     non portées (`2024-05-06`) laissés chaînes.
+  Nombre hors de `i64` — les deux faces DIVERGENT, et la divergence est contractée comme celle des
+    clés dupliquées : au-dessus de @i64::MAX, @serde_yaml (voie script) bascule en `f64` —
+    `9223372036854775809` devient `9.223372036854776e18`, une valeur approximée — tandis que
+    @serde_json (voie Rust @crate::yaml::yaml_str_to_json) tient l'entier exact jusqu'à @u64::MAX et
+    ne rend un `f64` qu'au-delà, où il refuse (`JSON number out of range`) ; la voie script refuse
+    aussi au-delà de @u64::MAX, sur une erreur de type mentionnant `u128`. Sous @i64::MIN, plus
+    aucun `f64` de secours n'est possible et les DEUX faces refusent (mention `i128` côté script,
+    `JSON number out of range` côté Rust). Le refus sous @i64::MIN est un changement assumé : la
+    voie directe @rhai::Dynamic d'avant rendait silencieusement `9223372036854775807`, une valeur
+    fausse — préférable à un nombre inventé (décisions actées).
   Clé scalaire non chaîne — une clé entière ou booléenne est stringifiée par @serde_yaml avant
     d'entrer en map : `1: un` rend la clé `1` chaîne des deux côtés, sans erreur ni avertissement.
-  Clés dupliquées — la dernière valeur lue gagne, @serde_json::Map comme @rhai::Map étant des
-    maps à clé unique ; le module n'avertit pas.
+  Clé de mapping non scalaire — une clé@séquence ou carte (`? [1,2]` puis `: v`) n'a pas de forme
+    de clé côté script et est REFUSÉE par @yaml_key_to_string en erreur nommant la position du
+    paramètre, jamais convertie en sa représentation `Debug` : une chaîne de Debug deviendrait un
+    nom de clé visible des scripts et searchable par eux (décision actée, la face Rust
+    @crate::yaml::yaml_str_to_json refusant déjà ces clés par `expected a string key`). La «
+    position » que le message nomme est l'INDEX D'ENTRÉE dans le mapping (0-based), pas une ligne
+    ni une colonne : @serde_yaml::Value ne porte plus la localisation d'un nœud une fois la valeur
+    construite, et remonter la ligne voudrait dire refaire la désérialisation à la main. Une clé
+    TAGGUée suit la politique des tags de ce module (le tag est abandonné, le contenu décide) : une
+    clé scalaire tagguée réussit comme son contenu, une clé dont le contenu est une séquence ou une
+    carte est refusée comme eux.
+  Clés dupliquées — les deux faces DIVERGENT, et c'est contracté tel quel : côté script
+    (@crate::yaml::yaml_decode, @crate::yaml::yaml_decode_multi), @serde_yaml refuse la valeur
+    dupliquée en désérialisant @serde_yaml::Value (`duplicate entry with key "a"`, branche
+    @serde_yaml::Mapping des clés déjà vues) et le module propage l'erreur sans rien rattraper ;
+    côté Rust (@crate::yaml::yaml_str_to_json), @serde_json garde la dernière valeur lue sans
+    avertir. La divergence vient du point de contrôle, pas du module : @rhai::Map et
+    @serde_json::Map sont des maps à clé unique qui écrasent, @serde_yaml::Value est un
+    @std::vec::Vec de paires qui refuse à la lecture. Rétablir last-wins côté script exigerait de
+    réécrire la désérialisation YAML et de traiter le null à la main — ce que la voie Value
+    supprimait (décision actée).
   Ancres, alias, fusions, marqueurs `---` et `...` — traités par @serde_yaml avant que le
     module ne voie la valeur, qui n'a rien à faire de cet aspect.
+  Tag inconnu — un tag non résolu par @serde_yaml (`!Custom`, `!Ref`) arrive en
+    @serde_yaml::Value::Tagged : @dynamic_from_yaml_value ABANDONNE le tag et rend
+    le contenu nu (`!Custom\nfoo` rend la chaîne `foo`, `a: !Custom` suivi de `b: 1` rend la map),
+    sans erreur. @rhai::Dynamic n'a aucune forme pour porter un tag, et l'alternative — refuser —
+    ferait casser un script sur un tag que le document, lui, contient légitimement. Les tags
+    reconnus (`!!str`, `!!int`, `!!binary`) ne passent jamais par ce bras, @serde_yaml les ayant
+    déjà résolus. La voie directe d'avant rendait `invalid type: enum` : le comportement change
+    volontairement (décision actée).
   Rendu des chaînes ambiguës — une chaîne qui ressemble à un nombre ou à un booléen est citée
     par @serde_yaml (`42` chaîne devient l'item `'42'`), le module ne verrouille aucun style de
     citation.
@@ -226,11 +276,33 @@ Tasks:
     seulement pour le Scenario d'intégration ; garder les onze `test_yaml_*` existants de
     ./engine.rs qui font déjà foi d'une partie des comportements. Aucun test inline n'existe à
     ce jour dans ./yaml.rs : les trente Scenario sont à convertir.
-  [ ] Retirer le seuil `val.len() <= 5` de `yaml_decode_multi` et faire passer `yaml_decode` /
+  [x] Retirer le seuil `val.len() <= 5` de `yaml_decode_multi` et faire passer `yaml_decode` /
     `yaml_decode_multi` par @serde_yaml::Value puis @rhai::Dynamic (null → unité), test
     d'abord depuis les Scenario ci-dessous ; retirer le quirk de ../docs/rhai_helpers.md
     section 6 (décision actée : le seuil cachait l'erreur du document vide, désormais traitée
     à la source).
+    Troisième artefact du même quirk à retirer avec lui : le test @test_yaml_decode_multi_short_string_returns_empty
+    de ./engine.rs, qui asserte `yaml_decode_multi("ab").len() == 0` et verrouille donc le seuil
+    disparu. Il meurt ici et n'est pas déplacé : @scenario-documents courts jamais ignorés, verrouillé
+    dans ./yaml.rs, en tient lieu sur les mêmes entrées (`a: 1`, `42`, `ok: 1`, `ab`). Les dix autres tests
+    `test_yaml_*` de ./engine.rs restent intacts et verts sans modification (décision du
+    développeur principal, la Reference ci-dessus ne valant pas propriété sur le fichier de
+    ./engine.sdd).
+  [x] Refuser les clés de mapping non scalaires dans @yaml_key_to_string (séquence et carte en
+    erreur nommant la position, jamais leur représentation `Debug`) et corriger les deux
+    commentaires de source qui portent des affirmations mesurées fausses : celui de
+    @yaml_key_to_string (« the non-scalar fallback (`Debug` form) keeps the conversion total and
+    panic-free » — le fallback devient un refus) et celui de @dynamic_from_yaml_value sur le bras
+    Tagged (« same visible value as through the serde visitor » — la voie directe rendait
+    `invalid type: enum`, pas la même valeur). Verrou : les quatre Scenario ajoutés par les
+    décisions actées (@scenario-clés dupliquées refusées côté script, dernières gagnantes côté
+    Rust, @scenario-tag inconnu abandonné, contenu rendu, @scenario-clé de mapping non scalaire
+    refusée sans forme Debug, @scenario-entier sous i64 refusé plutôt qu'inventé) plus
+    @scenario-un flux vide énumère un document unité, tous joués et passants.
+  [x] Donner à @crate::yaml::yaml_rhai_register sa section `# Errors` de rustdoc, que le `Must` des
+    quatre items `pub` exige et qu'elle n'a pas depuis avant cette campagne (écart trouvé par
+    l'agent `validator` en relisant la doc de HEAD, identique sur HEAD : ce n'est pas une régression
+    introduite par la voie @serde_yaml::Value).
 
 Scenario: document mapping converti en JSON
   Given la chaîne `image: nginx\nreplicas: 3\n`
@@ -406,3 +478,53 @@ Scenario: API Rust vivante sans la feature `rhai`
   When la surface publique de @crate::yaml est inspectée
   Then @crate::yaml::yaml_str_to_json, @crate::yaml::yaml_serialize_to_string et @crate::yaml::yaml_all_serialize_to_string compilent et s'appellent depuis leur module
   But @crate::yaml::yaml_rhai_register n'existe pas et ./engine.rs n'est pas compilé
+
+Scenario: un flux vide énumère un document unité
+  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  When un script évalue `yaml_decode_multi("").len()`, `yaml_decode_multi("---\n").len()` et
+    `yaml_decode_multi("# commentaires seuls\n").len()`
+  Then les trois longueurs sont `1` et non `0` : @serde_yaml::Deserializer::from_str émet un item
+    pour un flux sans contenu
+  And l'élément de chacun est l'unité (`type_of` rend `()`), aucun ne rendant une erreur
+  And `yaml_decode_multi("---\n---\n")` énumère `2` éléments, tous deux unité
+
+Scenario: clés dupliquées refusées côté script, dernières gagnantes côté Rust
+  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  When un script évalue `yaml_decode("a: 1\na: 2\n")`
+  Then l'évaluation échoue en erreur @crate::RhaiRes dont le texte porte `duplicate entry with key
+    "a"`, le module ne rattrapant rien
+  When un script évalue `yaml_decode("a:\n  b: 1\n  b: 2\n")`
+  Then l'échec porte la même forme sur la clé imbriquée `b`
+  When un script évalue `yaml_decode_multi("a: 1\na: 2\n")`
+  Then l'échec est le même — la voie par document ne tolère pas le doublon non plus
+  But @crate::yaml::yaml_str_to_json sur `"a: 1\na: 2\n"` rend `#{"a":2}` sans erreur : les deux
+    faces divergent par contrat, la divergence étant le point de contrôle de @serde_yaml contre
+    l'écrasement de @serde_json
+
+Scenario: tag inconnu abandonné, contenu rendu
+  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  When un script évalue `yaml_decode("!Custom\nfoo\n")`
+  Then le rendu est la chaîne `foo`, le tag étant abandonné sans erreur
+  When un script évalue `yaml_decode("a: !Custom\nb: 1\n")`
+  Then la map est rendue avec `b` à `1`, le contenu du tag étant retenu nu
+  And `yaml_decode("!!str 5\n")` rend la chaîne `5` par le bras reconnu de @serde_yaml, sans
+    jamais traverser @dynamic_from_yaml_value en mode tag abandonné
+
+Scenario: clé de mapping non scalaire refusée sans forme Debug
+  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  When un script évalue `yaml_decode("? [1, 2]\n: v\n")`
+  Then l'évaluation échoue en erreur @crate::RhaiRes nommément, aucune clé n'étant fabriquée
+  And le message du refus ne contient AUCUNE chaîne de type `Sequence [Number` : la représentation
+    `Debug` d'une clé ne devient jamais un nom de clé visible d'un script
+  When un script évalue `yaml_decode("? {a: 1}\n: v\n")`
+  Then l'échec est de la même nature pour une clé carte
+  But `yaml_decode("1: un\n")` et `yaml_decode("true: un\n")` restent des SUCCÈS avec les clés
+    chaîne `1` et `true` : seuls les scalaires sont stringifiés
+
+Scenario: entier sous i64 refusé plutôt qu'inventé
+  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  When un script évalue `yaml_decode("-9223372036854775809\n")`
+  Then l'évaluation échoue, @serde_yaml ne trouvant pas de `f64` de secours sous @i64::MIN, et ne
+    rend surtout pas `9223372036854775807`
+  But `yaml_decode("9223372036854775809\n")` rend un FLOTTANT : @serde_yaml bascule au-dessus de
+    @i64::MAX, asymétrie venue de @serde_yaml et non du module

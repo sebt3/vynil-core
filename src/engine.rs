@@ -559,13 +559,6 @@ mod tests {
         assert_eq!(result.to_string(), "second");
     }
 
-    #[test]
-    fn test_yaml_decode_multi_short_string_returns_empty() {
-        let mut s = make_script();
-        let result = s.eval(r#"yaml_decode_multi("ab").len()"#).unwrap();
-        assert_eq!(result.cast::<i64>(), 0);
-    }
-
     // ── json_encode / json_decode ─────────────────────────────────────────────
 
     #[test]

@@ -154,7 +154,7 @@ Needs `crypto` (default on, like `rhai`) in addition to `rhai` — the whole mod
 |---|---|---|
 | `yaml_encode(value)` | `string` | |
 | `yaml_decode(text: string)` | dynamic | |
-| `yaml_decode_multi(text: string)` | `array` of dynamic | Splits on `---` document markers. **Quirk:** any input of 5 characters or less short-circuits to an empty array without attempting to parse. |
+| `yaml_decode_multi(text: string)` | `array` of dynamic | One element per YAML document, short inputs included. Empty, comment-only and null (`~`) documents yield unit values, never an error. |
 
 ## 7. `glob`
 
