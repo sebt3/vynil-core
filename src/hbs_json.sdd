@@ -31,7 +31,8 @@ References:
     déjà la même symétrie depuis l'autre côté.
   ../docs/handlebars_helpers.md — section 8 : table des six helpers, le `format=` (hors
     `json_query`, où il est un no-op à documenter),
-    « Empty or null input to any of these returns an empty string » et « `null` if nothing
+    « Empty or null input to any of these returns an empty string » — phrase à réécrire par la
+    tâche de doc, fausse depuis le refus de `find_str_param` — et « `null` if nothing
     matches » pour les requêtes JMESPath.
   ./Cargo.toml — la liste de la feature `hbs`,
     `hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:toml"]` :
@@ -98,11 +99,13 @@ Must:
     @serde_json::Number normal.
   Lire le TOML cible en @serde_json::Value (@toml::from_str sur le type de retour) comme les
     autres formats, avec la même voie d'erreur `to_nested_error`.
-  Rendre les paramètres chaîne manquants ou non-chaînes silencieusement vides sur les trois
-    helpers qui les lisent par la voie privée `find_str_param` : paramètre absent à une
+  Refuser au lieu de rendre silencieusement vides les paramètres chaîne manquants ou non-chaînes,
+    sur les TROIS lectures que deux helpers font par la voie privée `find_str_param` (`str_to_json`
+    en position zéro, `json_str_query` en positions zéro et une) : paramètre absent à une
     position donne l'erreur à message texte `param <N> (the string) not found` ; paramètre
     présent mais non-chaîne donne l'erreur à message texte `param <N> (the string) is not a
-    string`, jamais la chaîne vide. Le
+    string`, jamais la chaîne vide. L'absence est vérifiée AVANT le refus de type, donc un second
+    paramètre manquant rend `not found` et non `is not a string`. Le
     paramètre `data` de `json_to_str` (valeur JSON, position 0) est lu sans contrainte de
     type, seul l'absence donne `param 0 (the json) not found`.
   Se enregistrer sans toucher l'échappement : @handlebars::no_escape n'est posé que par
@@ -232,7 +235,15 @@ Handles:
     trim — la coercition JMESPath exacte appartient à @jmespath 0.5.0.
   Valeur non textuelle sur les paramètres de chaîne — `find_str_param` la refuse en erreur
     explicite (`{{str_to_json 5}}` échoue), une erreur de gabarit ne se masque pas en résultat
-    vide.
+    vide. `null` en position de chaîne EST une valeur non textuelle et tombe sous le même refus :
+    `{{ str_to_json null }}` échoue. La frontière n'est pas le `null` lui-même mais la NATURE du
+    paramètre : les paramètres VALEUR typés JSON acceptent `null` — `data` de
+    `json_to_str` en position zéro, second paramètre de `json_query` — tandis que les paramètres
+    CHAÎNE lus par `find_str_param` le refusent comme tout non-chaîne. Décision actée avec le
+    développeur principal — le `""` que rendait ce gabarit
+    venait de la coercition `unwrap_or("")` que cette tâche supprime, et aucun Scenario ne l'avait
+    jamais promise : le Scenario « vide et null rendent vide quel que soit le format » ne nomme que
+    les ÉCRITURES sur null.
   Combinaisons de features — sans `hbs` : module absent, ./hbs.rs absent, aucun des six noms
     n'existe nulle part ; `hbs` sans `crypto` ni `rhai` : les six noms sont enregistrés, la
     branche yaml compile car @serde_yaml est non optionnel, et @hbs_json ne dépend de
@@ -246,7 +257,9 @@ Tasks:
     `#[cfg(test)]` de ./hbs_json.rs, via l'auxiliaire `render` existant ou la face privée
     `DataFormat` directement ; rien n'atteint ces helpers hors templates Handlebars. Neuf tests
     existent : `empty_input_returns_empty` couvre les quatre cour-circuits vides ;
-    `null_input_returns_empty` les écritures Null ; `json_to_str_roundtrip` le
+    `null_input_returns_empty` les écritures Null — l'assertion de LECTURE `{{ str_to_json null }}`
+    qui s'y était glissée verrouillait la coercition et non un Scenario, elle est reprise par la
+    tâche `find_str_param` ; `json_to_str_roundtrip` le
     `json_to_str`/`str_to_json` imbriqués et l'objet littéral ; `json_query_extracts_field`
     l'extraction JMESPath imbriquée ; `json_str_query_on_yaml` et `json_str_query_on_toml` la
     lecture multi-format par la requête chaîne ; `to_json_block_wraps_rendered_content` et
@@ -259,11 +272,31 @@ Tasks:
     non-coercition des non-chaînes en paramètres, l'égouttage Null et l'ordonnancement TOML,
     la sortie trim/compacte du `json_str_query` scalaire vs tableau-vs-format, la rognure
     `---\n` à l'écriture yaml seule, et la branche échec de `json_query`.
-  [ ] `find_str_param` : refuser un paramètre non-chaîne en erreur explicite
+  [ ] Trancher la famille d'erreur du premier paramètre de `json_query` : @serde_json::Value et
+    l'expression sont lus par la macro @handlebars_helper (voie typée, distincte de
+    `find_str_param`), et `{{ json_query null {"a":1} }}` rend MESURÉ `ParamTypeMismatchForName` —
+    une famille que `Raises:` ne nomme pas. Trois issues : contracter `ParamTypeMismatchForName` dans
+    `Raises:` pour ce site, ramener ce site vers la famille `Reason::Other` des autres helpers (un
+    changement de comportement, pas une purge), ou le laisser hors contrat comme détail @handlebars.
+    Écart PRÉEXISTANT, trouvé en sondant autre chose : aucun comportement n'a bougé ici, et aucune des
+    trois issues n'est décidée — à instruire par le développeur principal avant d'écrire quoi que ce
+    soit.
+  [x] `find_str_param` : refuser un paramètre non-chaîne en erreur explicite
     `param <N> (the string) is not a string` au lieu de `unwrap_or("")` (décision actée : une
-    erreur de gabarit doit se voir) ; test d'abord depuis le Scenario dédié.
-  [ ] Corriger ../docs/handlebars_helpers.md section 8 : « All accept format= » est faux pour
-    `json_query`, où `format=` est un no-op (décision actée : la requête ne lit pas de format).
+    erreur de gabarit doit se voir) ; test d'abord depuis le Scenario dédié. Portée ajoutée par
+    l'arbitrage `null` et par la relecture de l'agent `validator` : verrouiller aussi les deux
+    derniers membres de @scenario-le paramètre chaîne manquant ou non textuel parle — le refus en
+    position UNE (`{{ json_str_query "x" null }}`) et le `But` qui garde `not found` sur une position
+    absente, le second n'étant nommé par aucun test avant cette tâche. Le `Must` les couvrait, les
+    rendre nommément joués évite qu'un futur passage en 1-based ou qu'inversion des deux refus
+    reste vert.
+  [ ] Corriger ../docs/handlebars_helpers.md section 8 SUR SES DEUX AFFIRMATIONS FAUSSES :
+    d'une part « All accept format= », faux pour `json_query` où `format=` est un no-op (décision
+    actée : la requête ne lit pas de format) ; d'autre part, l.212, « Empty or `null` input to any of
+    these returns an empty string rather than an error », faux depuis que `find_str_param` refuse le
+    non-chaîne — `null` en paramètre chaîne échoue (`{{ str_to_json null }}`), le `""` sans erreur
+    étant réservé aux paramètres valeur typés JSON et aux chaînes vides. La section doit décrire ce
+    que la spec contracte, pas ce que le code faisait avant.
   [ ] Trancher le sort de @fn-sort_toml_map, tri privé no-op observable dans le graphe courant
     (voir le `Must` de la conversion TOML) : le retirer avec son commentaire de source, le garder
     en corrigeant ce commentaire qui invoque une faute `ValueAfterTable` disparue de @toml 0.8.23
@@ -325,6 +358,15 @@ Scenario: le paramètre chaîne manquant ou non textuel parle
   When il évalue `{{ str_to_json 5 }}`, un nombre en position de chaîne
   Then le rendu échoue sur le message exactement `param 0 (the string) is not a string`, sans
     coercition en chaîne vide
+  When il évalue `{{ str_to_json null }}`, le mot-clé `null` de Handlebars en position de chaîne
+  Then le rendu échoue sur le MÊME message, `null` étant une valeur non textuelle comme `5` : les
+    paramètres valeur typés JSON (`data` de `json_to_str`, second paramètre de `json_query`)
+    acceptent `null`, les paramètres chaîne lus par `find_str_param` non
+  When il évalue `{{ json_str_query "x" null }}`, `null` en second paramètre chaîne
+  Then l'échec porte `param 1 (the string) is not a string`, la position refusée étant la seconde et
+    le premier paramètre étant une chaîne valide
+  But `{{ json_str_query "x" }}` rend toujours `param 1 (the string) not found` : une position
+    absente précède le refus de type
 
 Scenario: la rognure --- precède le yaml écrit seulement
   Given un engine de test avec les six helpers

@@ -185,9 +185,14 @@ fn find_data_format(h: &Helper) -> Result<DataFormat, RenderError> {
 }
 
 fn find_str_param(pos: usize, h: &Helper) -> Result<String, RenderError> {
-    h.param(pos)
-        .ok_or_else(|| to_other_error(format!("param {pos} (the string) not found")))
-        .map(|v| v.value().as_str().unwrap_or("").to_owned())
+    let param = h
+        .param(pos)
+        .ok_or_else(|| to_other_error(format!("param {pos} (the string) not found")))?;
+    param
+        .value()
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| to_other_error(format!("param {pos} (the string) is not a string")))
 }
 
 #[allow(non_camel_case_types)]
@@ -327,7 +332,6 @@ mod tests {
     #[test]
     fn null_input_returns_empty() {
         assert_eq!(render(r"{{ json_to_str null }}"), "");
-        assert_eq!(render(r"{{ str_to_json null }}"), "");
     }
 
     #[test]
@@ -529,17 +533,29 @@ mod tests {
         );
     }
 
-    // Tâche 2 de hbs_json.sdd : `find_str_param` doit refuser le non-chaîne en
-    // `param 0 (the string) is not a string` au lieu de `unwrap_or("")`. L'existant
-    // coerce `5` en chaîne vide et le gabarit rend "" — rouge jusqu'à la tâche 2.
     #[test]
-    #[ignore = "attend la tâche 2 de hbs_json.sdd : find_str_param coerce encore le non-chaîne en \"\""]
     fn non_string_string_param_is_not_coerced_to_empty() {
         // membre 3 : un nombre en position de chaîne échoue, sans coercition
         assert_eq!(
             other_msg(&render_err(r"{{ str_to_json 5 }}")),
             "param 0 (the string) is not a string"
         );
+        // membre 4 (Scenario « le paramètre chaîne manquant ou non textuel parle ») : `null`,
+        // non textuel comme `5`, tombe sous le même refus — les paramètres valeur typés JSON
+        // (`data` de `json_to_str`, second paramètre de `json_query`) l'acceptent, pas la chaîne
+        assert_eq!(
+            other_msg(&render_err(r"{{ str_to_json null }}")),
+            "param 0 (the string) is not a string"
+        );
+        // membre 5 : `null` en second paramètre chaîne — la position refusée est la seconde,
+        // la première étant une chaîne valide
+        assert_eq!(
+            other_msg(&render_err(r#"{{ json_str_query "x" null }}"#)),
+            "param 1 (the string) is not a string"
+        );
+        // But : `{{ json_str_query "x" }}` (position absente) rend toujours
+        // `param 1 (the string) not found` — une position absente précède le refus de type ;
+        // membre tenu par `missing_string_params_report_their_position`, non empilé ici
     }
 
     // ── Scenario « la rognure --- precède le yaml écrit seulement » ──
