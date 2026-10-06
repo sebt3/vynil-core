@@ -70,6 +70,14 @@ Must:
     ligne citant vyvil-core.sdd (règle de harnais de ../.specdd/bootstrap.project.md).
   @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format gardent
     leur `#[must_use]` : leurs deux seules voies utiles passent par la valeur de retour.
+    Sur `format` seul, l'attribut est porté avec une raison explicite
+    (`#[must_use = "the rendered string is the only output of formatting"]`) : le rendu étant
+    passé en `@crate::Result`, @clippy::double_must_use rougit sur un `#[must_use]` nu posé
+    sur un type déjà `must_use`, et la raison est la seule issue qui garde l'attribut sans
+    `#[allow]` — la lettre de ce `Must` est tenue, l'attribut s'appliquant à l'identique avec
+    ou sans raison. Tranché et vérifié lors de l'implémentation de la tâche « Supprimer le
+    panic sur format invalide » (`cargo clippy --all-targets -- -D warnings` au vert sur
+    cette porte comme sur les cinq autres portes explicites de la batterie).
 
 Must not:
   Exposer une création, un parsing ou un calcul de date aux scripts — pas de `date_from_*`,
@@ -107,10 +115,11 @@ Exposes:
   @crate::chrono::DateTimeHandler::now — `pub fn now() -> Self` marquée `#[must_use]`,
     lit l'horloge locale à chaque appel, sans cache.
   @crate::chrono::DateTimeHandler::format — `pub fn format(&self, fmt: &str) ->`
-    @std::string::String, marquée `#[must_use]`, sans validation préalable de `fmt`.
+    @crate::Result de @std::string::String, marquée `#[must_use]` avec raison explicite (ce que
+    dit le `Must` sur `#[must_use]`), sans validation préalable de `fmt`.
   @crate::chrono::DateTimeHandler::rhai_format — liaison Rhai de la méthode précédente,
     `pub fn rhai_format(&mut self, fmt:` @std::string::String `) ->`
-    @rhai::ImmutableString, présente seulement sous la feature `rhai`.
+    @crate::RhaiRes de @rhai::ImmutableString, présente seulement sous la feature `rhai`.
   @crate::chrono::chrono_rhai_register — seule fonction `pub` libre du module, sous la
     feature `rhai` : `pub fn chrono_rhai_register(engine: &mut` @rhai::Engine `)`,
     enregistreuse du type et de ses deux noms de script.
@@ -179,7 +188,7 @@ Tasks:
     n'existe à ce jour dans ./chrono.rs, et aucun test de la crate n'évoque `date_now`,
     `format` sur un handler ou @crate::chrono::DateTimeHandler hors ./engine.rs et
     ./docs/rhai_helpers.md : les vingt-deux Scenario sont à convertir.
-  [ ] Supprimer le panic sur format invalide (décision actée : un script ne peut pas paniquer
+  [x] Supprimer le panic sur format invalide (décision actée : un script ne peut pas paniquer
     l'hôte) : @crate::chrono::DateTimeHandler::format rend un @crate::Result via
     @std::fmt::Write::write_fmt, @crate::chrono::DateTimeHandler::rhai_format rend un
     @crate::RhaiRes ; les trois Scenario d'erreur ci-dessus sont à écrire en test d'abord, et
@@ -310,6 +319,11 @@ Scenario: new_bare fournit date_now et format
 
 Scenario: un motif invalide dans un script devient une erreur rattrapable
   Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
-  When un script évalue `try { d.format("%Q") } catch (e) { "rattrape" }`
+  When un script évalue `let r = ""; try { r = d.format("%Q"); } catch (e) { r = "rattrape"; } r`,
+    seule forme qui rende la valeur du rattrapage par l'évaluation elle-même : @rhai ne donne
+    l'instruction `try` que pour valeur `()`, la valeur du bloc n'étant pas la valeur du script
+    — mesuré en `ErrorMismatchOutputType("string", "()", none)` sur
+    `try { d.format("%Q") } catch (e) { "rattrape" }` écrit en dernière expression, qui rend
+    `()` et non la chaîne
   Then l'évaluation retourne `rattrape`
   And sans `try`, l'évaluation échoue en erreur @rhai portant `Invalid date format '%Q'`, sans panic
