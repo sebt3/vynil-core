@@ -49,6 +49,27 @@ Must:
   isolée, `k8s,oci,s3`, `--all-features`) : les analyses `pedantic` dépendent du graphe de
   features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
   uniquement en `--all-features` laisse passer des avertissements.
+  Porter `--all-targets` sur la porte `default` du harnais — `cargo clippy --all-targets
+  -- -D warnings` — comme le font déjà les six autres entrées de la liste et comme le joue la CI
+  (./.github/workflows/test.yml, job `clippy`) : sans ce flag, la porte la plus jouée de toutes ne
+  construit pas la cible `lib test`, donc un avertissement du harnais glissé dans un `mod tests`
+  de la lib y est STRUCTURELLEMENT invisible et n'est rattrapé que par le run final
+  `--all-features --all-targets`. La règle `cargo hack clippy --each-feature --no-dev-deps` ne
+  rattrape rien non plus : `--no-dev-deps` écarte précisément les cibles de développement
+  (décision actée, sens unique — c'est la batterie qui monte au niveau de la CI, jamais l'inverse).
+  Consigner le mérite réel de cette montée, mesuré et non supposé : à ce jour elle n'attrape aucun
+  avertissement que les six autres entrées `--all-targets` ne lintent déjà. Les DIX binaires de
+  ./tests ne portent aucun `#[cfg(feature = "...")]` et sont donc déjà triés intégralement par
+  `--all-features --all-targets`, la crate n'a aucune cible d'exemple, et le seul code de cible de
+  test négativement gated du dépôt (`src/lib.rs`, `#[cfg(not(feature = "rhai"))]
+  mod surface_without_features`) est exclu du graphe de TOUTES les entrées clippy cette porte
+  comprise — `rhai` est dans `default` et impliqué par `k8s`/`oci`/`s3`. L'apport est procédural et
+  défensif : la faute rougit dès la porte la plus jouée au lieu d'attendre le run final, et la
+  batterie cesse d'être plus lâche que la CI.
+  Ne tendre la porte que sur `default` : `--no-default-features --all-targets` et
+  `--no-default-features --features hbs --all-targets` restent hors contrat, la porte du seam
+  racine et celle de l'isolabilité #9 étant jouées en exécution de tests et en `cargo tree`, pas
+  en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
   Compter dans les combinaisons testées les deux runs de tests que la matrice explicite ne
   couvre pas : `--no-default-features` seul (seule porte où `rhai` est éteinte, donc où le seam
   de la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
@@ -66,7 +87,11 @@ Must:
 
 Must not:
   Accepter un `#[allow(...)]` de lint du harnais dans du code de production sans commentaire
-  de justification d'une ligne citant la spec concernée.
+  de justification d'une ligne citant la spec concernée. Le mot « production » borne ce `Must` et
+  non la règle : les binaires de ./tests, crates séparées où l'exemption `cfg(test)` de `src/lib.rs`
+  ne se propage pas, relèvent de la règle plus large de ../.specdd/bootstrap.project.md — un `allow`
+  uniquement sous `cfg(test)` OU justifié par la spec — qui les attrape sans que ce `Must` ait à se
+  répéter (partage acté, le `Must` ne couvre pas deux fois ce qu'un parent dit déjà).
   Réduire le niveau d'un lint existant du harnais sans décision explicite de Sébastien.
 
 Scenario: unwrap ajouté dans du code touché
@@ -78,6 +103,21 @@ Scenario: lint visé par une seule combinaison de features
   Given un lint pedantic que seule la combinaison de features par défaut déclenche
   When le validateur lance le harnais sur la matrice de features
   Then la combinaison concernée échoue et la tâche est rejetée
+
+Scenario: warning introduit dans un module de test sous les features par défaut
+  Given un avertissement du harnais glissé dans du code de test que l'exemption `cfg(test)` de
+    `src/lib.rs` NE couvre PAS — un lint `pedantic` dans un `mod tests` de la lib (la famille
+    panic/unwrap étant tolérée par l'exemption, elle ne peut pas servir de preuve) — ou un
+    `.expect()` dans un binaire de ./tests, l'attribut de la lib ne s'y propageant pas ; features
+    par défaut seules actives
+  When le validateur lance la porte `default`, `cargo clippy --all-targets -- -D warnings`
+  Then la porte rougit et la tâche est rejetée, la cible `lib test` (ou le binaire de ./tests)
+    n'étant pas construite du tout sans `--all-targets`
+  And la MÊME faute reste verte sous `cargo clippy -- -D warnings` : c'est ce couple rouge/vert qui
+    prouve que le flag ajoute une détection à cette porte, et il est joué sur les deux branches —
+    une faute qui rougirait aussi sans le flag ne prouverait rien
+  # Joué par l'agent `validator` : un `map_clone`/`redundant_closure_for_method_calls` dans le
+  # `mod tests` de `src/lib.rs`, rouge exit 101 à la porte montée, vert exit 0 à l'ancienne.
 
 Scenario: exemption en test
   Given un module de test `cfg(test)` utilise `.expect()` abondamment
@@ -100,8 +140,15 @@ Tasks:
     `workflows.sdd`), à la batterie de l'agent `validator` et à la liste de commandes de
     ./AGENTS.md — ces trois fichiers sont modifiés ensemble, avec l'accord du développeur
     principal déjà acquis (décision actée, lots 1 et 2 : shell, engine, hbs).
+  [x] Monter la porte `default` du harnais à `cargo clippy --all-targets -- -D warnings`, en
+    lockstep sur les trois emplacements où la liste fait foi : ce `Must` et le `Done when` ci-desous,
+    la liste de commandes de ./AGENTS.md, et la batterie de l'agent `validator`
+    (./.opencode/agents/validator.md). Ni ./.github/workflows/test.yml ni sa spec `workflows.sdd`
+    ne bougent : le job `clippy` joue déjà cette commande, l'écart venait d'en bas. Écart trouvé par
+    l'agent `validator` en comparant les deux listes, fermé par décision du développeur principal
+    (sens unique : la batterie monte, la CI ne descend pas ; portée limitée à `default`).
 
 Done when:
-  `cargo clippy -- -D warnings` et `cargo clippy --all-features --all-targets -- -D warnings`
-  trient sans warning, comme chaque entrée de la matrice de features, et
+  `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets
+  -- -D warnings` trient sans warning, comme chaque entrée de la matrice de features, et
   `cargo +nightly fmt -- --check` passe.

@@ -55,7 +55,7 @@ cargo test --no-default-features --features k8s       # matrice de features
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
-cargo clippy -- -D warnings                           # harnais default (zéro warning toléré)
+cargo clippy --all-targets -- -D warnings              # harnais default, code de test inclus (zéro warning toléré)
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
 cargo clippy --no-default-features --features oci --all-targets -- -D warnings
 cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
