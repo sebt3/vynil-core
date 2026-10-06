@@ -4,9 +4,9 @@ Platform: Rust edition 2024, toolchain stable 1.99.0, rustfmt nightly
 
 Purpose:
   Boîte à outils Rust générique combinant un moteur de scripts Rhai et un moteur de templates
-  Handlebars, avec handlers Kubernetes / OCI / S3 / HTTP optionnels, réutilisable par les
-  projets consommateurs (vynil, kuberest, kydah) sans embarquer les abstractions métier de
-  vynil. Publiée sur crates.io, API instable avant `1.0`.
+    Handlebars, avec handlers Kubernetes / OCI / S3 / HTTP optionnels, réutilisable par les
+    projets consommateurs (vynil, kuberest, kydah) sans embarquer les abstractions métier de
+    vynil. Publiée sur crates.io, API instable avant `1.0`.
 
 Owns:
   ./Cargo.toml
@@ -23,39 +23,39 @@ References:
 Must:
   Rester une crate générique sans logique métier d'un consommateur particulier.
   Exiger la configuration explicite de l'identité client par le consommateur via
-  @set_client_name, sans aucun fallback embarqué.
+    @set_client_name, sans aucun fallback embarqué.
   Garder les features `k8s`, `oci`, `s3`, `http` impliquant `rhai` : leurs types cœur sont des
-  API Rhai directes, pas une API Rust séparée avec wrapper.
+    API Rhai directes, pas une API Rust séparée avec wrapper.
   Garder `hbs-scripting` isolable de `hbs` : `hbs` seul ne doit jamais réintroduire
-  `handlebars/script_helper` (donc `rhai` ni `smartstring`) dans le graphe de dépendances
-  (https://github.com/sebt3/vynil-core/issues/9).
+    `handlebars/script_helper` (donc `rhai` ni `smartstring`) dans le graphe de dépendances
+    (https://github.com/sebt3/vynil-core/issues/9).
   Ne jamais laisser un script Rhai paniquer l'hôte : toute entrée de script (format invalide,
-  valeur démesurée, débordement, entropie défaillante) se traduit en @crate::RhaiRes en échec,
-  rattrapable par un `try` de script, jamais en `panic!` ni en abort du processus. Les portes
-  Rust sous-jacentes retournent un @crate::Result plutôt que de paniquer. Exceptions, toutes
-  contractuelles : la panique de @get_client_name quand @set_client_name n'a pas été appelé
-  — un script qui l'atteint révèle un bug de l'application fille, qui doit configurer son
-  identité au démarrage — ; et les paniques d'infrastructure de ./src/k8s.sdd (contexte k8s
-  non câblé, discovery initiale impossible), un API server injoignable au premier accès se
-  résolvant par le redémarrage du pod. Ces exigences priment sur la règle.
+    valeur démesurée, débordement, entropie défaillante) se traduit en @crate::RhaiRes en échec,
+    rattrapable par un `try` de script, jamais en `panic!` ni en abort du processus. Les portes
+    Rust sous-jacentes retournent un @crate::Result plutôt que de paniquer. Exceptions, toutes
+    contractuelles : la panique de @get_client_name quand @set_client_name n'a pas été appelé
+    — un script qui l'atteint révèle un bug de l'application fille, qui doit configurer son
+    identité au démarrage — ; et les paniques d'infrastructure de ./src/k8s.sdd (contexte k8s
+    non câblé, discovery initiale impossible), un API server injoignable au premier accès se
+    résolvant par le redémarrage du pod. Ces exigences priment sur la règle.
   Reconnaître ./AGENTS.md et ./.opencode/agents/ (définitions des rôles `spec-dd`,
-  `spec-reverse`, `implementer`, `validator`) comme le harnais d'orchestration de la crate :
-  leur liste de commandes de vérification, leurs permissions et leur format de synthèse sont
+    `spec-reverse`, `implementer`, `validator`) comme le harnais d'orchestration de la crate :
+    leur liste de commandes de vérification, leurs permissions et leur format de synthèse sont
     modifiables par le rôle `spec-dd` seul, sur décision de Sébastien, et jamais par un rôle
     qui exécute une tâche de spec. Les deux fichiers et ./tooling.sdd évoluent en lockstep :
     une commande ajoutée à la batterie l'est aux trois endroits dans le même commit.
   Exiger qu'aucune ligne de code source ne soit écrite sans spec `.sdd` cible approuvée par
-  Sébastien et sans tests dérivés de ses `Scenario` écrits et exécutés d'abord (flux
-  spec → test → implémentation, `.specdd/bootstrap.project.md`).
+    Sébastien et sans tests dérivés de ses `Scenario` écrits et exécutés d'abord (flux
+    spec → test → implémentation, `.specdd/bootstrap.project.md`).
   Exiger la batterie complète de vérification (voir ./tooling.sdd) avant qu'une `Tasks` passe
-  à `[x]`.
+    à `[x]`.
 
 Must not:
   Dépendre de vynil, kuberest, kydah ou d'un autre consommateur de cette crate.
   Introduire un client name par défaut implicite (genre `vynil.solidite.fr`) contournant
-  @set_client_name.
+    @set_client_name.
   Embarquer des CRDs, un contexte applicatif ou des helpers Handlebars métier propres à un
-  consommateur : cela reste dans le consommateur.
+    consommateur : cela reste dans le consommateur.
 
 Depends on:
   ./tooling.sdd
@@ -94,4 +94,4 @@ Tasks:
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),
-  et la batterie harnais passe avec `-- -D warnings`.
+    et la batterie harnais passe avec `-- -D warnings`.

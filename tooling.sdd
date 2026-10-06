@@ -4,8 +4,8 @@ Platform: clippy (stable 1.99.0), rustfmt nightly, table Cargo.toml [lints]
 
 Purpose:
   Définir le harnais qui guide les agents d'implémentation : formatage rustfmt, lints stricts
-  clippy/rustc, et le suivi de la dette existante jusqu'à l'objectif zéro warning qui permet
-  le passage en `deny` et le `-D warnings` en CI.
+    clippy/rustc, et le suivi de la dette existante jusqu'à l'objectif zéro warning qui permet
+    le passage en `deny` et le `-D warnings` en CI.
 
 Owns:
   ./rustfmt.toml
@@ -15,24 +15,24 @@ Can modify:
 
 Must:
   Contenir dans `[lints.clippy]` la famille stricte : `unwrap_used`, `expect_used`, `panic`,
-  `unreachable`, `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
-  `arithmetic_side_effects`, plus les groupes `pedantic` et `cargo`.
+    `unreachable`, `dbg_macro`, `todo`, `unimplemented`, `print_stdout`, `print_stderr`,
+    `arithmetic_side_effects`, plus les groupes `pedantic` et `cargo`.
   Exclure `multiple_crate_versions` du harnais (`allow`) : ses doublons de versions sont imposés
-  par les dépendances amont — `thiserror` 1 via `handlebars_misc_helpers`, `syn` 2/3 via
-  `kube`/`darling`, `getrandom`/`rand_core`/`crypto-common` via `ahash`/`argon2`/`object_store`,
-  `windows-sys`, `r-efi`, `base64`, `core-foundation` — et `cargo update` ne les déduplique pas.
+    par les dépendances amont — `thiserror` 1 via `handlebars_misc_helpers`, `syn` 2/3 via
+    `kube`/`darling`, `getrandom`/`rand_core`/`crypto-common` via `ahash`/`argon2`/`object_store`,
+    `windows-sys`, `r-efi`, `base64`, `core-foundation` — et `cargo update` ne les déduplique pas.
   Contenir dans `[lints.rust]` `unsafe_code = forbid` et `missing_docs = warn` sur toute la crate.
   Maintenir la famille stricte et les groupes `pedantic`/`cargo` au niveau `deny` : la dette est
-  purgée sur toute la crate, et tout nouveau warning du harnais bloque la validation.
+    purgée sur toute la crate, et tout nouveau warning du harnais bloque la validation.
   Porter le `Platform` à la version de stable réellement épinglée en CI (./.github/workflows
-  workflows.sdd) : un toolchain plus neuf peut rendre déclenchables des lints déjà couverts par
-  des groupes `deny`, sans rien changer à la table. `double_must_use` (dont la détection ne
-  voyait pas en 1.97.0 la caisse `Box<T>` avec `T` déjà `must_use` amont) et
-  `rustdoc::redundant_explicit_links` en sont la preuve : les deux lints existent et jouent en
-  1.97.0, c'est la baseline 1.99.0 qui les a fait tomber (../src/lib.sdd). La montée d'outillage
-  est donc un événement du harnais : elle se juge par la batterie complète, pas par un `#[allow]`
-  de circonstance, et elle se prouve en jouant la baseline sur LES DEUX toolchains (décision
-  actée).
+    workflows.sdd) : un toolchain plus neuf peut rendre déclenchables des lints déjà couverts par
+    des groupes `deny`, sans rien changer à la table. `double_must_use` (dont la détection ne
+    voyait pas en 1.97.0 la caisse `Box<T>` avec `T` déjà `must_use` amont) et
+    `rustdoc::redundant_explicit_links` en sont la preuve : les deux lints existent et jouent en
+    1.97.0, c'est la baseline 1.99.0 qui les a fait tomber (../src/lib.sdd). La montée d'outillage
+    est donc un événement du harnais : elle se juge par la batterie complète, pas par un `#[allow]`
+    de circonstance, et elle se prouve en jouant la baseline sur LES DEUX toolchains (décision
+    actée).
   Lancer les lints rustdoc en plus des lints clippy/rustc : `RUSTDOCFLAGS="-D warnings"
     cargo doc --no-deps --all-features` fait partie de la batterie (./AGENTS.md, l'agent
     `validator`, et un job de ./.github/workflows/test.yml), parce que les fences de doc de crate
@@ -44,54 +44,54 @@ Must:
     le consommateur — docs.rs build en toutes features, et c'est la porte des liens. Gate les
     liens pour tendre la règle à toutes les portes serait un autre contrat, non voulu.
   Tolérer la famille panic/unwrap uniquement sous `cfg(test)` via l'exemption portée par
-  `src/lib.rs` à la racine du crate.
+    `src/lib.rs` à la racine du crate.
   Lancer le harnais sur chaque combinaison de features testée (défaut, chaque `k8s`/`oci`/`s3`
-  isolée, `k8s,oci,s3`, `--all-features`) : les analyses `pedantic` dépendent du graphe de
-  features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
-  uniquement en `--all-features` laisse passer des avertissements.
+    isolée, `k8s,oci,s3`, `--all-features`) : les analyses `pedantic` dépendent du graphe de
+    features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
+    uniquement en `--all-features` laisse passer des avertissements.
   Porter `--all-targets` sur la porte `default` du harnais — `cargo clippy --all-targets
-  -- -D warnings` — comme le font déjà les six autres entrées de la liste et comme le joue la CI
-  (./.github/workflows/test.yml, job `clippy`) : sans ce flag, la porte la plus jouée de toutes ne
-  construit pas la cible `lib test`, donc un avertissement du harnais glissé dans un `mod tests`
-  de la lib y est STRUCTURELLEMENT invisible et n'est rattrapé que par le run final
-  `--all-features --all-targets`. La règle `cargo hack clippy --each-feature --no-dev-deps` ne
-  rattrape rien non plus : `--no-dev-deps` écarte précisément les cibles de développement
-  (décision actée, sens unique — c'est la batterie qui monte au niveau de la CI, jamais l'inverse).
+    -- -D warnings` — comme le font déjà les six autres entrées de la liste et comme le joue la CI
+    (./.github/workflows/test.yml, job `clippy`) : sans ce flag, la porte la plus jouée de toutes ne
+    construit pas la cible `lib test`, donc un avertissement du harnais glissé dans un `mod tests`
+    de la lib y est STRUCTURELLEMENT invisible et n'est rattrapé que par le run final
+    `--all-features --all-targets`. La règle `cargo hack clippy --each-feature --no-dev-deps` ne
+    rattrape rien non plus : `--no-dev-deps` écarte précisément les cibles de développement
+    (décision actée, sens unique — c'est la batterie qui monte au niveau de la CI, jamais l'inverse).
   Consigner le mérite réel de cette montée, mesuré et non supposé : à ce jour elle n'attrape aucun
-  avertissement que les six autres entrées `--all-targets` ne lintent déjà. Les DIX binaires de
-  ./tests ne portent aucun `#[cfg(feature = "...")]` et sont donc déjà triés intégralement par
-  `--all-features --all-targets`, la crate n'a aucune cible d'exemple, et le seul code de cible de
-  test négativement gated du dépôt (`src/lib.rs`, `#[cfg(not(feature = "rhai"))]
-  mod surface_without_features`) est exclu du graphe de TOUTES les entrées clippy cette porte
-  comprise — `rhai` est dans `default` et impliqué par `k8s`/`oci`/`s3`. L'apport est procédural et
-  défensif : la faute rougit dès la porte la plus jouée au lieu d'attendre le run final, et la
-  batterie cesse d'être plus lâche que la CI.
+    avertissement que les six autres entrées `--all-targets` ne lintent déjà. Les DIX binaires de
+    ./tests ne portent aucun `#[cfg(feature = "...")]` et sont donc déjà triés intégralement par
+    `--all-features --all-targets`, la crate n'a aucune cible d'exemple, et le seul code de cible de
+    test négativement gated du dépôt (`src/lib.rs`, `#[cfg(not(feature = "rhai"))]
+    mod surface_without_features`) est exclu du graphe de TOUTES les entrées clippy cette porte
+    comprise — `rhai` est dans `default` et impliqué par `k8s`/`oci`/`s3`. L'apport est procédural et
+    défensif : la faute rougit dès la porte la plus jouée au lieu d'attendre le run final, et la
+    batterie cesse d'être plus lâche que la CI.
   Ne tendre la porte que sur `default` : `--no-default-features --all-targets` et
-  `--no-default-features --features hbs --all-targets` restent hors contrat, la porte du seam
-  racine et celle de l'isolabilité #9 étant jouées en exécution de tests et en `cargo tree`, pas
-  en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
+    `--no-default-features --features hbs --all-targets` restent hors contrat, la porte du seam
+    racine et celle de l'isolabilité #9 étant jouées en exécution de tests et en `cargo tree`, pas
+    en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
   Compter dans les combinaisons testées les deux runs de tests que la matrice explicite ne
-  couvre pas : `--no-default-features` seul (seule porte où `rhai` est éteinte, donc où le seam
-  de la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
+    couvre pas : `--no-default-features` seul (seule porte où `rhai` est éteinte, donc où le seam
+    de la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
     réellement exécutés) et `--no-default-features --features hbs` seul (seule porte qui joue
     le graphe `hbs` sans `rhai` et tient donc l'invariant d'isolabilité de l'issue #9 en
     exécution, pas seulement en compilation). Ces deux runs figurent dans la batterie de
     l'agent `validator`, dans la liste de commandes de ./AGENTS.md et dans la matrice de jobs de
     ./.github/workflows/test.yml, en lockstep (./vyvil-core.sdd).
   Compiler et linter chaque feature isolément par une règle, non par une liste manuelle :
-  `cargo hack check --each-feature --no-dev-deps` puis le harnais clippy de même (décision
-  actée), de sorte que chaque module gated (`fs`, `shell`, `password`, `crypto`, `http`, `hbs`
-  sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
-  de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
-  sens (`k8s,oci,s3`, `--all-features`) restent en plus.
+    `cargo hack check --each-feature --no-dev-deps` puis le harnais clippy de même (décision
+    actée), de sorte que chaque module gated (`fs`, `shell`, `password`, `crypto`, `http`, `hbs`
+    sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
+    de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
+    sens (`k8s,oci,s3`, `--all-features`) restent en plus.
 
 Must not:
   Accepter un `#[allow(...)]` de lint du harnais dans du code de production sans commentaire
-  de justification d'une ligne citant la spec concernée. Le mot « production » borne ce `Must` et
-  non la règle : les binaires de ./tests, crates séparées où l'exemption `cfg(test)` de `src/lib.rs`
-  ne se propage pas, relèvent de la règle plus large de ../.specdd/bootstrap.project.md — un `allow`
-  uniquement sous `cfg(test)` OU justifié par la spec — qui les attrape sans que ce `Must` ait à se
-  répéter (partage acté, le `Must` ne couvre pas deux fois ce qu'un parent dit déjà).
+    de justification d'une ligne citant la spec concernée. Le mot « production » borne ce `Must` et
+    non la règle : les binaires de ./tests, crates séparées où l'exemption `cfg(test)` de `src/lib.rs`
+    ne se propage pas, relèvent de la règle plus large de ../.specdd/bootstrap.project.md — un `allow`
+    uniquement sous `cfg(test)` OU justifié par la spec — qui les attrape sans que ce `Must` ait à se
+    répéter (partage acté, le `Must` ne couvre pas deux fois ce qu'un parent dit déjà).
   Réduire le niveau d'un lint existant du harnais sans décision explicite de Sébastien.
 
 Scenario: unwrap ajouté dans du code touché
@@ -150,5 +150,5 @@ Tasks:
 
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets
-  -- -D warnings` trient sans warning, comme chaque entrée de la matrice de features, et
-  `cargo +nightly fmt -- --check` passe.
+    -- -D warnings` trient sans warning, comme chaque entrée de la matrice de features, et
+    `cargo +nightly fmt -- --check` passe.

@@ -201,7 +201,7 @@ Accepts:
   `from_json` et `to_json` : tout contenu de bloc (l'absence de bloc rend un contenu vide,
     donc le cour-circuit vide ou la lecture de la chaîne vide, jamais une erreur d'absence).
   Les deux fonctions privées de service `find_str_param` et `find_data_format` — le premier
-  paramètre par position, le second par le seul hash `format`.
+    paramètre par position, le second par le seul hash `format`.
 
 Returns:
   Les six helpers, au rendu de template, en succès : `str_to_json` et `json_query` rendent une
