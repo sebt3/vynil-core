@@ -184,10 +184,18 @@ Handles:
     aucun mutateur ni opérateur n'étant enregistré, une valeur de script reste immuable.
 
 Tasks:
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant. Aucun test inline
-    n'existe à ce jour dans ./chrono.rs, et aucun test de la crate n'évoque `date_now`,
-    `format` sur un handler ou @crate::chrono::DateTimeHandler hors ./engine.rs et
-    ./docs/rhai_helpers.md : les vingt-deux Scenario sont à convertir.
+  [x] Convertir chaque Scenario de cette spec en test Rust passant. Vingt-deux verrous pour
+    vingt-deux Scenario, tous inline dans ./chrono.rs et nommés d'après leur Scenario
+    (`scenario_…`) : trois posés par la tâche « Supprimer le panic sur format invalide », dix-neuf
+    par celle-ci. Vingt et un des vingt-deux tournent avec `rhai` au graphe ; le vingt-deuxième,
+    le verrou de surface, est sous `cfg(not(feature = "rhai"))`. Sous `--no-default-features`,
+    treize tests chrono s'exécutent : les faces `now`/`format` sont donc jouées des deux côtés de
+    cette porte. Rendu vérifié indépendant du
+    fuseau du runner (`TZ=UTC`, `Europe/Paris`, `America/New_York`) : instants construits hors
+    jour de bascule, offsets jamais codés en dur. Trois clauses sont tenues par la surface et la
+    compile-gate et non par une exécution — voir les `And`/`But` des Scenario concernés. Les
+    verrous qui épinglent un message d'erreur @rhai sont à rejouer à toute montée de @rhai
+    (version verrouillée par ./Cargo.lock, règle de ./tooling.sdd).
   [x] Supprimer le panic sur format invalide (décision actée : un script ne peut pas paniquer
     l'hôte) : @crate::chrono::DateTimeHandler::format rend un @crate::Result via
     @std::fmt::Write::write_fmt, @crate::chrono::DateTimeHandler::rhai_format rend un
@@ -259,11 +267,19 @@ Scenario: noms anglais et AM/PM sans locale configurable
   When @crate::chrono::DateTimeHandler::format est appelé avec `%A|%a|%B|%b|%p|%r`
   Then `Monday|Mon|May|May|AM|07:08:09 AM` est retourné
   And aucune API du module ne permet de choisir une autre langue
+    (clause tenue par la surface du module, rien d'appelable à refuser : la feature @chrono
+    `unstable-locales` est éteinte dans toute la crate et aucun type de locale n'est visible ;
+    le test ne verrouille que le rendu anglais embarqué)
 
 Scenario: now gèle l'instant et relit l'horloge
   Given un premier @crate::chrono::DateTimeHandler produit par @crate::chrono::DateTimeHandler::now
   When un second appel de @crate::chrono::DateTimeHandler::now est effectué après une activité
   Then la date du second handler est postérieure ou égale à celle du premier, aucun singleton n'étant mis en cache
+    (convention de mesure du test : second appel après une attente d'au moins 50 ms, au-dessus
+    de la résolution d'horloge de tout plateau, et verrou en stricte croissance — plus serré
+    que ce `Then`, ce qui est le prix du refus du singleton ; un pas d'horloge murale en
+    arrière pendant la fenêtre ferait rougir, à assouplir en simple inégalité si le verrou se
+    montre fragile en CI)
   And le premier handler, mis en forme deux fois avec la même commande, rend deux fois la même chaîne
 
 Scenario: API Rust vivante sans la feature rhai
@@ -271,6 +287,8 @@ Scenario: API Rust vivante sans la feature rhai
   When la surface publique de @crate::chrono est inspectée
   Then @crate::chrono::DateTimeHandler, @crate::chrono::DateTimeHandler::date, @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format compilent et s'appellent depuis leur module
   But @crate::chrono::chrono_rhai_register et @crate::chrono::DateTimeHandler::rhai_format n'existent pas
+    (clause tenue par les `#[cfg(feature = "rhai")]` et la compile-gate du test, pas par une
+    exécution : sous cette porte les deux noms ne peuvent même pas être nommés depuis le test)
 
 Scenario: le type rendu par date_now est nommé
   Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
@@ -291,7 +309,18 @@ Scenario: le champ date n'est pas accessible depuis un script
   Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
   When un script évalue `d.date`
   Then l'évaluation échoue en erreur de propriété inconnue
+    (voie mesurée sur @rhai 1.25.1 : @rhai::EvalAltResult::ErrorDotExpr, « Unknown property
+    'date' — a getter is not registered for type 'DateTimeHandler' », et non
+    @rhai::EvalAltResult::ErrorPropertyNotFound ; le verrou du message est à rejouer à toute
+    montée de @rhai)
+    L'absence d'accesseur est de plus structurelle sous le graphe courant : @rhai n'est demandé
+    qu'avec `default` + `sync` + `serde` + `internals`, et la feature `custom_types`, qui porte
+    @rhai::Engine::register_getter_setter, est éteinte — un getter sur ce champ n'est pas
+    compilable sans changer ./Cargo.toml
   And aucune erreur de ce type ne viendrait d'un panic : @crate::chrono::DateTimeHandler::format n'est jamais appelée sur ce chemin
+    (clause tenue par l'ordre de résolution de @rhai, qui échoue sur la propriété avant toute
+    entrée dans une méthode : non instrumentable depuis le test, qui vérifie en revanche que
+    l'échec reste une erreur @rhai et non une panique)
 
 Scenario: la méthode format ne s'applique qu'aux handlers
   Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
