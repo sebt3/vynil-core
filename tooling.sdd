@@ -147,6 +147,22 @@ Tasks:
     ne bougent : le job `clippy` joue déjà cette commande, l'écart venait d'en bas. Écart trouvé par
     l'agent `validator` en comparant les deux listes, fermé par décision du développeur principal
     (sens unique : la batterie monte, la CI ne descend pas ; portée limitée à `default`).
+  [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
+    contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
+    `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la
+    règle « une spec `.sdd` par fichier de `src/` » ne s'applique pas et c'est cette spec qui en
+    porte la contractualisation. Rougit sur (a) une ligne à deux espaces qui continue une phrase —
+    corps dont la ligne précédente finit sans `.` ni `;` et n'est pas un élément de liste de
+    chemins — et (b) une ligne de corps non-tâche dans `Tasks:` (règle de ./.specdd/bootstrap.md :
+    « Non-task body entries inside `Tasks` are invalid. »). Origine mesurée, à ne pas reconstruire :
+    76 lignes de repli sur 26 clauses corrigées en réindentation, et quatre notes invalides
+    « Décisions figées sans
+    changement de code » (./src/engine.sdd, ./src/http.sdd, ./src/k8s.sdd, ./src/lib.sdd).
+    Exigence issue du premier jet de classifieur, qui a rendu 70 faux positifs sur un seul
+    caractère : porter ses cas limites — listes de chemins, énumérations à `;`, tâches ouvertes
+    `[ ]`, suites de tâches distinctes, têtes de clause à deux espaces suivies d'un repli à
+    quatre. Verrouiller le contrôle par ses propres cas rouges (une faute de chaque classe, plus
+    chaque cas limite) avant de le rendre bloquant.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets
