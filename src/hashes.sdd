@@ -66,12 +66,18 @@ Must:
     sel en base64 sans padding (22 caractères), puis `$`, puis le hash (43 caractères pour 32
     octets). Aucune porte de vérification n'est exposée : @argon2::Argon2 ne sert que de
     hacheur, @argon2::Argon2::verify_password n'est ni appelé ni réexposé.
-  @crate::hashes::bcrypt_hash appelle @bcrypt::hash avec @bcrypt::DEFAULT_COST, valeur `12`
+  @crate::hashes::bcrypt_hash appelle @bcrypt::non_truncating_hash avec @bcrypt::DEFAULT_COST, valeur `12`
     chez bcrypt `0.19.3` verrouillée : sel interne de 16 octets tiré à chaque appel par
     getrandom `0.4.3`, sortie de exactement 60 caractères ASCII commençant par `$2b$12$`
     (version `2b` forcée par le formatage de la dépendance) ; le mot de passe est accepté vide
-    et jamais tronqué en silence : la voie @bcrypt::non_truncating_hash est utilisée, un mot de
-    passe de plus de 72 octets est refusé en @crate::Error::BcryptError.
+    et jamais tronqué en silence, ni au hachage ni à la vérification : la voie @bcrypt::non_truncating_hash
+    est utilisée, qui accepte au plus `71` octets et refuse `72` octets et plus en
+    @crate::Error::BcryptError. La borne n'est pas un choix du module : @bcrypt `0.19.3` hache
+    le mot de passe entier mais @bcrypt::verify admet tout préfixe d'au moins `72`
+    octets (mesuré : le hash d'un mot de passe de `81` octets se vérifie par son préfixe de
+    `72`), donc `72` est la première longueur où deux mots de passe distincts deviennent
+    interchangeables à la vérification — refuser à partir de `72` ferme la classe, accepter
+    `72` la laisserait ouverte.
   @crate::hashes::crc32_hash est @crc32fast::hash one-shot sur les octets UTF-8 de l'entrée
     (CRC-32/ISO-HDLC, variante IEEE à init 0 et XOR final 0, vérification faite contre
     `zlib.crc32`) : déterministe, sans sel, rendu dans `0` à `4294967295` ; la chaîne vide rend
@@ -114,7 +120,7 @@ Depends on:
     qui tire `password-hash 0.5.0`, `base64ct 1.8.3` et `rand_core 0.6.4` — la forme exacte du
     sel, de l'encodage PHC et de l'entropie appartiennent à la pile argon2, jamais verrouillée
     au-delà de ce que dit cette spec.
-  bcrypt — @bcrypt::hash et @bcrypt::DEFAULT_COST (`exigence 0.19.2`, verrouillée `0.19.3`) via
+  bcrypt — @bcrypt::non_truncating_hash et @bcrypt::DEFAULT_COST (`exigence 0.19.2`, verrouillée `0.19.3`) via
     `dep:bcrypt` gated `crypto` ; bcrypt `0.19.3` tire son sel de getrandom `0.4.3` et remonte
     ses échecs par @bcrypt::BcryptError.
   crc32fast — @crc32fast::hash, dépendance non optionnelle (`exigence 1.5.0`, verrouillée
@@ -156,8 +162,10 @@ Accepts:
   @crate::hashes::Argon::hash et @crate::hashes::Argon::rhai_hash — tout mot de passe
     @std::string::String, vide compris ; le sel n'est pas un paramètre, il vient de la
     construction.
-  @crate::hashes::bcrypt_hash — tout @std::string::String d'au plus 72 octets ; au-delà, le
-    module refuse en @crate::Error::BcryptError plutôt que de tronquer.
+  @crate::hashes::bcrypt_hash — tout @std::string::String d'au plus `71` octets, vide compris ;
+    `72` octets et plus sont refusés en @crate::Error::BcryptError par
+    @bcrypt::non_truncating_hash, qui compte l'octet de fin (`Truncation(73)` pour `72`
+    octets) — la limite utile côté crate est donc `71`, pas `72`.
   Les collages de script — exactement un argument de type chaîne (les deux unaires) ou zéro
     pour `new_argon` ; entiers, booléens, flottants, tableaux et objets ne coercent pas et
     échouent côté @rhai avant toute exécution.
@@ -186,7 +194,9 @@ Raises:
   @crate::hashes::bcrypt_hash — @crate::Error::BcryptError sur tout @bcrypt::BcryptError, seul
     reachable en pratique @bcrypt::BcryptError::Rand (défaillance d'entropie getrandom `0.4.3`) ;
     affichage `Bcrypt hash error Rand error: ` suivi du texte getrandom.
-    @bcrypt::BcryptError::Truncation est le refus d'un mot de passe de plus de 72 octets.
+    @bcrypt::BcryptError::Truncation est le refus d'un mot de passe de `72` octets ou plus, et
+    porte la longueur augmentée de l'octet de fin (`Truncation(73)` pour `72` octets,
+    `Truncation(101)` pour `100`).
     @bcrypt::BcryptError::CostNotAllowed et @bcrypt::BcryptError::InvalidHash sont
     inatteignables par cette porte : coût cloué à `12`, aucune chaîne d'autrui parsée.
   @crate::hashes::crc32_hash — rien : total, sans allocation faillible.
@@ -207,9 +217,15 @@ Handles:
   Sel figé à la construction — une instance @crate::hashes::Argon appelée dix fois rejoue le
     même sel et rend la même chaîne pour le même mot de passe ; ../docs/rhai_helpers.md le
     documente déjà et le `&mut self` de @crate::hashes::Argon::rhai_hash n'y change rien.
-  Mots de passe de plus de 72 octets pour bcrypt — refusés en @crate::Error::BcryptError
-    (@bcrypt::BcryptError::Truncation) par @bcrypt::non_truncating_hash : deux mots de passe
-    partageant leurs 72 premiers octets ne deviennent jamais indiscernables en silence.
+  Mots de passe de `72` octets et plus pour bcrypt — refusés en @crate::Error::BcryptError
+    (@bcrypt::BcryptError::Truncation) par @bcrypt::non_truncating_hash, qui compte l'octet de
+    fin. La troncature silencieuse joue au hachage comme à la vérification : bcrypt `0.19.3`
+    copie la matière sur `min(longueur, 72)` octets et en consomme `72`, si bien qu'un mot de
+    passe de `72` octets et un mot de passe de `73` octets qui le commencent ont la même
+    matière et sont interchangeables à la vérification (mesuré : @bcrypt::verify sur un
+    préfixe partagé de `72` octets rend `true`, sur `71` rend `false` — c'est à cette longueur
+    exacte que l'injectivité bascule). Accepter `72` laisserait coïncider deux mots de passe
+    distincts ; refuser à partir de `72` garde la matière injective sur les `71` acceptés.
   Entrée non-ASCII pour crc32 — hachée sur la représentation UTF-8 de la chaîne, caractère par
     caractère : `907060870` est le CRC des cinq octets de `hello`.
   Appels de script de forme étrangère — zéro ou deux arguments aux unaires, argument non-string,
@@ -237,7 +253,8 @@ Tasks:
     de ./hbs.rs et ses tests, test d'abord.
   [ ] Basculer @crate::hashes::bcrypt_hash sur @bcrypt::non_truncating_hash (décision
     actée : sécurité, pas de troncature silencieuse) ; adapter les Scenario bcrypt et
-    signaler le changement de comportement pour les consommateurs (> 72 octets refusé).
+    signaler le changement de comportement pour les consommateurs (`72` octets et plus refusés,
+    `71` accepté : la borne utile est `71`, mesurée sur bcrypt `0.19.3`, et non `72`).
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
@@ -325,7 +342,8 @@ Scenario: bcrypt refuse cent octets
   Given @crate::hashes::bcrypt_hash compilée sous `crypto`
   When appelée sur un mot de passe de 100 octets ASCII
   Then un @crate::Error::BcryptError (@bcrypt::BcryptError::Truncation) est rendu
-  And un mot de passe de 72 octets est encore accepté
+  And un mot de passe de `71` octets est encore accepté
+  But un mot de passe de `72` octets est déjà refusé, la borne utile étant `71` et non `72`
 
 Scenario: le script ne coerce aucun scalaire vers les collages
   Given un @rhai::Engine enregistré par @crate::hashes::crypto_hashes_rhai_register

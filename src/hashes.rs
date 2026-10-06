@@ -10,7 +10,7 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
-#[cfg(feature = "crypto")] use bcrypt::{DEFAULT_COST, hash};
+#[cfg(feature = "crypto")] use bcrypt::{DEFAULT_COST, non_truncating_hash};
 #[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString};
 
 /// Argon2 hasher with a random per-instance salt.
@@ -71,7 +71,7 @@ impl Argon {
 /// Returns [`Error::BcryptError`] when bcrypt hashing fails.
 #[cfg(feature = "crypto")]
 pub fn bcrypt_hash(password: String) -> Result<String> {
-    hash(password, DEFAULT_COST).map_err(Error::BcryptError)
+    non_truncating_hash(password, DEFAULT_COST).map_err(Error::BcryptError)
 }
 /// CRC32 (IEEE) hash of `text`.
 #[must_use]
@@ -97,4 +97,44 @@ pub fn crypto_hashes_rhai_register(engine: &mut Engine) {
         .register_type_with_name::<Argon>("Argon")
         .register_fn("new_argon", Argon::new)
         .register_fn("hash", Argon::rhai_hash);
+}
+
+#[cfg(all(test, feature = "crypto"))]
+mod tests {
+    use super::bcrypt_hash;
+    use crate::Error;
+
+    /// Scenario « bcrypt refuse cent octets », clause 100 octets : refus en
+    /// `Error::BcryptError` portant la variante interne `BcryptError::Truncation`, avec la
+    /// chaîne exacte visible par le consommateur. Meurt sous la voie `bcrypt::hash`
+    /// actuelle : le 100 octets rend un `Ok` silencieux.
+    #[test]
+    fn bcrypt_refuses_100_bytes_with_truncation() {
+        let err = bcrypt_hash("x".repeat(100)).expect_err("100 bytes must be refused");
+        assert!(
+            matches!(err, Error::BcryptError(bcrypt::BcryptError::Truncation(_))),
+            "expected Error::BcryptError(BcryptError::Truncation), got {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "Bcrypt hash error Expected 72 bytes or fewer; found 101 bytes"
+        );
+    }
+
+    /// Scenario « bcrypt refuse cent octets », verrou de borne utile `71` : `71` octets
+    /// est encore accepté (`Ok` de 60 caractères en `$2b$12$`), `72` octets est déjà
+    /// refusé en `BcryptError::Truncation(73)` — l'octet de fin compte. Une implémentation
+    /// qui accepterait `72` rougit ; une qui refuserait `71` rougit aussi.
+    #[test]
+    fn bcrypt_boundary_accepts_71_rejects_72() {
+        let hash = bcrypt_hash("x".repeat(71)).expect("71 bytes must still be accepted");
+        assert_eq!(hash.len(), 60);
+        assert!(hash.starts_with("$2b$12$"));
+
+        let err = bcrypt_hash("x".repeat(72)).expect_err("72 bytes must be refused");
+        assert!(
+            matches!(err, Error::BcryptError(bcrypt::BcryptError::Truncation(73))),
+            "expected Error::BcryptError(BcryptError::Truncation(73)), got {err:?}"
+        );
+    }
 }
