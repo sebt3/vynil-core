@@ -72,12 +72,14 @@ Must:
     (version `2b` forcée par le formatage de la dépendance) ; le mot de passe est accepté vide
     et jamais tronqué en silence, ni au hachage ni à la vérification : la voie @bcrypt::non_truncating_hash
     est utilisée, qui accepte au plus `71` octets et refuse `72` octets et plus en
-    @crate::Error::BcryptError. La borne n'est pas un choix du module : @bcrypt `0.19.3` hache
-    le mot de passe entier mais @bcrypt::verify admet tout préfixe d'au moins `72`
-    octets (mesuré : le hash d'un mot de passe de `81` octets se vérifie par son préfixe de
-    `72`), donc `72` est la première longueur où deux mots de passe distincts deviennent
-    interchangeables à la vérification — refuser à partir de `72` ferme la classe, accepter
-    `72` la laisserait ouverte.
+    @crate::Error::BcryptError. La borne n'est pas un choix du module : bcrypt `0.19.3` copie la
+    matière sur `min(longueur, 72)` octets et en consomme `min(longueur + 1, 72)`, **au hachage
+    comme à la vérification**, donc deux mots de passe qui partagent leurs `72` premiers octets
+    ont la même matière et sont interchangeables (mesuré : @bcrypt::verify d'un mot de passe de
+    `73` octets contre le @bcrypt::hash d'un mot de passe de `73` octets en partageant `72` rend
+    `true`, la paire qui n'en partage que `71` rend `false`). `72` est la première longueur où
+    l'injectivité tombe : accepter `72` laisserait coïncider deux mots de passe distincts,
+    refuser à partir de `72` garde la matière injective sur les `71` acceptés.
   @crate::hashes::crc32_hash est @crc32fast::hash one-shot sur les octets UTF-8 de l'entrée
     (CRC-32/ISO-HDLC, variante IEEE à init 0 et XOR final 0, vérification faite contre
     `zlib.crc32`) : déterministe, sans sel, rendu dans `0` à `4294967295` ; la chaîne vide rend
@@ -220,8 +222,9 @@ Handles:
   Mots de passe de `72` octets et plus pour bcrypt — refusés en @crate::Error::BcryptError
     (@bcrypt::BcryptError::Truncation) par @bcrypt::non_truncating_hash, qui compte l'octet de
     fin. La troncature silencieuse joue au hachage comme à la vérification : bcrypt `0.19.3`
-    copie la matière sur `min(longueur, 72)` octets et en consomme `72`, si bien qu'un mot de
-    passe de `72` octets et un mot de passe de `73` octets qui le commencent ont la même
+    copie la matière sur `min(longueur, 72)` octets et en consomme `min(longueur + 1, 72)`, si
+    bien qu'un mot de
+    passe de `72` octets et un mot de passe de `73` octets qui le commence ont la même
     matière et sont interchangeables à la vérification (mesuré : @bcrypt::verify sur un
     préfixe partagé de `72` octets rend `true`, sur `71` rend `false` — c'est à cette longueur
     exacte que l'injectivité bascule). Accepter `72` laisserait coïncider deux mots de passe
@@ -251,10 +254,19 @@ Tasks:
     suppression de @std::default::Default) et faire porter l'erreur par `new_argon`
     (décision actée : un constructeur public ne panique pas) ; adapter le helper Handlebars
     de ./hbs.rs et ses tests, test d'abord.
-  [ ] Basculer @crate::hashes::bcrypt_hash sur @bcrypt::non_truncating_hash (décision
+  [x] Basculer @crate::hashes::bcrypt_hash sur @bcrypt::non_truncating_hash (décision
     actée : sécurité, pas de troncature silencieuse) ; adapter les Scenario bcrypt et
     signaler le changement de comportement pour les consommateurs (`72` octets et plus refusés,
     `71` accepté : la borne utile est `71`, mesurée sur bcrypt `0.19.3`, et non `72`).
+  [ ] Ouvrir l'issue consommateur du changement de comportement bcrypt : `bcrypt_hash`, son
+    collage Rhai et le helper Handlebars du même nom refusent `72` octets et plus (texte exact
+    `Bcrypt hash error Expected 72 bytes or fewer; found <longueur + 1> bytes` côté Rust et
+    Rhai, chaîne vide côté Handlebars, qui avale l'erreur après `warn`) alors qu'ils rendaient
+    60 caractères. Destinataires : ../vynil, kuberest, kydah. Issue hors de ce dépôt.
+  [ ] Compléter ../docs/rhai_helpers.md et ../docs/handlebars_helpers.md sur la limite bcrypt :
+    les deux pages documentent `bcrypt_hash` sans dire que `72` octets et plus sont refusés
+    (elles sont incomplètes, pas fausses). Hors de l'`Owns` de cette spec : à faire avec
+    l'accord du développeur principal, qui tient la main sur les deux fichiers.
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
