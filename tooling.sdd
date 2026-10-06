@@ -135,7 +135,7 @@ Tasks:
     `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features`, à la porte `--all-features`
     seule (décision du développeur principal — sous portes réduites les liens de la doc de crate
     pointent vers des modules gated absents).
-  [ ] Mettre en place la matrice `cargo hack --each-feature` (check et clippy) : vérifier que
+  [x] Mettre en place la matrice `cargo hack --each-feature` (check et clippy) : vérifier que
     `cargo-hack` s'installe en CI, l'ajouter à `/.github/workflows/test.yml` (avec sa spec
     `workflows.sdd`), à la batterie de l'agent `validator` et à la liste de commandes de
     ./AGENTS.md — ces trois fichiers sont modifiés ensemble, avec l'accord du développeur
