@@ -185,13 +185,15 @@ Tasks:
     `#[cfg(test)]` de ./key.rs — Rust direct, @rhai::Engine local enregistré par
     @crate::key::key_rhai_register ou @Script::new_bare ; les deux Scenario de gating
     appartiennent à la batterie de features de la crate.
-    Les cinq tests inline existants verrouillent une partie de la face Rust :
+    Sept tests inline verrouillent une partie de la face Rust :
     `ed25519_produces_valid_pkcs8_pem`, `rsa_produces_valid_pkcs8_pem` et
     `two_generations_differ` couvrent les leurs ; `algorithm_is_case_insensitive` ne teste
-    que `ED25519` et `unknown_algorithm_is_rejected` que le refus, sans le texte porté.
-    Sont sans test : l'affichage exact du refus, les tailles aberrantes pour `ed25519`,
-    tout le versant script et les portes de features.
-  [ ] Conserver la casse d'origine dans @crate::Error::UnsupportedKeyAlgorithm : comparer sur
+    que les tout-majuscules ; `unknown_algorithm_keeps_original_case` verrouille la variante,
+    le texte porté et l'affichage `KEY-ALGO-001 …` sur `DSA` (posés par la tâche « Conserver la
+    casse d'origine ») ; `comparison_stays_case_insensitive` tient les formes mixtes
+    `Ed25519`/`Rsa`. Sont encore sans test : l'affichage du refus pour l'algo vide, les tailles
+    aberrantes pour `ed25519`, tout le versant script et les portes de features.
+  [x] Conserver la casse d'origine dans @crate::Error::UnsupportedKeyAlgorithm : comparer sur
     la copie lowercased mais alimenter la variante avec `algo` (décision actée : le lowercase
     perdu était un défaut de collage) ; test d'abord depuis le Scenario `DSA`.
 

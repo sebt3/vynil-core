@@ -20,7 +20,7 @@ pub fn gen_private_key(algo: &str, bits: u32) -> Result<String> {
     let pem = match algo.to_ascii_lowercase().as_str() {
         "ed25519" => PKey::generate_ed25519()?.private_key_to_pem_pkcs8()?,
         "rsa" => PKey::from_rsa(Rsa::generate(bits)?)?.private_key_to_pem_pkcs8()?,
-        other => return Err(Error::UnsupportedKeyAlgorithm(other.to_string())),
+        _ => return Err(Error::UnsupportedKeyAlgorithm(algo.to_string())),
     };
     String::from_utf8(pem).map_err(Error::UTF8)
 }
@@ -80,5 +80,26 @@ mod tests {
         let a = gen_private_key("ed25519", 0).unwrap();
         let b = gen_private_key("ed25519", 0).unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn unknown_algorithm_keeps_original_case() {
+        let err = gen_private_key("DSA", 0).expect_err("DSA must be rejected");
+        let crate::Error::UnsupportedKeyAlgorithm(carried) = &err else {
+            panic!("expected UnsupportedKeyAlgorithm, got {err:?}");
+        };
+        assert_eq!(carried, "DSA", "the carried text must keep the original case");
+        assert_eq!(err.to_string(), "KEY-ALGO-001 Unsupported key algorithm: DSA");
+    }
+
+    #[test]
+    fn comparison_stays_case_insensitive() {
+        let pem = gen_private_key("Ed25519", 0).unwrap();
+        let key = PKey::private_key_from_pem(pem.as_bytes()).unwrap();
+        assert_eq!(key.id(), Id::ED25519);
+        let pem = gen_private_key("Rsa", 2048).unwrap();
+        let key = PKey::private_key_from_pem(pem.as_bytes()).unwrap();
+        assert_eq!(key.id(), Id::RSA);
+        assert_eq!(key.bits(), 2048);
     }
 }
