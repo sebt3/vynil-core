@@ -1,7 +1,7 @@
 Spec: http
 
 Purpose:
-    Contrat groupé de ./http.rs et ./http_mock.rs (règle source+mock d'un seul contrat,
+  Contrat groupé de ./http.rs et ./http_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::http::RestClient, client HTTP sur @reqwest
     0.12 en blocage-sync, à trois étages par verbe (@crate::http::RestClient::http_*
     renvoyant @reqwest::Response brut, @crate::http::RestClient::body_* le texte,

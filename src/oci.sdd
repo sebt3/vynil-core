@@ -1,7 +1,7 @@
 Spec: oci
 
 Purpose:
-    Contrat groupé de ./oci.rs et ./oci_mock.rs (règle source+mock d'un seul contrat,
+  Contrat groupé de ./oci.rs et ./oci_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::oci::Registry, client de registre OCI sur
     @oci_client 0.15 — push d'une image une-couche tar+gzip fabriquée depuis un dossier
     local, pull décompressé sur disque, listing de tags paginé jusqu'à épuisement (borné à 10 000), manifeste rendu en

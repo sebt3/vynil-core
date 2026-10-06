@@ -1,7 +1,7 @@
 Spec: hbs
 
 Purpose:
-    Wrapper Handlebars de la crate : @crate::hbs::HandleBars pré-enregistre en trois
+  Wrapper Handlebars de la crate : @crate::hbs::HandleBars pré-enregistre en trois
     couches — @handlebars_misc_helpers::new_hbs (mode strict + `no_escape` + groupes misc),
     @crate::hbs_json::register (les six vendored), puis les douze helpers maison en macro
     @handlebars_helper! — et rend ces moteurs accessibles en Rust comme en Rhai. La porte

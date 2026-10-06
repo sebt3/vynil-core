@@ -1,7 +1,7 @@
 Spec: k8s
 
 Purpose:
-    Contrat groupé de ./k8s.rs et ./k8s_mock.rs (règle source+mock d'un seul contrat,
+  Contrat groupé de ./k8s.rs et ./k8s_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : la façade Kubernetes de la crate — 4 providers
     injectés en @core::cell::OnceLock (@crate::k8s::set_get_client, @crate::k8s::set_get_labels,
     @crate::k8s::set_get_owner, @crate::k8s::set_get_owner_ns, « premier appel gagne »),

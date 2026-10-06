@@ -1,7 +1,7 @@
 Spec: lib
 
 Purpose:
-    Contrat de la racine de crate (./lib.rs) : la façade publique — @variant-Error et ses
+  Contrat de la racine de crate (./lib.rs) : la façade publique — @variant-Error et ses
     Display gelés (source de vérité des textes d'erreur vus par les consommateurs et les
     scripts), @fn-error_chain qui remonte les chaînes @source(), les deux fabriques
     d'erreurs Rhai (@fn-rhai_err, @fn-rhai_err_str), les alias @type-Result et

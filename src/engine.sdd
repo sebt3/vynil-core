@@ -1,7 +1,7 @@
 Spec: engine
 
 Purpose:
-    Point d'entrée Rhai de la crate : @crate::engine::Script, couple d'un @rhai::Engine et
+  Point d'entrée Rhai de la crate : @crate::engine::Script, couple d'un @rhai::Engine et
     d'un @rhai::Scope persistant, construit par @crate::engine::Script::new_bare qui pose
     trois réglages d'engine, REMPLACE le module resolver par une collection de
     @rhai::module_resolvers::FileModuleResolver, puis enregistre dans un ordre figé seize
