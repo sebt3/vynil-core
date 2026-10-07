@@ -386,9 +386,11 @@ Tasks:
     (`new_client`, `http_get_yaml`, `http_head`), décision actée : le mock ne change pas.
   [ ] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
     commune avec ./oci.sdd.
-  Décisions figées sans changement de code : statut jamais erreur côté script, `json_delete`
-    enrobant contre `json_*` stricts, mock inchangé (setters muets, matching sans baseurl ni
-    corps), panique contractuelle de `get_client_name`.
+# Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
+# La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
+#   statut jamais erreur côté script, `json_delete` enrobant contre `json_*` stricts, mock
+#   inchangé (setters muets, matching sans baseurl ni corps), panique contractuelle de
+#   `get_client_name`.
 
 Scenario: http par défaut mais jamais auto-wired
   Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un

@@ -445,9 +445,11 @@ Tasks:
     `get_url` JSON seul, waits) et ../docs/mocking.md (tableau « différences connues » du
     mock k8s ; `patch` n'écrit pas dans `created`) — décisions actées.
   [ ] Enregistrer explicitement `update_k8s_crd_cache` (no-op) dans `k8s_mock_rhai_register`.
-  Décisions figées sans changement de code : panics d'infrastructure (contexte non câblé,
-    discovery initiale), macros `register_k8s_*` publiques stables, un contexte par process,
-    liste sans pagination, mock inchangé (sémantique documentée).
+# Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
+# La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
+#   panics d'infrastructure (contexte non câblé, discovery initiale), macros `register_k8s_*`
+#   publiques stables, un contexte par process, liste sans pagination, mock inchangé (sémantique
+#   documentée).
 
 Scenario: k8s en feature off, tout s'éteint en bloc
   Given le crate compilé `--no-default-features` (k8s n'est PAS dans default, ./README l.34)

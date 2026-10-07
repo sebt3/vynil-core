@@ -326,8 +326,10 @@ Tasks:
     Rhai) et ../docs/rhai_helpers.md section 12 (phrase sur reqwest).
   [ ] Couvrir les branches gated de `new_bare` (`rhai,fs`, `rhai,shell`, `rhai,password`,
     `rhai,crypto`) par la matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
-  Décisions figées sans changement de code : arités fermées des shims (`assert(cond, mess)`,
-    `import_*`), snapshot `ctx.clone()` de `add_code`, fail-closed de `new_bare`.
+# Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
+# La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
+#   arités fermées des shims (`assert(cond, mess)`, `import_*`), snapshot `ctx.clone()` de
+#   `add_code`, fail-closed de `new_bare`.
 
 Scenario: sans rhai le module n'existe pas
   Given la crate compilée `--no-default-features` (sans `rhai`)

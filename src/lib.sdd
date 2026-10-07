@@ -260,8 +260,9 @@ Tasks:
     fichier est `Owns` de ./rt.sdd — la tâche est exécutée dans la même opération que la tâche de
     ./rt.sdd, sur autorisation explicite du développeur principal (exception same-operation du
     bootstrap, pas un transfert d'`Owns`).
-  Décisions figées sans changement de code : mocks publics, module `password` ungated,
-    gate `rhai` de `glob`, `error_chain` sans gate.
+# Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
+# La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
+#   mocks publics, module `password` ungated, gate `rhai` de `glob`, `error_chain` sans gate.
 
 Scenario: error_chain remonte la source de l'extérieur vers la racine
   Given une erreur à trois niveaux calquée sur un échec DNS reqwest
