@@ -147,6 +147,18 @@ Tasks:
     ne bougent : le job `clippy` joue déjà cette commande, l'écart venait d'en bas. Écart trouvé par
     l'agent `validator` en comparant les deux listes, fermé par décision du développeur principal
     (sens unique : la batterie monte, la CI ne descend pas ; portée limitée à `default`).
+  [ ] Ajouter deux portes de test à la batterie, pour que les verrous de portes s'exécutent
+    ailleurs que sur bonne volonté locale : `cargo test --no-default-features --features crypto`
+    — seule famille de porte où le verrou `#[cfg(not(feature = "rhai"))]` de
+    @crate::key::gen_private_key tourne (il joue sur `crypto` seul comme sur `hbs crypto`, pas
+    sous `default`) — et `cargo test --no-default-features --features rhai`, qui rend observable
+    la demi-clause « fonction inconnue » du Scenario `sans crypto le module et ses helpers
+    disparaissent` de ./src/key.sdd, aujourd'hui tenue par construction seulement. Lockstep de la
+    règle de ./vyvil-core.sdd : ./AGENTS.md et ./.opencode/agents/validator.md sont du même
+    `Owns` que cette spec et se reprennent ici, la CI a sa tâche jumelle dans
+    ./.github/workflows/workflows.sdd. Coût à mesurer avant d'accepter : deux portes sur une
+    matrice déjà à dix jobs, et une porte `rhai` seul qui compile un graphe jamais testé
+    aujourd'hui.
   [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
     contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
     `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la

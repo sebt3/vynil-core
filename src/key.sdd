@@ -21,8 +21,10 @@ References:
     (variante non gated).
   ./engine.rs — @Script::new_bare est l'unique appelant de @crate::key::key_rhai_register :
     l'appel vit dans un bloc `#[cfg(feature = "crypto")]`, ./engine.rs étant lui-même réservé
-    à la feature `rhai` — la condition effective du câblage est donc `rhai` + `crypto`. Aucun
-    test de script `gen_private_key` n'existe ce jour.
+    à la feature `rhai` — la condition effective du câblage est donc `rhai` + `crypto`. Le
+    câblage est verrouillé depuis ./key.rs par `scenario_new_bare_livre_les_deux_surcharges` et
+    `scenario_l_engine_sans_enregistrement_ne_connet_aucun_des_deux_noms`, ./engine.rs n'étant
+    pas de l'`Owns` de cette spec.
   ./hbs.rs — sous `crypto` + `hbs`, le helper Handlebars `gen_private_key` appelle
     @crate::key::gen_private_key avec un paramètre `bits` optionnel par défaut `4096` et
     avale l'erreur en chaîne vide après un `warn` ; ce contrat Handlebars vivra dans la spec
@@ -181,18 +183,29 @@ Handles:
     `gen_private_key`.
 
 Tasks:
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
+  [x] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
     `#[cfg(test)]` de ./key.rs — Rust direct, @rhai::Engine local enregistré par
     @crate::key::key_rhai_register ou @Script::new_bare ; les deux Scenario de gating
-    appartiennent à la batterie de features de la crate.
-    Sept tests inline verrouillent une partie de la face Rust :
-    `ed25519_produces_valid_pkcs8_pem`, `rsa_produces_valid_pkcs8_pem` et
-    `two_generations_differ` couvrent les leurs ; `algorithm_is_case_insensitive` ne teste
-    que les tout-majuscules ; `unknown_algorithm_keeps_original_case` verrouille la variante,
-    le texte porté et l'affichage `KEY-ALGO-001 …` sur `DSA` (posés par la tâche « Conserver la
-    casse d'origine ») ; `comparison_stays_case_insensitive` tient les formes mixtes
-    `Ed25519`/`Rsa`. Sont encore sans test : l'affichage du refus pour l'algo vide, les tailles
-    aberrantes pour `ed25519`, tout le versant script et les portes de features.
+    appartiennent à la batterie de features de la crate. Vingt Scenario, dix-neuf verrous
+    inline dans ./key.rs nommés d'après leur Scenario (sept posés avant cette tâche, treize
+    pendant) et une clause sans assertion possible, consignée dans le Scenario même :
+    `sans crypto le module et ses helpers disparaissent`. Comptes vérifiés à la batterie :
+    vingt `key::tests` sous `default` et `--all-features`, dix sous `crypto` seul, zéro sous
+    `--no-default-features` — le module n'y est pas compilé, c'est précisément le verrou de la
+    porte. Le verrou de `sans rhai la face Rust reste` est un verrou de compilation sous
+    `#[cfg(not(feature = "rhai"))]`, joué sur tout graphe `crypto` sans `rhai` (`crypto` seul,
+    `hbs crypto`) ; la batterie standard ne joue aucune de ces portes, l'ajouter est la tâche de
+    ./tooling.sdd. Morsure éprouvée par quatre dérives restaurées byte-identiques : pré-filtre
+    de `bits` devant ed25519, surcharge binaire retirée de l'enregistreur, surcharge coercitive
+    ajoutée, garde de taille remplacé par un cast tronquant.
+  [ ] Renforcer les deux demi-clauses laissées molles par des tests antérieurs à la conversion,
+    les deux dans ./key.rs : le `Then` sur `ED25519` de `reconnaissance d'algorithme insensible
+    à la casse` vérifie le seul @std::result::Result::Ok sans relire le PEM rendu (ni en-tête, ni
+    @openssl::pkey::PKey::id), et l'`And` de `deux générations consécutives diffèrent` — « chacun
+    se relit en clé ed25519 » — n'est pas asserté, seul le @std::assert_ne! jouant. Reprendre la
+    voie de relecture déjà en place dans les autres verrous du module. Reprendre au passage le
+    commentaire de la génération 4096 (`~1,3 s par clef`, valeur openssl CLI) : mesuré 0,73 s en
+    test, la formule ou le nombre est à corriger.
   [x] Conserver la casse d'origine dans @crate::Error::UnsupportedKeyAlgorithm : comparer sur
     la copie lowercased mais alimenter la variante avec `algo` (décision actée : le lowercase
     perdu était un défaut de collage) ; test d'abord depuis le Scenario `DSA`.
@@ -325,6 +338,11 @@ Scenario: sans crypto le module et ses helpers disparaissent
   Then @crate::key n'existe pour aucun consommateur
   And avec `cargo check --no-default-features --features rhai`, l'évaluation de
     `gen_private_key("ed25519")` sur un @Script::new_bare échoue en fonction inconnue
+    (clause tenue par construction et non par une exécution : ./engine.rs n'appelle
+    @crate::key::key_rhai_register que dans un bloc `#[cfg(feature = "crypto")]`, si bien que
+    sans `crypto` aucun nom n'est enregistré. La compilation du graphe `rhai` seul est jouée
+    par `cargo hack check --each-feature` ; l'évaluation, elle, n'est jouée par aucune porte de
+    test de la batterie — l'ajouter est la tâche de ./tooling.sdd, pas un test d'ici)
 
 Scenario: sans rhai la face Rust reste et la porte script ferme
   Given la crate compilée par `cargo check --no-default-features --features crypto`

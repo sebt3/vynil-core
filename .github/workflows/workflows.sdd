@@ -83,6 +83,11 @@ Tasks:
     `rust-toolchain.toml` ni épinglage correspondant, et la batterie a été jouée hors du contrat
     pendant plusieurs tâches. L'écriture chainée (et non un nombre YAML) reste exigée.
 
+  [ ] Porte jumelle de « Ajouter deux portes de test à la batterie » de ./tooling.sdd : si la
+    batterie adopte `--no-default-features --features crypto` et `--no-default-features
+    --features rhai`, les reprendre dans la matrice `Tests (…)` de ./test.yml, sans quoi un
+    verrou vert en local reste aveugle en CI. À arbitrer avec le job `feature-matrix` : deux jobs
+    de plus, ou deux `args` de plus dans un job existant — la matrice est le lieu du coût.
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut
   When le job de tests court sur l'entrée de matrice `k8s`
