@@ -70,13 +70,25 @@ Must:
     `--no-default-features --features hbs --all-targets` restent hors contrat, la porte du seam
     racine et celle de l'isolabilité #9 étant jouées en exécution de tests et en `cargo tree`, pas
     en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
-  Compter dans les combinaisons testées les deux runs de tests que la matrice explicite ne
-    couvre pas : `--no-default-features` seul (seule porte où `rhai` est éteinte, donc où le seam
-    de la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
-    réellement exécutés) et `--no-default-features --features hbs` seul (seule porte qui joue
+  Compter dans les combinaisons testées les cinq runs de tests que la matrice explicite ne
+    couvrait pas : `--no-default-features` seul (porte où `rhai` est éteinte, donc où le seam de
+    la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
+    réellement exécutés — mesuré : ils le sont aussi sous `hbs`, `crypto` et `hbs,crypto`, cette
+    porte n'est pas exclusive, elle est la plus étroite) ; `--no-default-features --features hbs` seul (seule porte qui joue
     le graphe `hbs` sans `rhai` et tient donc l'invariant d'isolabilité de l'issue #9 en
-    exécution, pas seulement en compilation). Ces deux runs figurent dans la batterie de
-    l'agent `validator`, dans la liste de commandes de ./AGENTS.md et dans la matrice de jobs de
+    exécution, pas seulement en compilation) ; `--no-default-features --features crypto` seul
+    (seule famille de portes où le verrou `#[cfg(not(feature = "rhai"))]` de
+    @crate::key::gen_private_key s'exécute — ./src/key.sdd) ; `--no-default-features --features
+    rhai` seul (seule porte qui compile la glue Rhai sans les features qu'elle câble, où tournent
+    les onze verrous `mod script` de ./src/password.sdd, et porte où la demi-clause « fonction
+    inconnue » du Scenario `sans crypto` de ./src/key.sdd a son domaine — test qu'aucun test ne
+    joue encore, inscrit en tâche là-bas) ; et
+    `--no-default-features --features hbs,crypto` (seul graphe qui compile et joue un helper
+    Handlebars `crypto` sans `rhai` — ./src/hbs.sdd). Le harnais clippy est tendu sur ces trois
+    dernières portes en `--all-targets -- -D warnings` comme sur les précédentes : un verrou de
+    porte qui ne tourne que sur bonne volonté locale est un verrou aveugle là où le contrat est
+    tenu publiquement. Ces cinq runs figurent dans la batterie de l'agent `validator`, dans la
+    liste de commandes de ./AGENTS.md et dans la matrice de jobs de
     ./.github/workflows/test.yml, en lockstep (./vyvil-core.sdd).
   Compiler et linter chaque feature isolément par une règle, non par une liste manuelle :
     `cargo hack check --each-feature --no-dev-deps` puis le harnais clippy de même (décision
@@ -147,21 +159,27 @@ Tasks:
     ne bougent : le job `clippy` joue déjà cette commande, l'écart venait d'en bas. Écart trouvé par
     l'agent `validator` en comparant les deux listes, fermé par décision du développeur principal
     (sens unique : la batterie monte, la CI ne descend pas ; portée limitée à `default`).
-  [ ] Ajouter trois portes de test à la batterie, pour que les verrous de portes s'exécutent
-    ailleurs que sur bonne volonté locale : `cargo test --no-default-features --features crypto`
-    — seule famille de porte où le verrou `#[cfg(not(feature = "rhai"))]` de
-    @crate::key::gen_private_key tourne (il joue sur `crypto` seul comme sur `hbs crypto`, pas
-    sous `default`) — `cargo test --no-default-features --features "hbs crypto"`, seule porte qui
-    compile et joue un helper Handlebars `crypto` sans `rhai` (les verrous
-    `argon_hash_helper_…` de ./src/hbs.sdd y tournent, `default` et `--all-features` portant
-    `rhai` et `hbs` seul coupant `crypto`) — et `cargo test --no-default-features --features rhai`, qui rend observable
-    la demi-clause « fonction inconnue » du Scenario `sans crypto le module et ses helpers
-    disparaissent` de ./src/key.sdd, aujourd'hui tenue par construction seulement. Lockstep de la
-    règle de ./vyvil-core.sdd : ./AGENTS.md et ./.opencode/agents/validator.md sont du même
-    `Owns` que cette spec et se reprennent ici, la CI a sa tâche jumelle dans
-    ./.github/workflows/workflows.sdd. Coût à mesurer avant d'accepter : deux portes sur une
-    matrice déjà à dix jobs, et une porte `rhai` seul qui compile un graphe jamais testé
-    aujourd'hui.
+  [x] Ajouter trois portes de test à la batterie, pour que des verrous de portes n'existent plus
+    seulement sur bonne volonté locale : `cargo test --no-default-features --features crypto`, une
+    des deux portes où le verrou `#[cfg(not(feature = "rhai"))]` de @crate::key::gen_private_key
+    s'exécute (mesuré : il tourne sur `crypto` seul et sur `hbs,crypto`, pas sous `default`) ;
+    `cargo test --no-default-features --features hbs,crypto`, seule porte qui compile **et joue**
+    un helper Handlebars `crypto` sans `rhai` (les deux verrous `argon_hash_helper_…` de
+    ./src/hbs.sdd y tournent, `default` et `--all-features` portant `rhai`, `hbs` seul coupant
+    `crypto`) ; et `cargo test --no-default-features --features rhai`, seule porte qui joue la
+    glue Rhai sans les features qu'elle câble (les onze verrous `mod script` de
+    ./src/password.sdd y tournent) — elle rend la porte disponible pour l'évaluation « fonction
+    inconnue » du Scenario `sans crypto le module et ses helpers disparaissent` de
+    ./src/key.sdd, évaluation qu'aucun test ne joue encore et que cette spec n'écrit pas : c'est
+    la tâche inscrite là-bas. Le harnais clippy est tendu sur ces trois portes en
+    `--all-targets -- -D warnings` comme sur les précédentes. Coût mesuré par le `validator` :
+    +8 s de tests et +2 s de clippy en chaud, environ deux minutes de temps mural et cinq à huit
+    minutes de job-minutes sur la CI — les trois portes ne sont redondantes avec rien, `cargo hack
+    --each-feature` tournant en `--no-dev-deps` ne joue aucun test. Lockstep de la règle de
+    ./vyvil-core.sdd : ./AGENTS.md et ./.opencode/agents/validator.md sont dans l'`Owns` de la
+    spec racine et se reprennent sous sa main, ./tooling.sdd ne peut pas les écrire ; la CI a sa
+    tâche jumelle dans ./.github/workflows/workflows.sdd.
+
   [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
     contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
     `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la

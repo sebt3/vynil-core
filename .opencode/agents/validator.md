@@ -46,11 +46,17 @@ cargo test --no-default-features --features k8s
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
+cargo test --no-default-features --features crypto
+cargo test --no-default-features --features rhai
+cargo test --no-default-features --features hbs,crypto
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
 cargo clippy --no-default-features --features oci --all-targets -- -D warnings
 cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
 cargo clippy --no-default-features --features k8s,oci,s3 --all-targets -- -D warnings
+cargo clippy --no-default-features --features crypto --all-targets -- -D warnings
+cargo clippy --no-default-features --features rhai --all-targets -- -D warnings
+cargo clippy --no-default-features --features hbs,crypto --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings
@@ -65,19 +71,22 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
   le harnais doit être lancé sur chaque entrée de la matrice, pas seulement `--all-features`.
 - La matrice `cargo hack --each-feature` est une **règle** qui couvre chaque feature isolée
   (`fs`, `shell`, `password`, `crypto`, `http`, `hbs` sans `rhai`…), là où les combinaisons
-  explicites ne testent que `k8s`/`oci`/`s3` ; elle ne remplace pas ces combinaisons, qui
-  restent en plus (voir `tooling.sdd`).
+  explicites ne nomment que des portes à verrou désigné et laissent toute feature sans verrou
+  nommé à cette seule règle ; elle ne remplace pas ces combinaisons, qui restent en plus
+  (voir `tooling.sdd`).
 - Les deux runs sans `rhai` (`--no-default-features` seul et `--features hbs` seul) ne sont pas
-  redondants avec la matrice : `k8s`/`oci`/`s3`/`http` impliquent `rhai`, donc ce sont les
-  seules portes où le seam de la racine et le graphe `hbs` isolé s'exécutent (voir `tooling.sdd`).
+  redondants avec la matrice : `k8s`/`oci`/`s3`/`http` impliquent `rhai`. Les portes étroites ne
+  sont pas exclusives : le seam de la racine s'exécute aussi sous `hbs`, `crypto` et `hbs,crypto`
+  (mesuré) ; chacune est nommée pour le verrou qu'elle est seule à jouer, pas pour une exclusivité
+  qu'elle n'a pas (voir `tooling.sdd`).
 - Ne lance JAMAIS `cargo test --ignored` sans filtre : les tests `#[ignore]` du dépôt décrivent
   des comportements pas encore implémentés et l'un d'eux (`error_chain` sur source cyclique,
   `src/lib.sdd`) est un échec volontaire. Un test ignoré qui te semble suspect se lance filtré
   (`-- --ignored <nom-du-test>`).
-- Si la tâche touche `rhai`/`hbs`/`hbs-scripting`/`http`/`crypto`/`k8s`/`oci`/`s3` :
-  aussi `cargo test --no-default-features --features "hbs crypto"`, et vérifier par
-  `cargo tree -e features` que `hbs` seul n'introduit pas `handlebars/script_helper`
-  (donc rhai/smartstring) — contrainte issue du issue #9 du repo.
+- Vérifier par `cargo tree -e features --no-default-features --features hbs` que `hbs` seul
+  n'introduit ni `handlebars/script_helper` ni `rhai`/`smartstring` — contrainte de l'issue #9.
+  La porte `hbs,crypto` est dans la liste courante : ne la relance pas en plus sous une autre
+  forme (`"hbs crypto"` et `hbs,crypto` sont le même graphe, mesuré).
 - Chaque commande : résultat brut + exit code, jamais résumée par « ça passe ».
 
 ## 3. Synthèse (format imposé)

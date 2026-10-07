@@ -17,8 +17,22 @@ jobs:
       fail-fast: false
       # Liste d'objets { name, args } : `args` porte la ligne de flags complète, ce que la
       # forme « features: [...] » ne pouvait pas exprimer pour `--no-default-features` seul
-      # (confondu avec l'entrée vide). Les deux portes sans `rhai` (no-default, hbs) sont
-      # contractualisées par tooling.sdd et workflows.sdd.
+      # (confondu avec l'entrée vide). Cinq portes sont contractuelles parce qu'elles sont les
+      # seules à jouer un verrou nommé (tooling.sdd, workflows.sdd) : `no-default` (seam de la
+      # racine), `hbs` seul (isolabilité #9 en exécution), `crypto` seul (seule famille de
+      # portes où le verrou `#[cfg(not(feature = "rhai"))]` de crate::key::gen_private_key
+      # s'exécute), `rhai` seul (seule porte qui joue la glue Rhai en tests sans les features
+      # qu'elle câble — elle y joue les onze verrous `mod script` de src/password.rs — et porte
+      # où l'évaluation de `gen_private_key` de la demi-clause « fonction inconnue » du Scenario
+      # `sans crypto` de src/key.sdd a son domaine, ce test étant une tâche de cette spec, pas
+      # encore écrit) et `hbs-crypto` (seul graphe qui compile et joue un helper Handlebars
+      # `crypto` sans `rhai`). `hbs-crypto` passe ses features séparées par des virgules
+      # (`--features hbs,crypto`) : `${{ matrix.args }}` est substitué textuellement dans le
+      # script joué par le shell, et la virgule rend la ligne indépendante de ce découpage —
+      # sans guillemets (`--features hbs crypto`), `crypto` passerait hors de l'argument ; avec
+      # guillemets (`--features "hbs crypto"`) cela marche, mais les guillemets deviennent
+      # portants par la substitution. Pour cargo, `hbs,crypto` est strictement équivalent à
+      # « hbs crypto ».
       matrix:
         include:
           - name: default
@@ -35,6 +49,12 @@ jobs:
             args: "--no-default-features --features s3"
           - name: k8s,oci,s3
             args: "--no-default-features --features k8s,oci,s3"
+          - name: crypto
+            args: "--no-default-features --features crypto"
+          - name: rhai
+            args: "--no-default-features --features rhai"
+          - name: hbs-crypto
+            args: "--no-default-features --features hbs,crypto"
     steps:
       - uses: actions/checkout@v7
 
@@ -82,15 +102,27 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # Harnais clippy porté par Cargo.toml [lints] (strict family + pedantic/cargo en deny,
-      # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. La matrice de
-      # features est rejouée ici : les analyses pedantic (pureté de `must_use_candidate`, etc.)
-      # dépendent du graphe de features et un lint peut ne se déclencher que sur une combinaison
-      # (voir ../../tooling.sdd). `set -e` : la première combinaison qui tombe fait échouer le job.
+      # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. Ce job rejoue
+      # en explicite, entre le `--all-targets` par défaut et le `--all-features`, les portes
+      # `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai` et `hbs,crypto`. Les quatre premières
+      # parce que les analyses pedantic (pureté de `must_use_candidate`, etc.) dépendent du
+      # graphe de features et qu'un lint peut ne se déclencher que sur une combinaison (voir
+      # ../../tooling.sdd) ; `crypto`, `rhai` et `hbs,crypto` parce que les verrous de ces
+      # portes doivent rougir en lint comme en exécution — `crypto` seul (le verrou
+      # `#[cfg(not(feature = "rhai"))]` de crate::key::gen_private_key), `rhai` seul (les onze
+      # verrous `mod script` de src/password.rs, et la porte où la demi-clause « fonction
+      # inconnue » de src/key.sdd a son domaine — le test qui l'évalue est une tâche de cette
+      # spec, pas encore écrit) et `hbs,crypto` (seul graphe qui compile un helper Handlebars
+      # `crypto` sans `rhai`, src/hbs.sdd). Le job `feature-matrix` compile bien ces graphes
+      # (`--each-feature` couvre `crypto` et `rhai` seuls), mais avec `--no-dev-deps` : il ne
+      # construit ni les dix binaires de ./tests ni les cibles `cfg(test)` où vivent les
+      # verrous, et n'isole qu'une feature à la fois — `hbs,crypto` lui est impossible.
+      # `set -e` : la première combinaison qui tombe fait échouer le job.
       - name: cargo clippy (feature matrix)
         run: |
           set -e
           cargo clippy --all-targets -- -D warnings
-          for features in k8s oci s3 k8s,oci,s3; do
+          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto; do
             cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
           done
           cargo clippy --all-features --all-targets -- -D warnings
@@ -104,10 +136,14 @@ jobs:
         run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
   # Règle d'isolation de chaque feature (tooling.sdd) : --each-feature compile et linte
-  # chaque feature seule, y compris les gates non couvertes par les combinaisons explicites
-  # du job `clippy` (fs, shell, password, crypto, http, hbs sans rhai…) et vérifie ainsi
-  # l'invariant d'isolabilité de `hbs` (vyvil-core.sdd). Ce job complète le job `clippy` :
-  # les combinaisons explicites qui portent un sens (k8s,oci,s3 / --all-features) restent.
+  # chaque feature seule, y compris les gates qu'aucune des listes explicites des jobs
+  # `test` et `clippy` ne nomme isolement (fs, shell, password, http, hbs-scripting…), et
+  # vérifie ainsi l'invariant d'isolabilité de `hbs` (vyvil-core.sdd). Comme il tourne en
+  # --no-dev-deps, il ne construit ni les dix binaires de ./tests ni les cibles
+  # `cfg(test)` où vivent les verrous, et comme il n'isole qu'une feature à la fois, il ne
+  # joue aucune combinaison à deux features. Les combinaisons explicites restent donc en
+  # plus (../../tooling.sdd) : celles qui portent un sens (k8s,oci,s3, --all-features,
+  # crypto, rhai, hbs,crypto).
   feature-matrix:
     name: Feature matrix (cargo hack)
     runs-on: ubuntu-latest

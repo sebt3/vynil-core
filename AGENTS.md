@@ -68,11 +68,17 @@ cargo test --no-default-features --features k8s       # matrice de features
 cargo test --no-default-features --features oci
 cargo test --no-default-features --features s3
 cargo test --no-default-features --features k8s,oci,s3
+cargo test --no-default-features --features crypto              # verrou not(rhai) de key
+cargo test --no-default-features --features rhai                # glue sans les features qu'elle câble
+cargo test --no-default-features --features hbs,crypto         # helper crypto de Handlebars, sans `rhai`
 cargo clippy --all-targets -- -D warnings              # harnais default, code de test inclus (zéro warning toléré)
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
 cargo clippy --no-default-features --features oci --all-targets -- -D warnings
 cargo clippy --no-default-features --features s3 --all-targets -- -D warnings
 cargo clippy --no-default-features --features k8s,oci,s3 --all-targets -- -D warnings
+cargo clippy --no-default-features --features crypto --all-targets -- -D warnings
+cargo clippy --no-default-features --features rhai --all-targets -- -D warnings
+cargo clippy --no-default-features --features hbs,crypto --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps             # matrice chaque feature isolée
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings
@@ -86,9 +92,12 @@ que sur l'une d'elles (voir `tooling.sdd`).
 
 Les deux commandes `cargo hack --each-feature` sont une **règle**, non une liste : elles
 compilent et lintent chaque feature isolée (y compris `fs`, `shell`, `password`, `crypto`,
-`http`, `hbs` sans `rhai`…), là où la liste explicite ci-dessus ne couvre que `k8s`/`oci`/`s3`.
+`http`, `hbs-scripting`…), là où la liste explicite ci-dessus ne nomme que des combinaisons à
+verrou désigné — toute feature qu'aucun verrou nommé ne désigne n'est jouée que par elle.
 Elles **ne remplacent pas** les combinaisons explicites qui portent un sens (`k8s,oci,s3`,
-`--all-features`), qui restent en plus (voir `tooling.sdd`).
+`--all-features`, `crypto`, `rhai`, `hbs,crypto`), qui restent en plus (voir `tooling.sdd`) :
+une porte qui n'existe que parce qu'un verrou précis n'y tourne pas se nomme dans la liste, elle
+ne se déduit pas de `--each-feature` qui ne fait que compiler.
 
 Contraintes de features à préserver (voir racine `vyvil-core.sdd`) : `k8s`/`oci`/`s3`/`http`
 impliquent `rhai` (leurs types cœur sont des API Rhai directes) ; `hbs-scripting` doit rester

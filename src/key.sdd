@@ -194,10 +194,19 @@ Tasks:
     `--no-default-features` — le module n'y est pas compilé, c'est précisément le verrou de la
     porte. Le verrou de `sans rhai la face Rust reste` est un verrou de compilation sous
     `#[cfg(not(feature = "rhai"))]`, joué sur tout graphe `crypto` sans `rhai` (`crypto` seul,
-    `hbs crypto`) ; la batterie standard ne joue aucune de ces portes, l'ajouter est la tâche de
-    ./tooling.sdd. Morsure éprouvée par quatre dérives restaurées byte-identiques : pré-filtre
+    `hbs crypto`) ; la batterie les joue depuis que ./tooling.sdd a ajouté `crypto`, `rhai` et
+    `hbs,crypto` à la matrice de ./test.yml. Morsure éprouvée par quatre dérives restaurées byte-identiques : pré-filtre
     de `bits` devant ed25519, surcharge binaire retirée de l'enregistreur, surcharge coercitive
     ajoutée, garde de taille remplacé par un cast tronquant.
+  [ ] Faire jouer l'évaluation du Scenario `sans crypto le module et ses helpers disparaissent` :
+    @Script::new_bare — instrument que le Scenario nomme, mesuré vif sur la porte `rhai` seul —
+    doit échouer sur `gen_private_key("ed25519")` en fonction inconnue. Le verrou s'écrit dans
+    ./lib.rs, pas ici : @crate::key n'est compilé que sous `crypto`, donc le
+    `#[cfg(all(test, feature = "rhai", not(feature = "crypto")))]` posé dans ./key.rs serait
+    vacant — le module n'y existe pas sous `not(crypto)`. Sa part d'écriture est la tâche jumelle
+    de ./src/lib.sdd, à cocher dans le même commit. Porte qui joue le `cfg` :
+    `cargo test --no-default-features --features rhai` (./tooling.sdd) ; le `Must not` de
+    ./engine.rs n'est pas en cause (le test ne le touche pas).
   [ ] Renforcer les deux demi-clauses laissées molles par des tests antérieurs à la conversion,
     les deux dans ./key.rs : le `Then` sur `ED25519` de `reconnaissance d'algorithme insensible
     à la casse` vérifie le seul @std::result::Result::Ok sans relire le PEM rendu (ni en-tête, ni
