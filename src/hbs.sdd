@@ -65,8 +65,14 @@ Must:
   Distinguer les deux voies d'échec des helpers : les huit à paramètre(s) @serde_json::Value
     (base64_decode, base64_encode, url_encode, header_basic, argon_hash,
     bcrypt_hash, crc32_hash, concat) remplacent silencieusement toute entrée non-chaîne par
-    la chaîne vide après @tracing::warn au message textuel
-    `handlebars::<nom> received a non-string parameter`, et rendent toujours une valeur — jamais d'erreur de rendu ; les
+    la chaîne vide après @tracing::warn, et rendent toujours une valeur — jamais d'erreur de
+    rendu. Le texte du @tracing::warn n'est pas un patron unique, mesuré sur ./hbs.rs :
+    `handlebars::<nom> received a non-string parameter` pour `base64_decode`, `base64_encode`,
+    `url_encode`, `to_decimal` et `concat` ; « … received a non-string password » pour
+    `argon_hash`, `bcrypt_hash` et `crc32_hash` ; « … received a non-string username » et
+    « … received a non-string password » pour les deux paramètres de `header_basic`. Les quatre
+    helpers écartés du patron sont un fait du code, pas un blanc : les uniformiser serait un
+    changement de contrat ; les
     quatre à paramètres TYPÉS (`gen_password`, `gen_password_alphanum`, `gen_private_key` :
     @std::primitive::u32 positionnels, @std::primitive::str pour `algo`, hashes typés ;
     `to_decimal` : @std::primitive::str, décision actée) REJETTENT le mal-typé en @handlebars::RenderError produit par la macro
@@ -295,12 +301,36 @@ Tasks:
   [ ] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
     matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 
-  [ ] Adapter le helper Handlebars `argon_hash` de ./hbs.rs à @crate::hashes::Argon::new rendu
+  [x] Adapter le helper Handlebars `argon_hash` de ./hbs.rs à @crate::hashes::Argon::new rendu
     faillible : le helper appelle ce constructeur, doit propager l'échec par la voie des
     helpers de cette spec (`warn` puis chaîne vide rendue au gabarit) et ne plus supposer un
     succès ; ses tests d'abord. Tâche jumelle de « Rendre @crate::hashes::Argon::new faillible »
-    de ./src/hashes.sdd, à cocher dans le même commit — sans elle la crate ne compile plus
-    sous `hbs`, et la frontière des deux `Owns` est la seule raison de scinder le travail.
+    de ./src/hashes.sdd, cochée avec elle — sans elle la crate ne compile plus sous `hbs`, et la
+    frontière des deux `Owns` est la seule raison de scinder le travail. Joué par deux verrous,
+    les premiers de ./hbs.rs : `argon_hash_helper_renders_phc_hash_with_fresh_salt_per_call` et
+    `argon_hash_helper_non_string_never_fails_render`, sous la porte `hbs` + `crypto` sans
+    `rhai`. Le corps est `Argon::new().and_then(|argon| argon.hash(…)).unwrap_or_else(…)` :
+    construction et hachage tombent dans la même voie douce, les deux @tracing::warn gardent
+    leur texte exact, aucune remontée de @handlebars::RenderError et aucun `unwrap` n'entrent
+    dans un helper à paramètre @serde_json::Value.
+  [ ] Trancher la voie de `to_decimal`, que cette tâche a fait mesurer. Le `Must` de la voie
+    douce le range parmi les quatre helpers à paramètres TYPÉS qui REJETTENT le mal-typé en
+    @handlebars::RenderError « sans warn ni vide », et deux Scenario promettent les messages
+    `to_decimal: parameter is not a string` et `to_decimal: '<v>' is not an octal number` — or
+    ./hbs.rs enregistre `handlebars_helper!(to_decimal: |arg:Value| …)`, un helper de la voie
+    douce (warn + entrée remplacée par la vide, `0` rendu sur non-octal), et la recherche des
+    deux textes ne les trouve que dans cette spec. Le `Must` dit aussi que ces messages sont
+    « alignés sur ./engine.sdd où `to_decimal` est en erreur aussi » : la confusion la plus
+    probable est le collage Rhai, qui est en erreur, pris pour le helper Handlebars. Deux
+    issues, à arbitrer par Sébastien : changer le helper pour tenir le contrat écrit, ou réécrire
+    le `Must` et les deux Scenario sur la voie réellement câblée.
+  [ ] Uniformiser ou assumer les textes de @tracing::warn de la voie douce : `argon_hash`,
+    `bcrypt_hash` et `crc32_hash` disent « received a non-string password » et `header_basic`
+    « username »/« password », alors que `base64_decode`, `base64_encode`, `url_encode`,
+    `to_decimal` et `concat` disent « received a non-string parameter ». Le `Must` vient d'être
+    mis à ce que fait le code : reste à décider si le code doit s'aligner sur le patron, ce qui
+    change trois messages vus par les exploitants.
+
 Scenario: new compose les trois couches et les deux réglages hérités
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
   Then un template résout un built-in @handlebars (`each`), un cas `string_helpers`

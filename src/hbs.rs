@@ -142,10 +142,10 @@ mod core_helpers {
         ""
     })))));
     #[cfg(feature = "crypto")]
-    handlebars_helper!(argon_hash: |password:Value| Argon::new().hash(password.as_str().unwrap_or_else(|| {
+    handlebars_helper!(argon_hash: |password:Value| Argon::new().and_then(|argon| argon.hash(password.as_str().unwrap_or_else(|| {
         warn!("handlebars::argon_hash received a non-string password: {:?}",password);
         ""
-    }).to_string()).unwrap_or_else(|e| {
+    }).to_string())).unwrap_or_else(|e| {
         warn!("handlebars::argon_hash failed to convert to string with: {e:?}");
         String::new()
     }));
@@ -396,5 +396,55 @@ impl<'a> HandleBars<'a> {
         self.engine
             .render(name.as_str(), &json_data)
             .map_err(|e| format!("{e}").into())
+    }
+}
+
+/// Premiers verrous du helper `argon_hash` (aucun test de `hbs.rs` n'existait) joués sous
+/// `hbs` + `crypto`, sans `rhai` : la voie douce contractée par `hbs.sdd` — le helper rend
+/// toujours une valeur, jamais une erreur de rendu — et l'adaptation à `Argon::new` rendu
+/// faillible ne doit jamais supposer un succès.
+#[cfg(all(test, feature = "crypto"))]
+mod tests {
+    use super::HandleBars;
+    use serde_json::Value;
+
+    /// Contrat `argon_hash` (`hbs.sdd`, Must « sel frais par appel ») : un mot de passe en
+    /// chaîne rend un hash PHC valide, et deux rendus du même mot de passe diffèrent — le
+    /// helper construit un `Argon` neuf à chaque invocation.
+    #[test]
+    fn argon_hash_helper_renders_phc_hash_with_fresh_salt_per_call() {
+        let mut hbs = HandleBars::new();
+        let first = hbs
+            .render("{{ argon_hash \"p\" }}", &Value::Null)
+            .expect("argon_hash must never fail the render on a string input");
+        let second = hbs
+            .render("{{ argon_hash \"p\" }}", &Value::Null)
+            .expect("argon_hash must never fail the render on a string input");
+        assert!(
+            first.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "expected the PHC prefix, got {first}"
+        );
+        assert!(
+            second.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "expected the PHC prefix, got {second}"
+        );
+        assert_ne!(first, second, "fresh salt per helper invocation");
+    }
+
+    /// Contrat `argon_hash` (voie douce des huit helpers `Value` de `hbs.sdd`) : une entrée
+    /// non-chaîne ne fait jamais échouer le rendu — l'entrée est remplacée par la chaîne vide
+    /// après `warn`, le rendu est donc un hash PHC valide de la chaîne vide (le Must remplace
+    /// l'entrée par vide, non la sortie ; cf. Scenario « les huit Value aident dans le vice »
+    /// où `base64_encode 42` rend le base64 de la vide).
+    #[test]
+    fn argon_hash_helper_non_string_never_fails_render() {
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .render("{{ argon_hash 42 }}", &Value::Null)
+            .expect("a non-string input must not fail the render");
+        assert!(
+            out.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "non-string input should hash the substituted empty string, got {out:?}"
+        );
     }
 }

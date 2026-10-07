@@ -205,6 +205,13 @@ Raises:
   @crate::hashes::Argon::new — @crate::Error::Other (`Entropy failure: ...`) si l'entropie
     système lâche, symétrique au @bcrypt::BcryptError::Rand de bcrypt ; aucun panic. Le
     constructeur de script `new_argon` porte ce cas en @crate::RhaiRes.
+    La branche d'encodage du sel (@argon2::password_hash::SaltString::encode_b64 sur
+    `@std::primitive::u8` × `16`) est mappée sur le même @crate::Error::Other « Entropy failure:
+    … » : elle est matériellement inatteignable à cette longueur (`Salt::MAX_LENGTH` vaut `64`,
+    la dépendance ne documente d'échec que « trop long »), et @variant-Error::Argon2hash serait
+    un nomage pire pour un échec d'encodage. Un remapage en @variant-Error::Argon2hash via le
+    `@std::convert::From` existant reste possible : c'est un changement de contrat, pas une
+    correction.
   Collages de script — @crate::RhaiRes porteurs du texte @std::fmt::Display de @crate::Error
     via @crate::rhai_err : `Argon2 password_hash error ...` pour `.hash`, `Bcrypt hash error ...`
     pour `bcrypt_hash` ; @crc32fast::Hasher de crc32 ne pouvant échouer, aucune erreur ne sort
@@ -252,11 +259,23 @@ Tasks:
     aucun `#[cfg(test)]` et le repo n'a aucun répertoire ./tests/ : les cinq publics et les
     deux registres sont vierges de tout test, y compris l'affichage exact des variantes
     d'erreur — seule la matrice de features valide aujourd'hui la table des portes.
-  [ ] Rendre @crate::hashes::Argon::new faillible (`@crate::Result<Self>`, `try_fill_bytes`,
+  [x] Rendre @crate::hashes::Argon::new faillible (`@crate::Result<Self>`, `try_fill_bytes`,
     suppression de @std::default::Default) et faire porter l'erreur par `new_argon`
-    (décision actée : un constructeur public ne panique pas), test d'abord. La face
-    Handlebars de ./hbs.rs est portée par la tâche jumelle de ./src/hbs.sdd, à cocher dans le
-    même commit : ./hbs.rs n'est pas de cet `Owns` (règle de bijection de ./vyvil-core.sdd).
+    (décision actée : un constructeur public ne panique pas), test d'abord. Face Rust : sel de
+    `16` octets rempli par @argon2::password_hash::rand_core::RngCore::try_fill_bytes sur
+    @argon2::password_hash::rand_core::OsRng puis encodé, les deux échecs en
+    @crate::Error::Other « Entropy failure: … », `impl @std::default::Default` supprimé et son
+    `#[must_use]` avec (le seuil de harnais de cette spec ne l'exige que pour `crc32_hash`, et
+    nu sur un `@crate::Result` il rougit @clippy::double_must_use). Face script :
+    `new_argon` est une closure d'arité zéro rendant @crate::RhaiRes par @crate::rhai_err, nom
+    et arité de la table d'enregistrement inchangés. Verrous : sel frais par instance, forme PHC
+    épinglée (préfixe, sel `22`, hash `43`, six segments) et `new_argon` utilisable en script.
+    Deux clauses sont tenues sans verrou d'exécution et le sont ici plutôt que maquillées :
+    l'échec d'entropie, @argon2::password_hash::rand_core::OsRng n'étant pas injectable depuis
+    l'`Owns` de cette spec (tenu par l'absence de tout `unwrap`/`panic` sur le chemin), et
+    l'absence de @std::default::Default, tenue par la compilation et le harnais — y rejouer une
+    `impl Default` naturelle rougit @clippy::expect_used, aucun test ne rougit.
+
   [x] Basculer @crate::hashes::bcrypt_hash sur @bcrypt::non_truncating_hash (décision
     actée : sécurité, pas de troncature silencieuse) ; adapter les Scenario bcrypt et
     signaler le changement de comportement pour les consommateurs (`72` octets et plus refusés,

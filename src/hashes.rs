@@ -8,7 +8,10 @@ use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "crypto")]
 use argon2::{
     Argon2,
-    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+    password_hash::{
+        PasswordHasher, SaltString,
+        rand_core::{OsRng, RngCore},
+    },
 };
 #[cfg(feature = "crypto")] use bcrypt::{DEFAULT_COST, non_truncating_hash};
 #[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString};
@@ -23,21 +26,25 @@ pub struct Argon {
     argon: Argon2<'static>,
 }
 #[cfg(feature = "crypto")]
-impl Default for Argon {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "crypto")]
 impl Argon {
-    /// Creates a hasher with a freshly generated random salt.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            salt: SaltString::generate(&mut OsRng),
+    /// Creates a hasher with a freshly generated random 16-byte salt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Other`] carrying `Entropy failure: ...` when the system entropy
+    /// source fails (`OsRng::try_fill_bytes`) or when the salt bytes fail to encode as a
+    /// [`SaltString`] (in practice unreachable for 16 bytes). Never panics.
+    pub fn new() -> Result<Self> {
+        let mut salt_bytes = [0_u8; 16];
+        OsRng
+            .try_fill_bytes(&mut salt_bytes)
+            .map_err(|e| Error::Other(format!("Entropy failure: {e}")))?;
+        let salt =
+            SaltString::encode_b64(&salt_bytes).map_err(|e| Error::Other(format!("Entropy failure: {e}")))?;
+        Ok(Self {
+            salt,
             argon: Argon2::default(),
-        }
+        })
     }
 
     /// Hashes `password` with this instance's salt.
@@ -95,13 +102,15 @@ pub fn crypto_hashes_rhai_register(engine: &mut Engine) {
             crate::hashes::bcrypt_hash(s.to_string()).map_err(rhai_err)
         })
         .register_type_with_name::<Argon>("Argon")
-        .register_fn("new_argon", Argon::new)
+        .register_fn("new_argon", || -> RhaiRes<Argon> {
+            Argon::new().map_err(rhai_err)
+        })
         .register_fn("hash", Argon::rhai_hash);
 }
 
 #[cfg(all(test, feature = "crypto"))]
 mod tests {
-    use super::bcrypt_hash;
+    use super::{Argon, bcrypt_hash};
     use crate::Error;
 
     /// Scenario « bcrypt refuse cent octets », clause 100 octets : refus en
@@ -135,6 +144,81 @@ mod tests {
         assert!(
             matches!(err, Error::BcryptError(bcrypt::BcryptError::Truncation(73))),
             "expected Error::BcryptError(BcryptError::Truncation(73)), got {err:?}"
+        );
+    }
+
+    /// Scenario « deux constructions d'Argon tirent deux sels », verrou « sel frais par
+    /// instance » que la tâche de construction faillible touche de près : deux instances
+    /// `Argon::new()` rendent deux hashes différents du même mot de passe. Rougit si le sel
+    /// cesse d'être tiré à la construction (constante, partagé, ou figé par un `Default`).
+    #[test]
+    fn argon_new_draws_fresh_salt_per_instance() {
+        let first = Argon::new()
+            .expect("Argon::new must succeed on a system with working entropy")
+            .hash("p".to_string())
+            .expect("hashing with a valid internal salt must succeed");
+        let second = Argon::new()
+            .expect("second construction must succeed")
+            .hash("p".to_string())
+            .expect("hashing with a valid internal salt must succeed");
+        assert_ne!(first, second, "two Argon instances must not share one salt");
+    }
+
+    /// Scenario « l'argon par défaut borne les champs PHC attendus » : l'encodage du sel par
+    /// `SaltString::encode_b64` (16 octets remplis par `try_fill_bytes`) ne doit rien casser à
+    /// la parité avec l'ancien `SaltString::generate` — préfixe PHC exact
+    /// `$argon2id$v=19$m=19456,t=2,p=1$`, segment de sel de 22 caractères (16 octets en
+    /// base64 sans padding), segment de hash de 43 caractères (32 octets).
+    #[test]
+    fn argon_phc_shape_pins_prefix_and_segment_lengths() {
+        let hash = Argon::new()
+            .expect("Argon::new must succeed on a system with working entropy")
+            .hash("p".to_string())
+            .expect("hashing with a valid internal salt must succeed");
+        assert!(
+            hash.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "expected the PHC prefix, got {hash}"
+        );
+        let segments: Vec<&str> = hash.split('$').collect();
+        assert_eq!(segments.len(), 6, "expected 6 PHC segments, got {hash}");
+        assert_eq!(
+            segments[4].len(),
+            22,
+            "salt segment should be 22 chars: {}",
+            segments[4]
+        );
+        assert_eq!(
+            segments[5].len(),
+            43,
+            "hash segment should be 43 chars: {}",
+            segments[5]
+        );
+    }
+}
+
+/// Scenarios du collage script `new_argon`, sous `crypto` + `rhai` : `Argon::new` rendu
+/// faillible, l'enregistreur doit porter l'erreur par `crate::rhai_err` (voie déjà prise par
+/// `bcrypt_hash` dans `crypto_hashes_rhai_register`) et le script doit recevoir un objet
+/// `Argon` utilisable.
+#[cfg(all(test, feature = "crypto", feature = "rhai"))]
+mod rhai_tests {
+    use crate::hashes::crypto_hashes_rhai_register;
+    use rhai::Engine;
+
+    #[test]
+    fn new_argon_script_constructor_returns_usable_argon() {
+        let mut engine = Engine::new();
+        crypto_hashes_rhai_register(&mut engine);
+        let type_name: String = engine
+            .eval("let a = new_argon(); a.type_of()")
+            .expect("type_of of a new_argon() object must succeed");
+        assert_eq!(type_name, "Argon");
+        let hash: String = engine
+            .eval("let a = new_argon(); a.hash(\"p\")")
+            .expect("new_argon().hash(\"p\") must succeed");
+        assert!(
+            hash.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "expected the PHC prefix, got {hash}"
         );
     }
 }
