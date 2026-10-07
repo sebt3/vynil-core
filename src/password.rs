@@ -21,23 +21,35 @@ const UPPER: &[char] = &[
 const DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 const SYMBOLS: &[char] = &['!', '#', '%', '*', '+', '-', '.', ':', '=', '?', '@', '_'];
 
+/// Upper bound on `length` (`PWD-SPEC-004`), checked before any allocation so
+/// that no script input can force an oversized allocation. Value fixed by the
+/// lead developer (`src/password.sdd`).
+const MAX_PASSWORD_LENGTH: usize = 4096;
+
 /// Generate a random password of `length` chars with at least `lower`/`upper`/`digits`/`symbols`
 /// characters from each class. Symbols are `!#%*+-.:=?@_` (config-safe).
 ///
-/// Returns `Error::PasswordSpec` if minimums exceed `length` or no class is enabled.
+/// Returns `Error::PasswordSpec` if `length` exceeds `4096`, if minimums exceed
+/// `length`, or if no class is enabled.
 ///
 /// # Errors
 ///
-/// Returns [`Error::PasswordSpec`] when the sum of class minimums exceeds `length`
-/// (`PWD-SPEC-001`) or when no character class is enabled (`PWD-SPEC-002`).
+/// Returns [`Error::PasswordSpec`] when `length` exceeds the maximum of `4096`
+/// (`PWD-SPEC-004`), when the sum of class minimums exceeds `length`
+/// (`PWD-SPEC-001`), or when no character class is enabled (`PWD-SPEC-002`).
 pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbols: usize) -> Result<String> {
+    if length > MAX_PASSWORD_LENGTH {
+        return Err(Error::PasswordSpec(format!(
+            "PWD-SPEC-004 requested length ({length}) exceeds maximum ({MAX_PASSWORD_LENGTH})"
+        )));
+    }
     let classes: [(&[char], usize); 4] = [
         (LOWER, lower),
         (UPPER, upper),
         (DIGITS, digits),
         (SYMBOLS, symbols),
     ];
-    let total_min: usize = classes.iter().map(|(_, m)| *m).sum();
+    let total_min: usize = classes.iter().map(|(_, m)| *m).fold(0, usize::saturating_add);
     if total_min > length {
         return Err(Error::PasswordSpec(format!(
             "PWD-SPEC-001 sum of class minimums ({total_min}) exceeds requested length ({length})"
@@ -174,6 +186,73 @@ mod tests {
         assert_ne!(
             generate(24, 1, 1, 1, 1).unwrap(),
             generate(24, 1, 1, 1, 1).unwrap()
+        );
+    }
+
+    // ── Tâche « Plafonner » — PWD-SPEC-004 et somme des minima saturante ──
+    // Scénario « une longueur démesurée est refusée avant toute allocation »
+    // (face Rust). Le plafond 4096 est vérifié d'abord, puis le cumul des
+    // minima est une addition saturante : jamais d'allocation démesurée,
+    // jamais de débordement, jamais de panic (règle de ../vyvil-core.sdd).
+
+    #[test]
+    fn ceiling_4096_is_accepted() {
+        // Frontière, côté accepté : le plus grand tirage autorisé rend Ok de
+        // longueur exacte (tirage réel de 4096 côté Rust ; le pendant script
+        // est verrouillé par scenario_gen_password_4096_reussit_par_script).
+        let p = generate(4096, 1, 1, 1, 1).unwrap();
+        assert_eq!(p.chars().count(), 4096);
+        assert!(
+            p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || SYMBOLS.contains(&c))
+        );
+    }
+
+    #[test]
+    fn ceiling_4097_is_rejected_with_exact_text() {
+        // Frontière, côté refus : 4097 est refusé avant toute chose, texte exact.
+        let Err(Error::PasswordSpec(text)) = generate(4097, 1, 1, 1, 1) else {
+            panic!("4097 doit être refusé en PWD-SPEC-004, obtenu une valeur ou un autre code");
+        };
+        assert_eq!(
+            text,
+            "PWD-SPEC-004 requested length (4097) exceeds maximum (4096)"
+        );
+    }
+
+    #[test]
+    fn ceiling_is_checked_before_the_minimums_sum() {
+        // Verrou d'ordre : length = 5000 viole le plafond ET la somme des
+        // minima (6000) dépasse length. Sans le contrôle du plafond en tête,
+        // c'est PWD-SPEC-001 qui sortirait — tout réordonnancement silencieux
+        // rougit ici. Substitut observable du « sans allocation » : le refus
+        // doit précéder Vec::with_capacity (aucun compteur d'allocation
+        // n'est observable depuis l'Owns).
+        let Err(Error::PasswordSpec(text)) = generate(5000, 1500, 1500, 1500, 1500) else {
+            panic!("le plafond doit être vérifié avant la somme des minima (PWD-SPEC-004 attendu)");
+        };
+        assert_eq!(
+            text,
+            "PWD-SPEC-004 requested length (5000) exceeds maximum (4096)"
+        );
+    }
+
+    #[test]
+    fn minimums_sum_saturates_instead_of_overflowing() {
+        // Quatre minima à l'échelle de usize::MAX : le cumul doit saturer à
+        // usize::MAX et rendre PWD-SPEC-001 porteur de cette somme. Le `sum`
+        // non saturant du code antérieur débordait et paniquait en debug —
+        // c'est la clause consignée par la tâche `class_min`.
+        let Err(Error::PasswordSpec(text)) = generate(10, usize::MAX, usize::MAX, usize::MAX, usize::MAX)
+        else {
+            panic!("somme saturante attendue en refus PWD-SPEC-001, sans débordement ni panic");
+        };
+        assert_eq!(
+            text,
+            format!(
+                "PWD-SPEC-001 sum of class minimums ({}) exceeds requested length (10)",
+                usize::MAX
+            )
         );
     }
 
@@ -319,6 +398,64 @@ mod tests {
             assert!(
                 count(&p, |c| SYMBOLS.contains(&c)) >= 1,
                 "clé absente : défaut `1`"
+            );
+        }
+
+        // ── Scénario « une longueur démesurée est refusée avant toute
+        // allocation » — branche refus (aucun tirage). ──
+
+        #[test]
+        fn scenario_longueur_demensee_refusee_par_script() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(4097)",
+                "PWD-SPEC-004 requested length (4097) exceeds maximum (4096)",
+            );
+            // Sans plafond, cette valeur atteindrait Vec::with_capacity et
+            // paniquerait (« capacity overflow ») : le refus doit la précéder.
+            assert_rejection(
+                &e,
+                "gen_password(9223372036854775807)",
+                "PWD-SPEC-004 requested length (9223372036854775807) exceeds maximum (4096)",
+            );
+            // Verrou d'ordre côté script : length = 5000 viole le plafond ET la
+            // somme des minima (6000) dépasse 5000 ; le texte porté doit être
+            // celui du plafond, jamais PWD-SPEC-001.
+            assert_rejection(
+                &e,
+                "gen_password(5000, #{ lower: 1500, upper: 1500, digits: 1500, symbols: 1500 })",
+                "PWD-SPEC-004 requested length (5000) exceeds maximum (4096)",
+            );
+        }
+
+        // ── Même Scenario, branche `And gen_password(4096) réussit` : le
+        // côté script de la frontière, verrouillé distinctement des refus. ──
+
+        #[test]
+        fn scenario_gen_password_4096_reussit_par_script() {
+            let e = engine();
+            let p: rhai::ImmutableString = e
+                .eval("gen_password(4096)")
+                .expect("la frontière du plafond côté script doit réussir");
+            assert_eq!(p.chars().count(), 4096);
+        }
+
+        #[test]
+        fn scenario_minima_geants_de_la_map_refuses_sans_panic() {
+            // class_min sature chaque clé à usize::MAX ; le cumul de generate
+            // doit saturer à l'avenant et rendre PWD-SPEC-001 porteur de la
+            // somme saturée — jamais un débordement ni une panique de l'hôte
+            // (règle de ../vyvil-core.sdd, clause consignée par `class_min`).
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(20, #{ lower: 9223372036854775807, upper: 9223372036854775807, \
+                 digits: 9223372036854775807, symbols: 9223372036854775807 })",
+                &format!(
+                    "PWD-SPEC-001 sum of class minimums ({}) exceeds requested length (20)",
+                    usize::MAX
+                ),
             );
         }
     }
