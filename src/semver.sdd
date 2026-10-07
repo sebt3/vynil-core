@@ -308,6 +308,10 @@ Handles:
     type.
 
 Tasks:
+# Les tâches qui visent ../docs/ sont bloquées : le répertoire est nommé dans les
+# `References:` de quatorze specs de ./src/ et n'est dans l'`Owns` d'aucune.
+# L'attribution est la tâche ouverte de ./vyvil-core.sdd ; en l'état, aucune de ces
+# tâches n'est exécutable par cette spec.
   [ ] Convertir en tests Rust passants chaque Scenario de cette spec qui n'en a pas encore, dans
     le `mod tests` sous `#[cfg(test)]` de ./semver.rs pour la face Rust et sur @rhai::Engine
     local — ou @Script::new_bare — pour la face script, la batterie de features de l'AGENTS.md

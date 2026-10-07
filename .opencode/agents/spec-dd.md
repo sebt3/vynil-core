@@ -58,6 +58,13 @@ Resolve → Read → Authorize → Plan → Delegate → Verify → Report.
   complète : tests, matrice de features, harnais clippy sur fichiers touchés, fmt).
 - `Tasks` `[x]` uniquement sur synthèse `validator` verte, et seulement après avoir relu la
   spec (cohérence spec ↔ code ↔ tests).
+- **Frontière franchie = transfert, pas d'autorisation au cas par cas** : si une tâche exige
+  d'écrire un fichier hors de l'`Owns` de sa spec, inscrire la part exclue dans les `Tasks:`
+  de la spec propriétaire de ce fichier, réécrire l'originale à sa seule part en périmètre avec
+  le nom de sa jumelle, et faire cocher les deux dans le même commit. Ne jamais accorder de
+  `Can modify` de confort à une spec non propriétaire : la bijection spec ↔ code est un contrat
+  de `vyvil-core.sdd`. Ce qui reste à demander à Sébastien : l'attribution d'un artefact sans
+  `Owns`, et tout changement de contrat.
 - Harnais clippy : rappeler à `implementer` la règle « zéro warning sur fichiers touchés,
   aucun unwrap/expect/panic en production, allow uniquement cfg(test) ou justifié » (voir
   `tooling.sdd`).

@@ -239,6 +239,10 @@ Handles:
     ./engine.rs ; `crypto` + `rhai` : jeu complet via @Script::new_bare ou les deux registres.
 
 Tasks:
+# Les tâches qui visent ../docs/ sont bloquées : le répertoire est nommé dans les
+# `References:` de quatorze specs de ./src/ et n'est dans l'`Owns` d'aucune.
+# L'attribution est la tâche ouverte de ./vyvil-core.sdd ; en l'état, aucune de ces
+# tâches n'est exécutable par cette spec.
   [ ] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
     `#[cfg(test)]` de ./hashes.rs — Rust direct, @rhai::Engine local enregistré par
     @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register ou
@@ -248,12 +252,11 @@ Tasks:
     aucun `#[cfg(test)]` et le repo n'a aucun répertoire ./tests/ : les cinq publics et les
     deux registres sont vierges de tout test, y compris l'affichage exact des variantes
     d'erreur — seule la matrice de features valide aujourd'hui la table des portes.
-  [ ] Corriger la rustdoc de ./lib.rs : `argon_hash` est Handlebars seul, la face script est
-    `new_argon` + `.hash` (décision actée : le code est juste, la doc fausse).
   [ ] Rendre @crate::hashes::Argon::new faillible (`@crate::Result<Self>`, `try_fill_bytes`,
     suppression de @std::default::Default) et faire porter l'erreur par `new_argon`
-    (décision actée : un constructeur public ne panique pas) ; adapter le helper Handlebars
-    de ./hbs.rs et ses tests, test d'abord.
+    (décision actée : un constructeur public ne panique pas), test d'abord. La face
+    Handlebars de ./hbs.rs est portée par la tâche jumelle de ./src/hbs.sdd, à cocher dans le
+    même commit : ./hbs.rs n'est pas de cet `Owns` (règle de bijection de ./vyvil-core.sdd).
   [x] Basculer @crate::hashes::bcrypt_hash sur @bcrypt::non_truncating_hash (décision
     actée : sécurité, pas de troncature silencieuse) ; adapter les Scenario bcrypt et
     signaler le changement de comportement pour les consommateurs (`72` octets et plus refusés,

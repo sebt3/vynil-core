@@ -22,6 +22,13 @@ Détail complet dans `.specdd/bootstrap.project.md`. Règles clés :
 - CI et harnais outil ont leurs propres specs : `.github/workflows/workflows.sdd`,
   `tooling.sdd`, spec racine `vyvil-core.sdd`.
 - Jamais de tâche `[x]` sans synthèse du `validator` au vert.
+- **Bijection spec ↔ code** : un fichier n'est écrit que sous l'autorité de la spec dont
+  l'`Owns` le nomme, ou d'une `Can modify` qu'elle déclare. Une tâche qui déborde du fichier
+  qu'elle spécifie est inscrite dans les `Tasks:` de la spec propriétaire de ce fichier ;
+  l'originale ne garde que sa part en périmètre, nomme sa jumelle, et les deux se cochent dans
+  le même commit (une face publique changée ailleurs casse la compilation). Un artefact sans
+  `Owns` (`../docs/`, `./README.md`) n'est pas une zone libre : ses tâches sont bloquées
+  jusqu'à attribution, prérequis ouvert dans `vyvil-core.sdd`.
 
 ## Harnais clippy
 

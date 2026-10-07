@@ -295,6 +295,12 @@ Tasks:
   [ ] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
     matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 
+  [ ] Adapter le helper Handlebars `argon_hash` de ./hbs.rs à @crate::hashes::Argon::new rendu
+    faillible : le helper appelle ce constructeur, doit propager l'échec par la voie des
+    helpers de cette spec (`warn` puis chaîne vide rendue au gabarit) et ne plus supposer un
+    succès ; ses tests d'abord. Tâche jumelle de « Rendre @crate::hashes::Argon::new faillible »
+    de ./src/hashes.sdd, à cocher dans le même commit — sans elle la crate ne compile plus
+    sous `hbs`, et la frontière des deux `Owns` est la seule raison de scinder le travail.
 Scenario: new compose les trois couches et les deux réglages hérités
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
   Then un template résout un built-in @handlebars (`each`), un cas `string_helpers`
