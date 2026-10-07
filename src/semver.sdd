@@ -308,10 +308,9 @@ Handles:
     type.
 
 Tasks:
-# Les tâches qui visent ../docs/ sont bloquées : le répertoire est nommé dans les
-# `References:` de quatorze specs de ./src/ et n'est dans l'`Owns` d'aucune.
-# L'attribution est la tâche ouverte de ./vyvil-core.sdd ; en l'état, aucune de ces
-# tâches n'est exécutable par cette spec.
+# Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
+# propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
+# leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
   [ ] Convertir en tests Rust passants chaque Scenario de cette spec qui n'en a pas encore, dans
     le `mod tests` sous `#[cfg(test)]` de ./semver.rs pour la face Rust et sur @rhai::Engine
     local — ou @Script::new_bare — pour la face script, la batterie de features de l'AGENTS.md
@@ -344,21 +343,15 @@ Tasks:
     enregistrement, la construction par littéral et la forme pointée des mutateurs.
   [ ] Implémenter à la main @std::cmp::PartialEq, @std::cmp::Ord (et son PartialOrd) et
     @std::hash::Hash de @crate::Semver sur `version` seule (décision actée : `use_v` est
-    cosmétique) ; la rustdoc du struct et « Standard semver ordering » de
-    ../docs/rhai_helpers.md deviennent vraies.
+    cosmétique), test d'abord ; la rustdoc du struct devient vraie, et la phrase « Standard
+    semver ordering » de ../docs/rhai_helpers.md est la tâche jumelle de ./docs.sdd.
   [ ] Faire échouer @crate::Semver::inc_beta et @crate::Semver::inc_alpha en
     @crate::Error::ParseInt (variante typée existante) au lieu de @crate::Error::Other
     (décision actée) ; le texte de script passe à `ParseIntError ...`.
   [ ] Effacer `build` (@semver::BuildMetadata::EMPTY) aux cinq mutateurs (décision actée :
-    la provenance d'avant le bump serait fausse après) ; documenter dans
-    ../docs/rhai_helpers.md « resets minor/patch, clears prerelease and build ».
-  [ ] Documenter dans ../docs/rhai_helpers.md les transitions de labels actuelles (décision
-    actée : le comportement est cohérent, pas de changement de code) : `beta` nu et tout label
-    étranger comptent comme non-beta (patch poussé, compteur `1`), traversée croisée
-    alpha/beta identique.
-  [ ] Documenter dans ../docs/rhai_helpers.md que les six opérateurs exigent deux `Semver`
-    (décision actée : pas de coercition mixte ni de `<=>`) : envelopper chaque opérande dans
-    `semver_from`.
+    la provenance d'avant le bump serait fausse après), test d'abord. Documenter « resets
+    minor/patch, clears prerelease and build » dans ../docs/rhai_helpers.md est la tâche
+    jumelle de ./docs.sdd, à cocher dans le même commit.
 
 Scenario: le même type sous deux chemins dans tous les graphes
   Given la crate compilée par `cargo check --no-default-features`

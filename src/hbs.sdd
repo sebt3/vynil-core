@@ -295,9 +295,6 @@ Tasks:
     l'erreur (décision actée, alignée sur ./engine.sdd) ; adapter `argon_hash` à
     @crate::hashes::Argon::new faillible et `bcrypt_hash` au refus > 72 octets (voir
     ./hashes.sdd), tous deux en warn + chaîne vide.
-  [ ] Documenter dans ../docs/handlebars_helpers.md `uuid_new_v7` (rend un v4, défaut amont
-    de handlebars_misc_helpers 0.17.0, pas de correctif prévu) et la nouvelle politique de
-    `to_decimal` (décision actée : on ne réimplémente pas).
   [ ] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
     matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 

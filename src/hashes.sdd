@@ -206,12 +206,15 @@ Raises:
     système lâche, symétrique au @bcrypt::BcryptError::Rand de bcrypt ; aucun panic. Le
     constructeur de script `new_argon` porte ce cas en @crate::RhaiRes.
     La branche d'encodage du sel (@argon2::password_hash::SaltString::encode_b64 sur
-    `@std::primitive::u8` × `16`) est mappée sur le même @crate::Error::Other « Entropy failure:
-    … » : elle est matériellement inatteignable à cette longueur (`Salt::MAX_LENGTH` vaut `64`,
-    la dépendance ne documente d'échec que « trop long »), et @variant-Error::Argon2hash serait
-    un nomage pire pour un échec d'encodage. Un remapage en @variant-Error::Argon2hash via le
-    `@std::convert::From` existant reste possible : c'est un changement de contrat, pas une
-    correction.
+    `@std::primitive::u8` × `16`) rend un @crate::Error::Other portant « Salt encoding failure:
+    … », texte distinct de « Entropy failure: … » : l'encodage n'est pas de l'entropie, et un
+    exploitant qui lit l'un ne doit pas être mené à chercher l'autre (décision du développeur
+    principal : « les erreurs doivent être parlantes »). @variant-Error::Argon2hash est écarté :
+    cette variante porte les échecs de hachage @argon2 par le `@std::convert::From` existant et
+    accuserait argon2 d'un échec d'encodage de sel. La branche est matériellement inatteignable à
+    cette longueur (`Salt::MAX_LENGTH` vaut `64`, la dépendance ne documente d'échec que
+    « trop long ») : elle reste sans verrou d'exécution, tenue par la structure et consignée dans
+    la tâche qui la pose.
   Collages de script — @crate::RhaiRes porteurs du texte @std::fmt::Display de @crate::Error
     via @crate::rhai_err : `Argon2 password_hash error ...` pour `.hash`, `Bcrypt hash error ...`
     pour `bcrypt_hash` ; @crc32fast::Hasher de crc32 ne pouvant échouer, aucune erreur ne sort
@@ -246,10 +249,16 @@ Handles:
     ./engine.rs ; `crypto` + `rhai` : jeu complet via @Script::new_bare ou les deux registres.
 
 Tasks:
-# Les tâches qui visent ../docs/ sont bloquées : le répertoire est nommé dans les
-# `References:` de quatorze specs de ./src/ et n'est dans l'`Owns` d'aucune.
-# L'attribution est la tâche ouverte de ./vyvil-core.sdd ; en l'état, aucune de ces
-# tâches n'est exécutable par cette spec.
+# Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
+# propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
+# leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
+  [ ] Rendre parlante la branche d'encodage du sel, décidée par le développeur principal (« les
+    erreurs doivent être parlantes ») : @argon2::password_hash::SaltString::encode_b64 ne rend
+    plus « Entropy failure: … » mais @crate::Error::Other « Salt encoding failure: … », l'encodage
+    n'étant pas de l'entropie. Pas @variant-Error::Argon2hash, qui porte les échecs de hachage
+    @argon2 et accuserait argon2 d'un échec d'encodage. Branche inatteignable à `16` octets et
+    non injectable depuis cet `Owns` : aucun verrou d'exécution n'est honnêtement possible, la
+    consigner tenue par la structure plutôt que d'écrire un test décoratif.
   [ ] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
     `#[cfg(test)]` de ./hashes.rs — Rust direct, @rhai::Engine local enregistré par
     @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register ou
@@ -285,10 +294,6 @@ Tasks:
     `Bcrypt hash error Expected 72 bytes or fewer; found <longueur + 1> bytes` côté Rust et
     Rhai, chaîne vide côté Handlebars, qui avale l'erreur après `warn`) alors qu'ils rendaient
     60 caractères. Destinataires : ../vynil, kuberest, kydah. Issue hors de ce dépôt.
-  [ ] Compléter ../docs/rhai_helpers.md et ../docs/handlebars_helpers.md sur la limite bcrypt :
-    les deux pages documentent `bcrypt_hash` sans dire que `72` octets et plus sont refusés
-    (elles sont incomplètes, pas fausses). Hors de l'`Owns` de cette spec : à faire avec
-    l'accord du développeur principal, qui tient la main sur les deux fichiers.
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`

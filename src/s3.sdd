@@ -200,9 +200,6 @@ Tasks:
     incomplets, passer par `crate::rt::block_on` (décisions actées).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
-  [ ] Corriger ../docs/rhai_helpers.md lignes 51-54 : le tier opt-in est `http`/`k8s`/`oci`/
-    `s3`, avec mocks pour http, k8s et oci seulement ; s3 n'a pas de mock, il se teste par le
-    store en mémoire (décision actée : pas de `s3_mock`).
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)

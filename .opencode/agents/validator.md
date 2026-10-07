@@ -26,6 +26,10 @@ et produire une SYNTHÈSE honnête — si ce n'est pas bon, l'écart remonte, il
   éditée sans raison ; `Tasks` `[x]` uniquement si la tâche est faite ET vérifiée.
 - Vérifier la cohérence spec ↔ tests après refactor : les tests testent le contrat, pas
   l'implémentation.
+- Signaliser les sections descriptives restées en arrière du contrat changé (`Exposes`,
+  `Accepts`, `Handles`, `Raises`, prose d'énumération) : un `Must` amendé d'une décision actée
+  laisse souvent la description dire l'avant, et le code vit du côté de la description. Les
+  comptes tenus dans une prose (« ces deux textes sont… ») comptent comme dette à reformuler.
 
 ## 2. Batterie (tout lancer, tout citer)
 

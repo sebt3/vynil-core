@@ -232,10 +232,9 @@ Tasks:
 # à ./src/lib.sdd et la description de la feature `shell` à ./vyvil-core.sdd (tâches jumelles,
 # même commit). La part ../docs/ reste ici, marquée bloquée : c'est la dette de cette spec sur
 # un fichier qu'elle ne peut pas écrire tant qu'il n'a pas d'`Owns`.
-# Les tâches qui visent ../docs/ sont bloquées : le répertoire est nommé dans les
-# `References:` de quatorze specs de ./src/ et n'est dans l'`Owns` d'aucune.
-# L'attribution est la tâche ouverte de ./vyvil-core.sdd ; en l'état, aucune de ces
-# tâches n'est exécutable par cette spec.
+# Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
+# propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
+# leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
   [ ] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous
     `#[cfg(test)]` de ./shell.rs, plus les appels de script sur un @rhai::Engine local
     enregistré par @crate::shell::shell_rhai_register et @Script::new_bare pour le Scenario de
@@ -249,18 +248,12 @@ Tasks:
     partagé par @crate::shell::rhai_run et @crate::shell::rhai_get_stdout, et joindre un
     extrait de stderr borné à `Command failed, rc=<n>` (décisions actées) ; test d'abord depuis
     les Scenario signal et code non nul.
-  [ ] Documenter en section 10 de ../docs/rhai_helpers.md le `128 + signal` que rend
-    `shell_run` quand le processus est tué par un signal — bloqué : ../docs/ n'est dans
-    l'`Owns` d'aucune spec, attribution portée par ./vyvil-core.sdd. Le fait est contracté
-    par cette spec (`Must` sur `128 + signal`, `Handles` sous signal unix) ; il n'est pas
-    encore verrouillé par un test — ./shell.rs n'a aucun `#[cfg(test)]`, c'est la tâche de
-    conversion ci-dessus.
   [ ] Documenter le risque d'exécution de commandes (aucune whitelist, timeout ni bac à sable ;
     l'opt-in cargo est le seul garde-fou, décision actée) dans la rustdoc de ./shell.rs.
     Jumelles, hors de cet `Owns` et à cocher dans le même commit : la description de la feature
     `shell` dans ./Cargo.toml (./vyvil-core.sdd), la table et la rustdoc de ./lib.rs avec
-    l'assomption unix seul (./src/lib.sdd), et ../docs/rhai_helpers.md, bloqué faute
-    d'attribution.
+    l'assomption unix seul (./src/lib.sdd), et la section 10 de ../docs/rhai_helpers.md
+    (./docs.sdd).
   [ ] Ajouter `--no-default-features --features shell` et `--no-default-features --features
     rhai,shell` (clippy et test) à la batterie de l'AGENTS.md et de ./tooling.sdd, et vérifier
     la matrice des autres features non listées (`http`, `hbs`, `crypto`, `password`…) sur le

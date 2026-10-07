@@ -19,8 +19,14 @@ Détail complet dans `.specdd/bootstrap.project.md`. Règles clés :
 
 - Une spec `.sdd` par fichier de `src/` (groupe 2–3 fichiers seulement si un seul contrat —
   un `*_mock.rs` avec sa source), décrivant tout le comportement du fichier.
+- La documentation a sa spec racine propre : `docs.sdd` `Owns` `./docs/` (trois pages) et
+  `./README.md`. Une page ne contracte rien : en cas de divergence, la spec du module fait foi
+  et la correction est une tâche de `docs.sdd`.
 - CI et harnais outil ont leurs propres specs : `.github/workflows/workflows.sdd`,
   `tooling.sdd`, spec racine `vyvil-core.sdd`.
+- **Reconciliation à la clôture** : une tâche qui change un comportement oblige à reprendre les
+  sections descriptives de sa spec (`Exposes`, `Accepts`, `Handles`, `Raises`) à l'état que le
+  contrat produit. Un `Must` amendé ne tient pas lieu de mise à jour de ce qui décrit l'avant.
 - Jamais de tâche `[x]` sans synthèse du `validator` au vert.
 - **Bijection spec ↔ code** : un fichier n'est écrit que sous l'autorité de la spec dont
   l'`Owns` le nomme, ou d'une `Can modify` qu'elle déclare. Une tâche qui déborde du fichier

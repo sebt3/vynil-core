@@ -1,0 +1,156 @@
+Spec: Documentation utilisateur (./docs/ et ./README.md)
+
+Platform: Markdown, pages lues telles quelles sur GitHub et la page crates.io
+
+Purpose:
+  Tenir la surface publique que lit un consommateur : les trois pages de ./docs/ et
+    ./README.md. Ces fichiers ne décrivent aucun comportement d'eux-mêmes — chaque phrase qui
+    engage un comportement (borne, défaut, texte d'erreur, feature, trou d'un mock) est la
+    reformulation d'un contrat tenu par une spec de ./src/, et n'en ajoute aucun.
+
+Owns:
+  ./docs/rhai_helpers.md
+  ./docs/handlebars_helpers.md
+  ./docs/mocking.md
+  ./README.md
+
+References:
+  ./vyvil-core.sdd — la règle de bijection, dont cette spec est la réponse : trois pages et un
+    README étaient visés par quinze tâches de dix specs sans qu'aucun `Owns` ne les nomme
+    (l'attribution est la tâche qu'elle porte, cochée à la création de cette spec). Porte aussi
+    la règle de reconciliation des sections descriptives, dont les pages sont le premier lectorat.
+  ./src/engine.sdd, ./src/hashes.sdd, ./src/hbs.sdd, ./src/http.sdd, ./src/k8s.sdd,
+    ./src/oci.sdd, ./src/password.sdd, ./src/s3.sdd, ./src/semver.sdd, ./src/shell.sdd —
+    chaque page reformule le contrat de ces specs ; en cas de divergence la spec fait foi.
+  ./Cargo.toml — la table des features et leurs descriptions, que ./docs/rhai_helpers.md doit
+    reproduire sans en inventer une seule.
+
+Must:
+  Écrire la prose en anglais et tenir les identifiants, signatures, messages d'erreur et blocs
+    de code verbatim du Rust. Mesuré sur les quatre fichiers : aucun mot français, et les seuls
+    non-ASCII sont les tirets longs, les ellipses et les flèches. La règle bilingue demandée par
+    le développeur principal est une intention non encore traduite en contrat : sa forme est la
+    tâche ouverte ci-dessous, et ni cette page ni aucune autre ne devient bilingue avant
+    l'arbitrage.
+  Nommer, pour chaque fonction, type, méthode ou helper documenté, la feature cargo ou le tier
+    d'enregistrement qui le fait exister, tels que ./Cargo.toml et le câblage réels de
+    ./src/engine.rs les donnent — pas tels qu'on les devine. Un item documenté sous une feature
+    absente de ./Cargo.toml est un défaut de cette spec.
+  Traiter toute divergence entre une page et la spec du module concerné comme un défaut de la
+    page : la spec de ./src/ fait foi, la correction s'inscrit dans les `Tasks:` de cette spec,
+    et elle ne se règle jamais en modifiant du code depuis ce que dit une page.
+  Reprendre au mot près, quand une page cite un message d'erreur ou une borne, le texte que
+    contractent le `Raises`, le `Must` ou le `Scenario` de la spec du module (précédents : la
+    limite bcrypt de `72` octets, le négatif ramené à `0` de `gen_password`, le `128 + signal`
+    de `shell_run`).
+  Faire voyager une modification de documentation dans le même commit que le changement de spec
+    ou de code qu'elle décrit (même discipline que la reconciliation des sections descriptives) :
+    une page qui attend son commit suivant reste fausse pour celui qui la lit entre-temps.
+  Tenir la structure mesurée des pages : titre de premier niveau, puis le préambule de features
+    et d'enregistrement, puis des sections numérotées par module ou par feature pour les deux
+    pages de helpers ; ./docs/mocking.md garde une section par double avec ses sous-sections de
+    surface enregistrée et d'écart assumé ; ./README.md garde son ordre (nom de la crate, objet,
+    ligne de statut d'API instable, ce que la crate fournit, les features).
+  Croiser les pages par liens relatifs, comme elles le font déjà : `rhai_helpers.md`,
+    `handlebars_helpers.md` et `mocking.md` se renvoient l'une à l'autre ; ./README.md les nomme, et
+    écrire le nom de la crate tel que ./Cargo.toml le déclare : `vynil-core`.
+
+Must not:
+  Documenter une feature, un helper ou un type que ./Cargo.toml ou ./src/ ne contient pas, ni
+    laisser entendre qu'un double de test fait ce qu'il ne fait pas (précédent mesuré :
+    « backed by in-memory fixtures » pour le mock `oci`, qui est un double constant).
+  Corriger une page par déduction depuis le code lu à la volée : la source est la spec du module,
+    et si elle-même est en doute c'est elle qu'on rouvre, pas la page qu'on arrange.
+  Reprendre dans une page un contrat que sa spec a consigné comme non verrouillé par un test sans
+    le marquer comme tel : un comportement tenu par construction ou par le harnais se documente
+    comme le documentent les specs.
+
+Scenario: une phrase de page contredit la spec du module
+  Given une phrase de ./docs/ ou de ./README.md qui énonce une borne, un défaut, un texte
+    d'erreur ou une exigence de feature
+  When on la confronte au `Must`, au `Raises` ou au `Scenario` de la spec de ./src/ qui contracte
+    ce comportement
+  Then la spec fait foi, la phrase est en défaut, et sa correction est une tâche de cette spec —
+    le code ne bouge pas pour satisfaire une page
+
+Scenario: un comportement vu de l'utilisateur n'est nulle part documenté
+  Given un `Scenario` de ./src/ qui contracte un fait visible d'un consommateur (une borne qui
+    refuse, un défaut de clé, un trou assumé d'un mock)
+  When aucune ligne des trois pages ne le couvre
+  Then le silence est une tâche de cette spec et non une option : les deux pages de helpers
+    taisaient le refus des mots de passe de `72` octets et passent pour incomplètes
+
+Tasks:
+  [ ] Arbitrer la forme de la règle bilingue demandée par le développeur principal (« une spec
+    racine qui porte l'ensemble de la doc, avec ces règles de base (bilingues, etc) »). Mesuré :
+    les trois pages et ./README.md sont intégralement en anglais (zéro mot français, seuls
+    non-ASCII les tirets longs, ellipses et flèches), donc rien ici n'est bilingue aujourd'hui et
+    le `Must` ci-dessus contracte l'anglais. Trancher : double prose FR/EN par page, une page
+    par langue, un résumé d'ouverture dans l'autre langue, ou renvoi de l'intention — puis
+    transformer le verdict en `Must` et en tâche d'exécution. Tant que ce n'est pas tranché, la
+    règle applicable est celle qui est écrite.
+  [ ] ./docs/rhai_helpers.md section 12 : corriger la phrase sur reqwest (reçu de
+    ./src/engine.sdd, qui gardait cette part dans une tâche mêlée à la rustdoc de ./lib.rs,
+    désormais tâche de ./src/lib.sdd).
+  [ ] ./docs/rhai_helpers.md et ./docs/handlebars_helpers.md sur la limite bcrypt : les deux pages
+    documentent `bcrypt_hash` sans dire que `72` octets et plus sont refusés ; elles sont
+    incomplètes, pas fausses (reçu de ./src/hashes.sdd, décision du développeur principal
+    d'ouvrir ./docs/ à la correction). La borne utile est `71` : `71` octets passent, `72` est le
+    premier refus.
+  [ ] ./docs/handlebars_helpers.md : documenter `uuid_new_v7` (rend un v4, défaut amont de
+    `handlebars_misc_helpers` 0.17.0, aucun correctif attendu) et la politique retenue pour
+    `to_decimal` — la seconde moitié attend l'arbitrage de la voie de `to_decimal`, tâche ouverte
+    de ./src/hbs.sdd (reçu de ./src/hbs.sdd).
+  [ ] ./docs/rhai_helpers.md vers la ligne 228 : le module `http` EST gaté par `http`, `reqwest`
+    est optionnel ; et ./docs/mocking.md : documenter les trois trous du mock `http`
+    (`new_client`, `http_get_yaml`, `http_head`), décision actée — le mock ne change pas (reçu de
+    ./src/http.sdd).
+  [ ] ./docs/rhai_helpers.md : `new_global` = tous les espaces de noms, `k8s_resource` sans `/`
+    sans vérification de version, `get_cluster_version`, `get_kind`/`original_kind`, `get_url` en
+    JSON seul, les waits ; et ./docs/mocking.md : le tableau des différences connues du mock k8s,
+    dont `patch` qui n'écrit pas dans `created` — décisions actées (reçu de ./src/k8s.sdd).
+  [ ] ./docs/mocking.md : « backed by in-memory fixtures » est faux pour `oci`, le mock est un
+    double constant ; ./docs/rhai_helpers.md : les faces Rust publiques de `oci` à documenter
+    (`pull_image`, `list_tags` async, `verify_tag_in_registry`, `resolve_registry_auth`), assumées
+    comme API durable, décision actée (reçu de ./src/oci.sdd, dont la tâche garde la part de code
+    : renommer le type Rhai du mock en `Registry` et lui ajouter `get_auth_from_file`).
+  [ ] ./docs/rhai_helpers.md section 9 : un minimum négatif vaut `0` (classe exclue) et non `1`,
+    décision actée — le code fait foi (reçu de ./src/password.sdd).
+  [ ] ./README.md ligne 38 : `rand` est une dépendance non optionnelle, pas une dépendance de la
+    feature `password` (reçu de ./src/password.sdd).
+  [ ] ./docs/rhai_helpers.md lignes 51-54 : le tier non auto-enregistré est `http`/`k8s`/`oci`/
+    `s3`, avec des mocks pour `http`, `k8s` et `oci` seulement — `s3` n'a pas de mock et se teste
+    par le store en mémoire, décision actée. Reçu de ./src/s3.sdd et ./src/oci.sdd, qui pointaient
+    tous les deux sur ce même paragraphe : traité comme une seule tâche pour ne pas le faire se
+    contredire deux fois.
+  [ ] ./docs/rhai_helpers.md, section Semver : rendre vraie la phrase « Standard semver ordering »
+    (l'ordre et le hash sur `version` seule, `use_v` cosmétique) — tâche jumelle de
+    « Implémenter à la main @std::cmp::PartialEq, @std::cmp::Ord et @std::hash::Hash » de
+    ./src/semver.sdd, à cocher avec elle (reçu de ./src/semver.sdd).
+  [ ] ./docs/rhai_helpers.md, section Semver : documenter que les mutateurs remettent à zéro
+    `minor`/`patch`, vident le pre-release et effacent `build` — tâche jumelle d'« Effacer `build`
+    aux cinq mutateurs » de ./src/semver.sdd, à cocher avec elle (reçu de ./src/semver.sdd).
+  [ ] ./docs/rhai_helpers.md, section Semver : les transitions de labels telles qu'elles sont —
+    `beta` nu et tout label étranger comptent comme non-beta (patch poussé, compteur remis à `1`),
+    traversée croisée alpha/beta identique ; décision actée, le comportement est cohérent et le
+    code ne change pas (reçu de ./src/semver.sdd).
+  [ ] ./docs/rhai_helpers.md, section Semver : les six opérateurs exigent deux `Semver`, pas de
+    coercition mixte ni de `<=>` — envelopper chaque opérande dans `semver_from` ; décision actée
+    (reçu de ./src/semver.sdd).
+  [ ] ./docs/rhai_helpers.md section 10 : le `128 + signal` que rend `shell_run` quand le
+    processus est tué par un signal (et `-1` hors unix). Le fait est contracté par
+    ./src/shell.sdd (`Must` et `Handles`) ; il n'est pas encore verrouillé par un test, ./shell.rs
+    n'ayant aucun `#[cfg(test)]` — le documenter sans le dire verrouillé serait le deuxième
+    mensonge de la page (reçu de ./src/shell.sdd).
+  [ ] ./docs/rhai_helpers.md section 10 : le risque d'exécution de commandes que porte la feature
+    `shell` — aucune whitelist, aucun timeout, aucun bac à sable, l'opt-in cargo étant le seul
+    garde-fou, décision actée. Jumelles du même fait, à cocher dans le même commit : la rustdoc de
+    ./shell.rs (./src/shell.sdd), la table et la rustdoc de ./lib.rs avec l'assomption unix seul
+    (./src/lib.sdd), et la description de la feature `shell` dans ./Cargo.toml
+    (./vyvil-core.sdd).
+
+Done when:
+  Les trois pages et ./README.md ne contiennent plus une phrase contredisant la spec d'un module,
+    et chaque fait contracté visible d'un consommateur y trouve sa ligne ; la règle bilingue est
+    tranchée dans sa forme et écrite en `Must` ; les seize tâches ouvertes sont closes ou
+    explicitement remises en doute par le développeur principal.

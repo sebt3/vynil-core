@@ -321,9 +321,6 @@ Tasks:
     `to_decimal` de ./hbs.rs suit (voir ./hbs.sdd).
   [ ] Retirer de ./engine.rs le test qui verrouille le quirk yaml des cinq caractères (voir
     ./yaml.sdd) et figer `new_bare(vec![])` fail-closed dans la rustdoc de `new_bare`.
-  [ ] Corriger les textes : rustdoc de ./lib.rs (« Additional, feature-gated » est faux pour
-    yaml/semver/glob/date_now, toujours présents sous `rhai` ; `argon_hash` n'existe pas côté
-    Rhai) et ../docs/rhai_helpers.md section 12 (phrase sur reqwest).
   [ ] Couvrir les branches gated de `new_bare` (`rhai,fs`, `rhai,shell`, `rhai,password`,
     `rhai,crypto`) par la matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.

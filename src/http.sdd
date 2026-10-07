@@ -381,9 +381,6 @@ Tasks:
     actée) ; tester `body_post` hors runtime et sur `current_thread`.
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
-  [ ] Corriger ../docs/rhai_helpers.md ~ligne 228 (le module EST gaté par `http`,
-    `reqwest` est optionnel) et documenter dans ../docs/mocking.md les trois trous du mock
-    (`new_client`, `http_get_yaml`, `http_head`), décision actée : le mock ne change pas.
   [ ] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
     commune avec ./oci.sdd.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.

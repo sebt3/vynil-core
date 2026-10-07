@@ -334,11 +334,10 @@ Tasks:
     `accept` explicite à `verify_tag_in_registry` ; câbler le User-Agent depuis
     @crate::client_name quand défini (décisions actées).
   [ ] Renommer le type Rhai du mock en `Registry`, ajouter `get_auth_from_file` (constante
-    `{user "", pass ""}`) au mock ; corriger ../docs/mocking.md (« backed by in-memory
-    fixtures » est faux pour oci, le mock est un double constant) et ../docs/rhai_helpers.md
-    lignes 51-54 (voir ./s3.sdd) ; documenter dans ../docs les faces Rust publiques
-    (`pull_image`, `list_tags` async, `verify_tag_in_registry`, `resolve_registry_auth`),
-    assumées comme API durable (décision actée).
+    `{user "", pass ""}`) au mock, test d'abord. Sa part documentaire est ailleurs, ./docs/
+    n'étant pas de cet `Owns` : « backed by in-memory fixtures » faux pour `oci`, le tier des
+    lignes 51-54 et les faces Rust publiques à documenter sont les tâches de ./docs.sdd, avec
+    les décisions actées correspondantes.
   [ ] Remplacer les ponts tokio par `crate::rt::block_on` (décision actée, commune à s3 et
     http ; le helper est spécifié dans ./rt.sdd).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est

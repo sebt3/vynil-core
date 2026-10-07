@@ -64,6 +64,14 @@ Must:
     ../docs/ (trois pages) et ./README.md n'appartiennent à aucune spec alors que quatorze
     specs de ./src/ les nomment dans leurs `References:` ; aucune tâche ne peut les toucher
     tant qu'ils ne sont pas attribués.
+  Reprendre, à la clôture de toute spec dont une tâche a changé un comportement, les sections
+    descriptives de cette spec — `Exposes`, `Accepts`, `Handles`, `Raises` et leur prose
+    d'énumération — et les mettre à l'état que le contrat changé produit. Un `Must` amendé d'une
+    décision actée ne tient pas lieu de mise à jour des sections qui décrivent l'avant : mesuré
+    trois fois en deux jours, sur des specs fermées comme en cours, où le contrat vrai et sa
+    propre description disaient deux choses différentes — le code, lui, vivait du côté de la
+    description. Un compte tenu dans une section (« ces deux textes sont l'affichage exact ») est
+    une dette différée : l'écrire en « chacun de ces textes » plutôt que de le maintenir.
 
 Must not:
   Dépendre de vynil, kuberest, kydah ou d'un autre consommateur de cette crate.
@@ -106,7 +114,7 @@ Tasks:
     `validator`).
   [ ] Créer `src/rt.rs` depuis `src/rt.sdd` (tests d'abord) et migrer les quatre modules
     (`http`, `oci`, `s3`, `k8s`).
-  [ ] Attribuer ../docs/ et ./README.md, prérequis de toute tâche documentaire : les trois
+  [x] Attribuer ../docs/ et ./README.md, prérequis de toute tâche documentaire : les trois
     pages de ../docs/ (rhai_helpers.md, handlebars_helpers.md, mocking.md) et ./README.md ne
     sont dans l'`Owns` d'aucune spec, alors que quatorze specs de ./src/ les nomment dans leurs
     `References:` (règle de bijection ci-dessus). Quinze tâches ouvertes, dans dix d'entre
@@ -119,9 +127,12 @@ Tasks:
     `shell_run`, la limite bcrypt), tandis que celles qui mêlent un changement de code et une
     phrase de doc restent faisables pour leur part de code, la phrase attendant. Aucune ne
     peut écrire ces fichiers tant qu'ils n'ont pas d'`Owns`.
-    Attribution à trancher par Sébastien : une spec par page (précédent ./tooling.sdd et
-    ./.github/workflows/workflows.sdd, specs d'artefacts hors ./src/), ou ./README.md dans
-    l'`Owns` de cette spec, qui porte déjà la face de publication avec ./Cargo.toml.
+    Arbitrage rendu par Sébastien : « une spec racine qui porte l'ensemble de la doc, avec ces
+    règles de base (bilingues, etc) ». Exécuté par ./docs.sdd, qui `Owns` les trois pages et
+    ./README.md, reçoit les quinze tâches avec leur provenance, et contracte les règles de base
+    mesurées — dont l'anglais, seul état réel des pages (zéro mot français mesuré) : la règle
+    bilingue y est tâche ouverte à traduire en `Must`, pas un contrat inventé. Les dix specs de
+    ./src/ qui portaient ces tâches ne gardent que leur part de code et nomment leur jumelle.
   [ ] Documenter le risque d'exécution de commandes de `shell` dans la description de la
     feature `shell` de ./Cargo.toml : aucune whitelist, aucun timeout, aucun bac à sable,
     l'opt-in cargo est le seul garde-fou (décision actée). Tâche jumelle de « Documenter le

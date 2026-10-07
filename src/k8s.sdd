@@ -440,10 +440,6 @@ Tasks:
   [ ] Cargo : retirer `dep:futures` de la feature `k8s` (vérifier `cargo hack`), déclarer
     `tokio` avec `time` (décision actée).
   [ ] StatefulSet : corriger la spec (`unwrap_or(1)`, déjà le code) et son Scenario.
-  [ ] Documentation : ../docs/rhai_helpers.md (`new_global` = all-namespaces, `k8s_resource`
-    sans `/` sans vérification de version, `get_cluster_version`, `get_kind`/`original_kind`,
-    `get_url` JSON seul, waits) et ../docs/mocking.md (tableau « différences connues » du
-    mock k8s ; `patch` n'écrit pas dans `created`) — décisions actées.
   [ ] Enregistrer explicitement `update_k8s_crd_cache` (no-op) dans `k8s_mock_rhai_register`.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
