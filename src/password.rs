@@ -73,11 +73,23 @@ pub fn generate(length: usize, lower: usize, upper: usize, digits: usize, symbol
     Ok(chars.into_iter().collect())
 }
 
+/// Reads the minimum of `key` from a script spec map.
+///
+/// An absent key defaults to `1`; a present integer is clamped to `0` when
+/// negative (excluding the class) and saturates to `usize::MAX` when it does
+/// not fit. A present value that is not an integer is a script error
+/// (`PWD-SPEC-003`, naming the faulty key) — never a silent fallback.
 #[cfg(feature = "rhai")]
-fn class_min(spec: &Map, key: &str) -> usize {
-    spec.get(key)
-        .and_then(|v| v.as_int().ok())
-        .map_or(1, |i| usize::try_from(i.max(0)).unwrap_or(usize::MAX))
+fn class_min(spec: &Map, key: &str) -> Result<usize> {
+    match spec.get(key) {
+        Some(v) => {
+            let i = v.as_int().map_err(|_| {
+                Error::PasswordSpec(format!("PWD-SPEC-003 spec key '{key}' must be an integer"))
+            })?;
+            Ok(usize::try_from(i.max(0)).unwrap_or(usize::MAX))
+        }
+        None => Ok(1),
+    }
 }
 
 /// Registers the `gen_password` / `gen_password_alphanum` helpers on a Rhai `engine`.
@@ -90,14 +102,14 @@ pub fn password_rhai_register(engine: &mut Engine) {
         })
         .register_fn("gen_password", |len: i64, spec: Map| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
-            generate(
-                length,
-                class_min(&spec, "lower"),
-                class_min(&spec, "upper"),
-                class_min(&spec, "digits"),
-                class_min(&spec, "symbols"),
-            )
-            .map_err(|e| format!("{e}").into())
+            let read_min = |key: &str| -> crate::RhaiRes<usize> {
+                class_min(&spec, key).map_err(|e| format!("{e}").into())
+            };
+            let lower = read_min("lower")?;
+            let upper = read_min("upper")?;
+            let digits = read_min("digits")?;
+            let symbols = read_min("symbols")?;
+            generate(length, lower, upper, digits, symbols).map_err(|e| format!("{e}").into())
         })
         .register_fn("gen_password_alphanum", |len: i64| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
@@ -163,5 +175,151 @@ mod tests {
             generate(24, 1, 1, 1, 1).unwrap(),
             generate(24, 1, 1, 1, 1).unwrap()
         );
+    }
+
+    // Le chemin `PWD-SPEC-003` naît de la lecture d'une `rhai::Map` : il n'est
+    // observable que depuis un script, donc sous `rhai` seule (la glue de ce
+    // module n'est pas gatée `password`).
+    #[cfg(feature = "rhai")]
+    mod script {
+        use super::*;
+
+        // Engine fraîchement enregistré par `password_rhai_register`.
+        fn engine() -> Engine {
+            let mut e = Engine::new();
+            crate::password::password_rhai_register(&mut e);
+            e
+        }
+
+        // Le collage binaire propage l'erreur par `format!("{e}").into()` : un
+        // `ErrorRuntime` porteur du texte brut de `Error::PasswordSpec`
+        // (affichage `#[error("{0}")]`), sans préfixe de crate ni source.
+        fn assert_rejection(e: &Engine, src: &str, expected: &str) {
+            let err = e
+                .eval::<rhai::Dynamic>(src)
+                .expect_err(&format!("`{src}` doit échouer"));
+            let rhai::EvalAltResult::ErrorRuntime(msg, _) = err.as_ref() else {
+                panic!("attendu l'erreur runtime du collage, obtenu {err:?}");
+            };
+            assert!(msg.is_string(), "le collage rend un texte brut, obtenu {msg:?}");
+            assert_eq!(
+                msg.to_string(),
+                expected,
+                "message exact citant la clé fautive, aucun repli toléré"
+            );
+        }
+
+        // ── Scenario « une clé de spec non entière est une erreur de script » ──
+        // Refuse : le repli silencieux sur `1` du `class_min` actuel — chaque
+        // évaluation ci-dessous rendrait un Ok(password) au lieu du refus
+        // `PWD-SPEC-003` citant sa propre clé.
+
+        #[test]
+        fn scenario_spec_key_chaine_est_une_erreur() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                r#"gen_password(20, #{ lower: "5" })"#,
+                "PWD-SPEC-003 spec key 'lower' must be an integer",
+            );
+        }
+
+        #[test]
+        fn scenario_spec_key_flottant_est_une_erreur() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(20, #{ upper: 3.0 })",
+                "PWD-SPEC-003 spec key 'upper' must be an integer",
+            );
+        }
+
+        #[test]
+        fn scenario_spec_key_booleen_est_une_erreur() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(20, #{ digits: true })",
+                "PWD-SPEC-003 spec key 'digits' must be an integer",
+            );
+        }
+
+        #[test]
+        fn scenario_spec_key_tableau_est_une_erreur() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(20, #{ symbols: [] })",
+                "PWD-SPEC-003 spec key 'symbols' must be an integer",
+            );
+        }
+
+        #[test]
+        fn scenario_spec_key_map_est_une_erreur() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(20, #{ lower: #{ a: 1 } })",
+                "PWD-SPEC-003 spec key 'lower' must be an integer",
+            );
+        }
+
+        #[test]
+        fn scenario_spec_key_unite_est_une_erreur() {
+            let e = engine();
+            assert_rejection(
+                &e,
+                "gen_password(20, #{ lower: () })",
+                "PWD-SPEC-003 spec key 'lower' must be an integer",
+            );
+        }
+
+        // Discrimination absente/présente verrouillée contre le rendu faillible :
+        // la clé absente (`#{}`) reste le défaut `1` sans erreur, la clé présente
+        // à `0` exclut la classe au lieu de retomber sur `1`.
+
+        #[test]
+        fn scenario_cle_absente_vaut_defaut_un() {
+            let e = engine();
+            let p: rhai::ImmutableString = e
+                .eval("gen_password(40, #{})")
+                .expect("la map vide équivaut à la surcharge unaire et doit réussir");
+            assert_eq!(p.chars().count(), 40);
+            assert!(
+                count(&p, |c| c.is_ascii_lowercase()) >= 1,
+                "clé absente : défaut `1`"
+            );
+            assert!(
+                count(&p, |c| c.is_ascii_uppercase()) >= 1,
+                "clé absente : défaut `1`"
+            );
+            assert!(count(&p, |c| c.is_ascii_digit()) >= 1, "clé absente : défaut `1`");
+            assert!(
+                count(&p, |c| SYMBOLS.contains(&c)) >= 1,
+                "clé absente : défaut `1`"
+            );
+        }
+
+        #[test]
+        fn scenario_cle_presente_nulle_exclut_la_classe() {
+            let e = engine();
+            let p: rhai::ImmutableString = e
+                .eval("gen_password(30, #{ lower: 0 })")
+                .expect("une clé présente à `0` doit réussir, ce n'est pas une clé non entière");
+            assert_eq!(
+                count(&p, |c| c.is_ascii_lowercase()),
+                0,
+                "`lower: 0` exclut la classe, aucun repli sur le défaut `1`"
+            );
+            assert!(
+                count(&p, |c| c.is_ascii_uppercase()) >= 1,
+                "clé absente : défaut `1`"
+            );
+            assert!(count(&p, |c| c.is_ascii_digit()) >= 1, "clé absente : défaut `1`");
+            assert!(
+                count(&p, |c| SYMBOLS.contains(&c)) >= 1,
+                "clé absente : défaut `1`"
+            );
+        }
     }
 }
