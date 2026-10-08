@@ -50,7 +50,7 @@ Must:
     features et un lint peut ne se déclencher que sur une seule combinaison. Un harnais lancé
     uniquement en `--all-features` laisse passer des avertissements.
   Porter `--all-targets` sur la porte `default` du harnais — `cargo clippy --all-targets
-    -- -D warnings` — comme le font déjà les six autres entrées de la liste et comme le joue la CI
+    -- -D warnings` — comme le font déjà toutes les autres entrées de la liste et comme le joue la CI
     (./.github/workflows/test.yml, job `clippy`) : sans ce flag, la porte la plus jouée de toutes ne
     construit pas la cible `lib test`, donc un avertissement du harnais glissé dans un `mod tests`
     de la lib y est STRUCTURELLEMENT invisible et n'est rattrapé que par le run final
@@ -58,7 +58,7 @@ Must:
     rattrape rien non plus : `--no-dev-deps` écarte précisément les cibles de développement
     (décision actée, sens unique — c'est la batterie qui monte au niveau de la CI, jamais l'inverse).
   Consigner le mérite réel de cette montée, mesuré et non supposé : à ce jour elle n'attrape aucun
-    avertissement que les six autres entrées `--all-targets` ne lintent déjà. Les DIX binaires de
+    avertissement que les autres entrées `--all-targets` ne lintent déjà. Les DIX binaires de
     ./tests ne portent aucun `#[cfg(feature = "...")]` et sont donc déjà triés intégralement par
     `--all-features --all-targets`, la crate n'a aucune cible d'exemple, et le seul code de cible de
     test négativement gated du dépôt (`src/lib.rs`, `#[cfg(not(feature = "rhai"))]
@@ -70,7 +70,7 @@ Must:
     `--no-default-features --features hbs --all-targets` restent hors contrat, la porte du seam
     racine et celle de l'isolabilité #9 étant jouées en exécution de tests et en `cargo tree`, pas
     en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
-  Compter dans les combinaisons testées les cinq runs de tests que la matrice explicite ne
+  Compter dans les combinaisons testées les six runs de tests que la matrice explicite ne
     couvrait pas : `--no-default-features` seul (porte où `rhai` est éteinte, donc où le seam de
     la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
     réellement exécutés — mesuré : ils le sont aussi sous `hbs`, `crypto` et `hbs,crypto`, cette
@@ -84,10 +84,13 @@ Must:
     inconnue » du Scenario `sans crypto` de ./src/key.sdd a son domaine — test qu'aucun test ne
     joue encore, inscrit en tâche là-bas) ; et
     `--no-default-features --features hbs,crypto` (seul graphe qui compile et joue un helper
-    Handlebars `crypto` sans `rhai` — ./src/hbs.sdd). Le harnais clippy est tendu sur ces trois
-    dernières portes en `--all-targets -- -D warnings` comme sur les précédentes : un verrou de
+    Handlebars `crypto` sans `rhai` — ./src/hbs.sdd) ; et `--no-default-features --features
+    rhai,shell` (seule porte qui joue les cinq verrous `all(test, shell, rhai)` de
+    ./src/shell.rs — mesuré par le `validator` : sous les dix portes courantes leur face n'est
+    que linte par `--all-features --all-targets`, jamais jouée). Le harnais clippy est tendu sur
+    ces quatre dernières portes en `--all-targets -- -D warnings` comme sur les précédentes : un verrou de
     porte qui ne tourne que sur bonne volonté locale est un verrou aveugle là où le contrat est
-    tenu publiquement. Ces cinq runs figurent dans la batterie de l'agent `validator`, dans la
+    tenu publiquement. Ces six runs figurent dans la batterie de l'agent `validator`, dans la
     liste de commandes de ./AGENTS.md et dans la matrice de jobs de
     ./.github/workflows/test.yml, en lockstep (./vyvil-core.sdd).
   Compiler et linter chaque feature isolément par une règle, non par une liste manuelle :
@@ -95,7 +98,8 @@ Must:
     actée), de sorte que chaque module gated (`fs`, `shell`, `password`, `crypto`, `http`, `hbs`
     sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
     de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
-    sens (`k8s,oci,s3`, `--all-features`) restent en plus.
+    sens (`k8s,oci,s3`, `--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`) restent
+    en plus.
 
 Must not:
   Accepter un `#[allow(...)]` de lint du harnais dans du code de production sans commentaire
@@ -180,6 +184,21 @@ Tasks:
     spec racine et se reprennent sous sa main, ./tooling.sdd ne peut pas les écrire ; la CI a sa
     tâche jumelle dans ./.github/workflows/workflows.sdd.
 
+  [x] Ajouter la porte `--no-default-features --features rhai,shell` (test et clippy
+    `--all-targets -- -D warnings`) à la batterie — reçue de ./src/shell.sdd : ses cinq verrous
+    `all(test, shell, rhai)` sont les seuls du dépôt qu'aucune des dix portes de test courantes
+    ne joue (mesuré par le `validator` à 3e4295d : leur face n'est linte que par
+    `--all-features --all-targets`). Forme `rhai,shell` entre virgules, précédent `hbs-crypto`
+    (la substitution GitHub est textuelle). Tri mesuré consigné pour ne pas être rejoué :
+    `shell` seul écarté — zéro verrou de test en propre (les verrous shell exigent `rhai`), sa
+    face compilée est le contrat de `cargo hack --each-feature` ; `password` et `fs` n'en
+    réclament pas — module @crate::password non gated (mesuré : ses verrous jouent sous toutes
+    les portes) et le feature ne câble que des glue sans verrou en ./src/engine.rs et
+    ./src/hbs.rs — matière des tâches ouvertes de ./src/engine.sdd et ./src/hbs.sdd, pas de la
+    matrice ; si ./src/hbs.sdd verrouille un jour un helper gated `password`, la porte
+    `hbs,password` sera à nommer ici. Jumelles : ./.github/workflows/workflows.sdd (entrée
+    `rhai-shell` de la matrice et de la boucle clippy) et la vue de ./src/shell.sdd — les trois
+    se cochent dans le même commit, qui tient le lockstep des cinq emplacements.
   [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
     contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
     `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la

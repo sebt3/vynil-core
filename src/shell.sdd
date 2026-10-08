@@ -239,11 +239,11 @@ Tasks:
   [ ] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous
     `#[cfg(test)]` de ./shell.rs, plus les appels de script sur un @rhai::Engine local
     enregistré par @crate::shell::shell_rhai_register et @Script::new_bare pour le Scenario de
-    câblage ; les Scenario `cargo check` relèvent de la batterie de features. Inventaire réel :
-    ./shell.rs ne contient AUCUN `#[cfg(test)]`, le repo n'a aucun répertoire ./tests/, et hors
-    rustdoc de ./lib.rs ni @crate::shell::run, @crate::shell::get_out, `shell_run` ni
-    `shell_output` n'apparaissent dans aucun test — tout est sans test, y compris la table des
-    portes. Le Scenario de lancement impossible exige un vidage de `PATH` global au processus :
+    câblage ; les Scenario `cargo check` relèvent de la batterie de features. Inventaire réel
+    (repris après 3e4295d) : ./shell.rs a un `mod tests` de cinq verrous `all(test, shell, rhai)`
+    — signal `143` des deux collages, rc rendu et extrait stderr borné à 512 octets — qui
+    verrouillent les Scenario correspondants ; restent sans test @crate::shell::run,
+    @crate::shell::get_out, la table des portes et le câblage @Script::new_bare. Le Scenario de lancement impossible exige un vidage de `PATH` global au processus :
     test à isoler en série à part, friction connue à écrire dans le test même.
   [x] Unifier le verdict de signal (`128 + signal`, `-1` hors unix) dans un helper privé
     partagé par @crate::shell::rhai_run et @crate::shell::rhai_get_stdout, et joindre un
@@ -255,10 +255,17 @@ Tasks:
     `shell` dans ./Cargo.toml (./vyvil-core.sdd), la table et la rustdoc de ./lib.rs avec
     l'assomption unix seul (./src/lib.sdd), et la section 10 de ../docs/rhai_helpers.md
     (./docs.sdd).
-  [ ] Ajouter `--no-default-features --features shell` et `--no-default-features --features
-    rhai,shell` (clippy et test) à la batterie de l'AGENTS.md et de ./tooling.sdd, et vérifier
-    la matrice des autres features non listées (`http`, `hbs`, `crypto`, `password`…) sur le
-    même principe : chaque module gated doit être compilé isolément par au moins une commande.
+  [x] Voir les cinq verrous de ./shell.rs joués en CI par la porte
+    `--no-default-features --features rhai,shell` — vue en périmètre de cette spec : ses verrous
+    `all(test, shell, rhai)` sont les seuls du dépôt qu'aucune des dix portes de test courantes
+    ne joue (mesuré par le `validator` à 3e4295d : leur face n'est linte que par
+    `--all-features --all-targets`, jamais jouée). L'inscription à la batterie déborde cet
+    `Owns` et est la tâche reçue de cette spec par ./tooling.sdd, jumelle de
+    ./.github/workflows/workflows.sdd pour l'entrée `rhai-shell` de ./.github/workflows/test.yml
+    — les trois tâches se cochent dans le même commit. Le tri est consigné là-bas : porte
+    `shell` seule écartée (zéro verrou en propre, face compilée tenue par `cargo hack
+    --each-feature`), `password` et `fs` sans porte à réclamer (trous de contrat de
+    ./src/engine.sdd et ./src/hbs.sdd, pas de la matrice).
 
 Scenario: la table des portes compile la face Rust sans rhai et le câblage sous rhai plus shell
   Given la crate compilée par `cargo check --no-default-features`

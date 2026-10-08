@@ -20,18 +20,21 @@ References:
 
 Must:
   Tester la matrice de features `default`, `no-default`, `hbs`, `k8s`, `oci`, `s3`,
-    `k8s,oci,s3`, `crypto`, `rhai`, `hbs-crypto` — chaque entrée non vide avec
+    `k8s,oci,s3`, `crypto`, `rhai`, `hbs-crypto`, `rhai-shell` — chaque entrée non vide avec
     `--no-default-features --features X`, l'entrée `default` avec les défauts, l'entrée
-    `no-default` avec `--no-default-features` seul. Cinq portes sont contractuelles parce
+    `no-default` avec `--no-default-features` seul. Six portes sont contractuelles parce
     qu'elles sont les seules à jouer un verrou nommé, et non par goût de la combinaison :
     `no-default` (seam de la racine, `src/lib.sdd`), `hbs` seul (isolabilité #9 en exécution),
     `crypto` seul (le verrou `#[cfg(not(feature = "rhai"))]` de @crate::key::gen_private_key,
     `../../src/key.sdd`), `rhai` seul (la glue sans les features qu'elle câble, les verrous
     `mod script` de `../../src/password.sdd`, et la porte où la demi-clause « fonction inconnue »
-    de `../../src/key.sdd` a son domaine (test à écrire — tâches de `../../src/key.sdd` et de sa
-    jumelle `src/lib.sdd`) et `hbs-crypto` (un helper Handlebars `crypto` joué sans `rhai`,
-    `../../src/hbs.sdd`). Les trois dernières s'écrivent en features séparées par des virgules
-    (`hbs,crypto`) : `run:` substitue `${{ matrix.args }}` textuellement dans le script, donc une
+    de `../../src/key.sdd` a son domaine (verrou `new_bare_without_crypto_rejects_gen_private_key`
+    depuis écrit et joué — tâches closes de `../../src/key.sdd` et de sa jumelle `src/lib.sdd`),
+    `hbs-crypto` (un helper Handlebars `crypto` joué sans `rhai`, `../../src/hbs.sdd`) et
+    `rhai-shell` (les cinq verrous `all(test, shell, rhai)` de `../../src/shell.sdd`, seule porte
+    qui les joue — mesuré : sous les dix portes courantes leur face n'était que linte, jamais
+    jouée). Les portes à deux features s'écrivent en features séparées par des virgules
+    (`hbs,crypto`, `rhai,shell`) : `run:` substitue `${{ matrix.args }}` textuellement dans le script, donc une
     forme **sans** guillemets (`--features hbs crypto`) verrait `crypto` rejeté hors de l'argument
     par la découpe du shell — mesuré, cinq arguments au lieu de quatre. La forme citée
     (`--features "hbs crypto"`) fonctionnerait elle aussi, les guillemets étant honorés par le
@@ -54,8 +57,8 @@ Must:
   Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
     lints bloquants étant portés par la table `[lints]` de `Cargo.toml` et les warnings rustc
     résiduels escaladés par le flag (`../../tooling.sdd`). La boucle explicite du même job
-    rejoue `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai` et `hbs,crypto` : les trois
-    dernières parce que les verrous de portes qu'elles jouent doivent rougir en lint comme en
+    rejoue `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai`, `hbs,crypto` et `rhai,shell` :
+    les quatre dernières parce que les verrous de portes qu'elles jouent doivent rougir en lint comme en
     exécution, et non parce que `feature-matrix` ne le fait pas — celui-ci n'isole qu'une feature
     à la fois et ne peut donc ni `hbs,crypto` ni une porte à deux features.
   Lancer dans le même job `clippy`, en étape dédiée, les lints rustdoc
@@ -108,6 +111,15 @@ Tasks:
     mesure : `cargo hack --each-feature` joue bien `crypto` seul et `rhai` seul en compilation,
     mais en `--no-dev-deps` — donc sans les dix binaires de ./tests/ ni les cibles `cfg(test)` où
     vivent les verrous — et il ne peut pas jouer une porte à deux features comme `hbs,crypto`.
+
+  [x] Porte jumelle de « Ajouter la porte `--no-default-features --features rhai,shell` à la
+    batterie » de ./tooling.sdd, cochée avec elle et avec la vue de ./src/shell.sdd : ajouter
+    l'entrée `rhai-shell` (`args: "--no-default-features --features rhai,shell"`) au matrix du
+    job `test` et `rhai,shell` à la boucle explicite du job `clippy` de ./test.yml, avec leurs
+    commentaires à l'état (les cinq verrous de ./src/shell.rs : signal `143` des deux collages,
+    rc et extrait stderr borné à 512 octets). Reprendre au passage le commentaire de la matrice
+    qui annonce le verrou « fonction inconnue » de ./src/key.sdd comme « pas encore écrit » —
+    il est écrit et joué depuis la tâche close de la jumelle ./src/lib.sdd.
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut
