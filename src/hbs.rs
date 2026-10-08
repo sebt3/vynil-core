@@ -431,10 +431,10 @@ mod tests {
         assert_ne!(first, second, "fresh salt per helper invocation");
     }
 
-    /// Contrat `argon_hash` (voie douce des huit helpers `Value` de `hbs.sdd`) : une entrée
+    /// Contrat `argon_hash` (voie douce des neuf helpers `Value` de `hbs.sdd`) : une entrée
     /// non-chaîne ne fait jamais échouer le rendu — l'entrée est remplacée par la chaîne vide
     /// après `warn`, le rendu est donc un hash PHC valide de la chaîne vide (le Must remplace
-    /// l'entrée par vide, non la sortie ; cf. Scenario « les huit Value aident dans le vice »
+    /// l'entrée par vide, non la sortie ; cf. Scenario « les Value aident dans le vice »
     /// où `base64_encode 42` rend le base64 de la vide).
     #[test]
     fn argon_hash_helper_non_string_never_fails_render() {
@@ -445,6 +445,38 @@ mod tests {
         assert!(
             out.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
             "non-string input should hash the substituted empty string, got {out:?}"
+        );
+    }
+
+    /// Contrat `bcrypt_hash` (tâche « Adapter le helper Handlebars `bcrypt_hash` au refus par
+    /// `crate::hashes::bcrypt_hash` des mots de passe de `72` octets et plus » de `hbs.sdd`,
+    /// borne `71` acceptée / `72` refusée verrouillée dans `hashes.rs`) : la voie douce — un
+    /// mot de passe de `71` octets rend un hash bcrypt valide (`$2b$`), un mot de passe de
+    /// `72` octets refusé par `crate::hashes::bcrypt_hash` tombe en `warn` puis chaîne vide
+    /// rendue, jamais en `RenderError`. Le compte de `warn` n'est pas assertionné : aucun
+    /// `Subscriber` de capture n'est en dev-deps, il reste consigné dans la spec.
+    #[test]
+    fn bcrypt_hash_helper_renders_hash_at_71_bytes_and_empty_at_72() {
+        let mut hbs = HandleBars::new();
+        let accepted = hbs
+            .render(
+                &format!("{{{{ bcrypt_hash \"{}\" }}}}", "x".repeat(71)),
+                &Value::Null,
+            )
+            .expect("bcrypt_hash must never fail the render on an accepted password");
+        assert!(
+            accepted.starts_with("$2b$") && !accepted.is_empty(),
+            "71 bytes must render a valid bcrypt hash, got {accepted:?}"
+        );
+        let refused = hbs
+            .render(
+                &format!("{{{{ bcrypt_hash \"{}\" }}}}", "x".repeat(72)),
+                &Value::Null,
+            )
+            .expect("the refusal of 72 bytes must not fail the render");
+        assert!(
+            refused.is_empty(),
+            "72 bytes must fall into warn + the empty string, got {refused:?}"
         );
     }
 }

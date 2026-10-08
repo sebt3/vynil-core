@@ -286,7 +286,10 @@ Raises:
     shims ne remontent QUE les erreurs relancées (`throw`), jamais les deux codes skipés ;
     `sleep(3600)` dort une heure sans plafond ni erreur — contrat de `sleep`, pas un échec ;
     `to_decimal("8")` et tout non-octal, `get_env` d'une variable non UTF-8 et `read_dir` d'un
-    chemin non UTF-8 échouent en erreur textuelle.
+    chemin non UTF-8 échouent en erreur textuelle — ligne descriptive qui énonce la CIBLE de la
+    tâche `[ ]` « `to_decimal` en erreur pour toute chaîne non octale » et non l'état : mesuré
+    aujourd'hui les trois sont doux (`to_decimal("8")` rend `Ok(0)` après warn). La phrase se
+    reprendra à l'état produit à l'exécution de cette tâche.
 
 Handles:
   Le triple cas de l'absence de module d'import : module introuvable → skip silencieux ;
@@ -318,7 +321,11 @@ Tasks:
   [ ] `to_decimal` en erreur pour toute chaîne non octale ; `get_env` en erreur sur
     NotUnicode (absente reste `""`) ; `read_dir` en erreur sur chemin non-UTF-8 (décisions
     actées : erreur explicite, UTF-8 strict comme `file_read`). Le helper Handlebars
-    `to_decimal` de ./hbs.rs suit (voir ./hbs.sdd).
+    `to_decimal` de ./hbs.rs NE suit pas : arbitrage B du développeur principal, la voie douce y
+    est contractée (./hbs.sdd). Mesuré à l'occasion : le `to_decimal` Rhai visé par cette tâche
+    est doux aujourd'hui (`Ok(0)` après warn) — l'état d'avant l'exécution, pas un écart
+    nouveau ; le texte de la future erreur se tranche à l'exécution, les deux messages un temps
+    portés par ./hbs.sdd n'ont jamais été du code et ne lient pas ici.
   [ ] Retirer de ./engine.rs le test qui verrouille le quirk yaml des cinq caractères (voir
     ./yaml.sdd) et figer `new_bare(vec![])` fail-closed dans la rustdoc de `new_bare`.
   [ ] Couvrir les branches gated de `new_bare` (`rhai,fs`, `rhai,shell`, `rhai,password`,

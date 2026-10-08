@@ -62,20 +62,20 @@ Must:
     `url_encode`, `to_decimal`, `header_basic`, `crc32_hash`, `concat` sous `hbs` seul ;
     `argon_hash`, `bcrypt_hash`, `gen_private_key` sous `crypto` ; `gen_password`,
     `gen_password_alphanum` sous `password` — et rien d'autre.
-  Distinguer les deux voies d'échec des helpers : les huit à paramètre(s) @serde_json::Value
-    (base64_decode, base64_encode, url_encode, header_basic, argon_hash,
+  Distinguer les deux voies d'échec des helpers : les neuf à paramètre(s) @serde_json::Value
+    (base64_decode, base64_encode, url_encode, to_decimal, header_basic, argon_hash,
     bcrypt_hash, crc32_hash, concat) remplacent silencieusement toute entrée non-chaîne par
     la chaîne vide après @tracing::warn, et rendent toujours une valeur — jamais d'erreur de
-    rendu. Le texte du @tracing::warn n'est pas un patron unique, mesuré sur ./hbs.rs :
+    rendu ; `to_decimal` est des neuf et rend `0` là où les autres rendent la vide (arbitrage B
+    du développeur principal : le helper ne durcit pas). Le texte du @tracing::warn n'est pas un patron unique, mesuré sur ./hbs.rs :
     `handlebars::<nom> received a non-string parameter` pour `base64_decode`, `base64_encode`,
     `url_encode`, `to_decimal` et `concat` ; « … received a non-string password » pour
     `argon_hash`, `bcrypt_hash` et `crc32_hash` ; « … received a non-string username » et
     « … received a non-string password » pour les deux paramètres de `header_basic`. Les quatre
     helpers écartés du patron sont un fait du code, pas un blanc : les uniformiser serait un
     changement de contrat ; les
-    quatre à paramètres TYPÉS (`gen_password`, `gen_password_alphanum`, `gen_private_key` :
-    @std::primitive::u32 positionnels, @std::primitive::str pour `algo`, hashes typés ;
-    `to_decimal` : @std::primitive::str, décision actée) REJETTENT le mal-typé en @handlebars::RenderError produit par la macro
+    trois à paramètres TYPÉS (`gen_password`, `gen_password_alphanum`, `gen_private_key` :
+    @std::primitive::u32 positionnels, @std::primitive::str pour `algo`, hashes typés) REJETTENT le mal-typé en @handlebars::RenderError produit par la macro
     (ParamNotFound/ParamTypeMismatch/HashTypeMismatch @handlebars 6.4.4), sans warn ni vide.
     Un paramètre ABSENT est partout une erreur macro (mode strict), jamais un chemin warn.
   Poser les défauts de hashes en dur dans les macros, non ailleurs : `gen_password` accepte
@@ -87,9 +87,10 @@ Must:
   Rendre les formes de sortie propres à chaque aide : `base64_encode`/`base64_decode` en
     alphabet base64 STANDARD; `url_encode` en percent-encoding @url::form_urlencoded (espace
     en `+`) ; `to_decimal` lit la chaîne en base 8 (`u32::from_str_radix`) et rend la chaîne
-    décimale ; une non-chaîne et une chaîne non octale échouent en @handlebars::RenderError
-    de messages distincts (`to_decimal: parameter is not a string` / `to_decimal: '<v>' is
-    not an octal number`), alignés sur ./engine.sdd où `to_decimal` est en erreur aussi ; `header_basic` rend
+    décimale ; une non-chaîne comme une chaîne non octale rendent `0` après @tracing::warn, sans
+    jamais rompre le rendu — les deux sites de warn du helper portent le même texte
+    « received a non-string parameter », y compris quand la valeur est une chaîne hors base 8,
+    fait du code consigné tel quel ; `header_basic` rend
     `Basic ` suivi du base64 de `user:pass` ; `crc32_hash` rend un NOMBRE JSON (motif
     @serde_json number, contrat de valeur dans ./hashes.sdd) et non-string y rend 0 via la
     voie vide ; `concat` concatène les deux chaînes (chaque côté non-chaîne valant segment
@@ -151,9 +152,10 @@ Must not:
     pour le faire autrement que @crate::hbs::HandleBars::engine_mut.
   Enregistrer un treizième nom maison, ni un nom Handlebars de la dépendance : les douze
     noms vérifiés sans collision avec les couches une et deux dans l'ordre courant.
-  Remonter une erreur de rendu depuis un des huit helpers `Value` : toute anomalie y devient
-    warn + chaîne vide (ou `0` pour `crc32_hash`) ; la réciproque vaut pour les
-    quatre typés dont l'entrée mal typée ne devient JAMAIS la chaîne vide.
+  Remonter une erreur de rendu depuis un des neuf helpers `Value` : toute anomalie y devient
+    warn + chaîne vide (ou `0` — `crc32_hash` sur non-chaîne, `to_decimal` sur non-chaîne comme
+    sur non-octal) ; la réciproque vaut pour les trois typés dont l'entrée mal typée ne devient
+    JAMAIS la chaîne vide.
   Rendre un template depuis un fichier sans enregistrement préalable : aucune méthode de
     rendu-direct-de-fichier n'existe ; seuls les deux enregistrements de répertoire lisent
     le disque, et `render` ne prend qu'une chaîne inline.
@@ -229,11 +231,11 @@ Accepts:
     qu'il soit — le mode strict jugera sur place les chemins manquants.
 
 Returns:
-  Les huit helpers `Value` rendent toujours : chaîne (dont vide), nombre pour `crc32_hash`
-    (0 sur entrée non-chaîne, CRC de la vide), jamais une erreur de rendu.
+  Les neuf helpers `Value` rendent toujours : chaîne (dont vide), nombre pour `crc32_hash`
+    (0 sur entrée non-chaîne, CRC de la vide), `0` pour `to_decimal` sur non-chaîne comme sur
+    non-octal, jamais une erreur de rendu.
   Les trois typés de génération rendent la chaîne utile (mot de passe, PEM) ou vide après warn
-    sur échec métier ; `to_decimal` rend la chaîne décimale ; pour les quatre, l'entrée mal
-    typée (et, pour `to_decimal`, non octale) ne rend pas : elle échoue le rendu.
+    sur échec métier ; chez eux seuls l'entrée mal typée ne rend pas : elle échoue le rendu.
   Les rendus Rust rendent @std::string::String : `no_escape` rendues sans échappement,
     `to_decimal` en chaîne décimale, `header_basic` avec préfixe `Basic `.
   Les deux registres de répertoire rendent `Ok(())` même sur non-répertoire, chemin vide ou
@@ -256,9 +258,10 @@ Raises:
     l'erreur script @handlebars.
   Les cinq wrappers Rhai — @crate::RhaiRes échoué par @crate::rhai_err (error_chain complète)
     dans tous les cas, `SerializationError` compris pour la conversion des données.
-  Les helpers typés (dont `to_decimal`) — @handlebars::RenderError de la macro (ParamNotFound, ParamTypeMismatch,
+  Les trois helpers typés de génération — @handlebars::RenderError de la macro (ParamNotFound, ParamTypeMismatch,
     HashTypeMismatch) sur absence ou mal-typage ; la formulation exacte du message appartient
-    à @handlebars 6.4.4 (lock).
+    à @handlebars 6.4.4 (lock). `to_decimal` n'est pas de ceux-là : voie douce mesurée, il rend
+    `0` et ne lève rien.
 
 Handles:
   L'isolement du graphe `hbs` : `cargo check --no-default-features --features hbs` compile
@@ -274,12 +277,17 @@ Handles:
     erreur — deux politiques coexistent dans le même registre.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants : ./hbs.rs ne contient AUCUN test (zéro
-    `mod tests`) et la crate n'a pas de ./tests/ — toute la face décrite ici est sans test.
-    La voie d'écriture est @crate::hbs::HandleBars::new() public (strict + no_escape ne
-    peuvent pas être rejoués sans @new_hbs) ; ./hbs_json.rs a ses neufs tests internes déjà
-    cantonnés dans ./hbs_json.sdd, et l'auxiliaire `render` de ces tests (Handlebars nu, non
-    strict, échappement remis) ne doit PAS servir d'oracle pour ce module.
+  [ ] Convertir les Scenario en tests passants : ./hbs.rs ne compte à ce jour que trois
+    verrous — les deux d'`argon_hash` et celui de `bcrypt_hash` sur la borne 71/72, tous trois
+    en `mod tests` gating `crypto` — le reste de la face décrite ici est sans test. La voie
+    d'écriture est @crate::hbs::HandleBars::new() public (strict + no_escape ne peuvent pas
+    être rejoués sans @new_hbs) ; ./hbs_json.rs a ses neufs tests internes déjà cantonnés dans
+    ./hbs_json.sdd, et l'auxiliaire `render` de ces tests (Handlebars nu, non strict,
+    échappement remis) ne doit PAS servir d'oracle pour ce module. Les faits de @tracing::warn
+    (texte et nombre, comme dans le Scenario `to_decimal`) ne sont pas assertionables avec les
+    moyens du dépôt : aucun `Subscriber` de capture en dev-deps (mesuré ; en écrire un à la main
+    contre @tracing nu reste possible et n'est pas décidé) — les tests convertis n'assertionnent
+    que le rendu, les warns restent consignés dans la spec comme faits du code.
   [ ] Affirmer @core::marker::Send et @core::marker::Sync de @crate::hbs::HandleBars par une
     assertion de compilation (décision actée).
   [ ] Passer `pub use core_helpers::*` en `pub(crate)` (décision actée : aucun consommateur
@@ -290,11 +298,11 @@ Tasks:
     @variant-Error::SerializationError pour la conversion Map → Value (décision actée).
   [ ] Relever le plancher `handlebars` de ./Cargo.toml à 6.4 (décision actée : tout est
     vérifié sur 6.4.4).
-  [ ] `to_decimal` : helper typé `str`, erreur pour non-chaîne et non-octal, messages
-    distincts ; passer par un @handlebars::HelperDef manuel si la macro ne permet pas
-    l'erreur (décision actée, alignée sur ./engine.sdd) ; adapter `argon_hash` à
-    @crate::hashes::Argon::new faillible et `bcrypt_hash` au refus > 72 octets (voir
-    ./hashes.sdd), tous deux en warn + chaîne vide.
+  [x] Adapter le helper Handlebars `bcrypt_hash` au refus par @crate::hashes::bcrypt_hash des
+    mots de passe de `72` octets et plus (voir ./hashes.sdd) : l'échec tombe dans la voie douce
+    de cette spec — @tracing::warn puis chaîne vide — sans @handlebars::RenderError. La part
+    `to_decimal` de la tâche d'origine est dissoute par l'arbitrage ci-dessous (le helper ne
+    change pas) ; la part `argon_hash` est close par sa tâche propre.
   [ ] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
     matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 
@@ -310,17 +318,22 @@ Tasks:
     construction et hachage tombent dans la même voie douce, les deux @tracing::warn gardent
     leur texte exact, aucune remontée de @handlebars::RenderError et aucun `unwrap` n'entrent
     dans un helper à paramètre @serde_json::Value.
-  [ ] Trancher la voie de `to_decimal`, que cette tâche a fait mesurer. Le `Must` de la voie
-    douce le range parmi les quatre helpers à paramètres TYPÉS qui REJETTENT le mal-typé en
-    @handlebars::RenderError « sans warn ni vide », et deux Scenario promettent les messages
-    `to_decimal: parameter is not a string` et `to_decimal: '<v>' is not an octal number` — or
-    ./hbs.rs enregistre `handlebars_helper!(to_decimal: |arg:Value| …)`, un helper de la voie
-    douce (warn + entrée remplacée par la vide, `0` rendu sur non-octal), et la recherche des
-    deux textes ne les trouve que dans cette spec. Le `Must` dit aussi que ces messages sont
-    « alignés sur ./engine.sdd où `to_decimal` est en erreur aussi » : la confusion la plus
-    probable est le collage Rhai, qui est en erreur, pris pour le helper Handlebars. Deux
-    issues, à arbitrer par Sébastien : changer le helper pour tenir le contrat écrit, ou réécrire
-    le `Must` et les deux Scenario sur la voie réellement câblée.
+  [x] Trancher la voie de `to_decimal` — arbitrage B rendu par le développeur principal : le
+    helper Handlebars de ./hbs.rs reste de voie douce, le contrat est réécrit à l'état mesuré.
+    Écrit depuis dans le `Must`, le `Returns`, le `Raises` et le Scenario : `to_decimal` est un
+    helper à paramètre @serde_json::Value, neuvième de la voie douce, non-chaîne comme non-octale
+    rendent `0` après @tracing::warn, jamais de @handlebars::RenderError ; ses deux sites de warn
+    partagent le texte « received a non-string parameter », y compris sur chaîne hors base 8.
+    Ce que la reprise a cassé : les deux messages promis par l'ancien contrat
+    (`to_decimal: parameter is not a string` / `to_decimal: '<v>' is not an octal number`)
+    n'existaient dans AUCUN code — ./hbs.rs ne les produit pas et ./engine.rs ne les produit pas
+    non plus. Mon hypothèse de « confusion avec le collage Rhai » était fausse : le `to_decimal`
+    Rhai est doux aujourd'hui (`Ok(0)` après warn, mesuré). Ces textes étaient le brouillon non
+    porté de la décision actée de ./src/engine.sdd (« `to_decimal` en erreur pour toute chaîne
+    non octale »), qui reste ouverte là-bas et seule à trancher le texte de sa future erreur ;
+    son couplage « ./hbs.rs suit » est défait dans ./src/engine.sdd, et la clause « alignés sur
+    ./engine.sdd » est retirée d'ici — les deux voies ne s'alignent plus par contrat.
+
   [ ] Uniformiser ou assumer les textes de @tracing::warn de la voie douce : `argon_hash`,
     `bcrypt_hash` et `crc32_hash` disent « received a non-string password » et `header_basic`
     « username »/« password », alors que `base64_decode`, `base64_encode`, `url_encode`,
@@ -346,7 +359,7 @@ Scenario: CORE_HBS_HELPERS informe sans piloter
     construction les variantes cruet et les familles misc exhaustives — aucun test n'asservit
     la liste au registre réel ; point de doc, pas de contrat d'exhaustivité
 
-Scenario: les huit Value aident dans le vice
+Scenario: les Value aident dans le vice
   Given un HandleBars de production (new)
   When un template évalue `{{ base64_encode 42 }}`
   Then le rendu EST `""`-base64 (l'entrée est remplacée vide après @tracing::warn), aucune
@@ -364,14 +377,18 @@ Scenario: base64_decode traverse trois échecs sans lever
   Then le rendu est encore la chaîne vide, warn distinct ; Given une entrée non-chaîne : vide
     aussi en trois warn possibles — aucun chemin n'est une erreur
 
-Scenario: to_decimal lit l'octal et échoue explicitement sinon
+Scenario: to_decimal lit l'octal et rend 0 sinon, sans jamais rompre le rendu
   Given un HandleBars de production
   When un template évalue `{{ to_decimal "755" }}`
   Then le rendu est la chaîne `493`, et `{{ to_decimal "0" }}` rend bien `0`
   When il évalue `{{ to_decimal "999" }}` — chaîne valide mais non-octale
-  Then le rendu échoue en @handlebars::RenderError portant `to_decimal: '999' is not an octal number`
+  Then le rendu n'échoue pas : `0` est rendu après @tracing::warn portant
+    « handlebars::to_decimal received a non-string parameter: » suivi du @core::fmt::Debug de la
+    valeur — le texte dit « non-string » même quand la valeur est une chaîne hors base 8, les
+    deux sites de warn du helper partageant ce texte, consigné comme fait du code
   When il évalue `{{ to_decimal 8 }}` (nombre)
-  Then le rendu échoue en @handlebars::RenderError portant `to_decimal: parameter is not a string`
+  Then le rendu rend encore `0` : la coercion vide échoue à la conversion radix et deux warns au
+    même texte partent, aucune @handlebars::RenderError sur aucun de ces chemins
 
 Scenario: crc32_hash rend un nombre et 0 dans le vice
   Given un HandleBars de production
@@ -476,7 +493,9 @@ Scenario: la face Rhai type toutes ses erreurs
 Scenario: les portes isolent hbs de rhai
   Given `cargo check --no-default-features --features hbs`
   Then @crate::hbs compile avec `new`, `engine_mut`, `register_template`,
-    `register_partial_dir`, `render`, `render_named` et les huit helpers `hbs`-seuls, et @rhai
+    `register_partial_dir`, `render`, `render_named` et les sept helpers `hbs`-seuls (mesuré sur
+    l'enregistreur : `concat`, `base64_*`, `url_encode`, `to_decimal`, `header_basic`,
+    `crc32_hash`), et @rhai
     comme smartstring restent HORS graphe — `handlebars?/script_helper` n'est posé que par
     `hbs-scripting`
   Given `hbs`+`rhai` sans `hbs-scripting`

@@ -98,9 +98,11 @@ Tasks:
     d'ouvrir ./docs/ à la correction). La borne utile est `71` : `71` octets passent, `72` est le
     premier refus.
   [ ] ./docs/handlebars_helpers.md : documenter `uuid_new_v7` (rend un v4, défaut amont de
-    `handlebars_misc_helpers` 0.17.0, aucun correctif attendu) et la politique retenue pour
-    `to_decimal` — la seconde moitié attend l'arbitrage de la voie de `to_decimal`, tâche ouverte
-    de ./src/hbs.sdd (reçu de ./src/hbs.sdd).
+    `handlebars_misc_helpers` 0.17.0, aucun correctif attendu) et la politique de `to_decimal`
+    telle qu'arbitrée (arbitrage B : voie douce — non-chaîne comme non-octale rendent `0` après
+    warn, jamais de @handlebars::RenderError, contrat de ./src/hbs.sdd ; la voie dure est celle
+    du Rhai de ./src/engine.sdd, décision actée là-bas, non encore exécutée) (reçu de
+    ./src/hbs.sdd).
   [ ] ./docs/rhai_helpers.md vers la ligne 228 : le module `http` EST gaté par `http`, `reqwest`
     est optionnel ; et ./docs/mocking.md : documenter les trois trous du mock `http`
     (`new_client`, `http_get_yaml`, `http_head`), décision actée — le mock ne change pas (reçu de
