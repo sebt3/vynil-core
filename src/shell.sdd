@@ -105,8 +105,9 @@ Must:
     les appels sont réentrants et appelables de plusieurs threads, sans interaction avec
     l'identité client de ./client_name.rs.
   Seuils de harnais : aucun `unsafe`, aucun @std::result::Result::unwrap,
-    @std::option::Option::expect, @std::panic, @std::todo ni @std::unimplemented — les deux
-    `unwrap_or` des lignes 35 et 66 ne sont pas des lints du harnais ; les cinq items publics
+    @std::option::Option::expect, @std::panic, @std::todo ni @std::unimplemented — le repli
+    `@std::option::Option::unwrap_or` du helper de verdict n'est pas un lint du harnais (c'est
+    `unwrap_or`, pas `@std::option::Option::unwrap`) ; les cinq items publics
     portent leur rustdoc, quatre avec une section `# Errors` nommant les variantes traversées ;
     aucun `#[must_use]` n'apparaît dans ./shell.rs.
 
@@ -244,7 +245,7 @@ Tasks:
     `shell_output` n'apparaissent dans aucun test — tout est sans test, y compris la table des
     portes. Le Scenario de lancement impossible exige un vidage de `PATH` global au processus :
     test à isoler en série à part, friction connue à écrire dans le test même.
-  [ ] Unifier le verdict de signal (`128 + signal`, `-1` hors unix) dans un helper privé
+  [x] Unifier le verdict de signal (`128 + signal`, `-1` hors unix) dans un helper privé
     partagé par @crate::shell::rhai_run et @crate::shell::rhai_get_stdout, et joindre un
     extrait de stderr borné à `Command failed, rc=<n>` (décisions actées) ; test d'abord depuis
     les Scenario signal et code non nul.
