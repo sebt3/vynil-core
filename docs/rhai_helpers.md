@@ -140,11 +140,11 @@ Needs `crypto` (default on, like `rhai`) in addition to `rhai` — the whole mod
 | Signature | Returns | Notes |
 |---|---|---|
 | `semver_from(text: string)` | `Semver` | Accepts an optional leading `v`, which is remembered and reproduced by `to_string` |
-| `<Semver>.inc_major()` | `()` | Bumps major, resets minor/patch, clears prerelease |
-| `<Semver>.inc_minor()` | `()` | Bumps minor, resets patch, clears prerelease |
-| `<Semver>.inc_patch()` | `()` | Bumps patch — unless already on a prerelease, in which case it just clears the prerelease tag without bumping patch |
-| `<Semver>.inc_beta()` | `()` | From stable: bumps patch and sets `beta.1`. From an existing `beta.N`: increments `N` (patch unchanged) |
-| `<Semver>.inc_alpha()` | `()` | Same as `inc_beta`, for the `alpha.N` prerelease |
+| `<Semver>.inc_major()` | `()` | Bumps major, resets minor/patch, clears prerelease and build metadata |
+| `<Semver>.inc_minor()` | `()` | Bumps minor, resets patch, clears prerelease and build metadata |
+| `<Semver>.inc_patch()` | `()` | Bumps patch and clears build metadata — unless already on a prerelease, in which case it clears the prerelease tag and build metadata without bumping patch |
+| `<Semver>.inc_beta()` | `()` | From stable: bumps patch and sets `beta.1`. From an existing `beta.N`: increments `N` (patch unchanged). Clears build metadata on success |
+| `<Semver>.inc_alpha()` | `()` | Same as `inc_beta` (build metadata cleared on success too), for the `alpha.N` prerelease |
 | `a == b`, `a != b`, `a < b`, `a > b`, `a <= b`, `a >= b` | `bool` | Standard semver ordering (prerelease < stable) |
 | `to_string(sv)` | `string` | |
 

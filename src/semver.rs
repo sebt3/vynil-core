@@ -7,7 +7,7 @@
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "rhai")] use rhai::Engine;
-use semver::{Prerelease, Version};
+use semver::{BuildMetadata, Prerelease, Version};
 
 /// Semver wrapper that remembers whether the original string had a leading `v`.
 ///
@@ -55,34 +55,39 @@ impl Semver {
         Self::parse(str).map_err(rhai_err)
     }
 
-    /// Bumps the major version, resetting minor, patch and prerelease.
+    /// Bumps the major version, resetting minor and patch, clearing prerelease and build metadata.
     pub fn inc_major(&mut self) {
         self.version.major = self.version.major.saturating_add(1);
         self.version.minor = 0;
         self.version.patch = 0;
         self.version.pre = Prerelease::EMPTY;
+        self.version.build = BuildMetadata::EMPTY;
     }
 
-    /// Bumps the minor version, resetting patch and prerelease.
+    /// Bumps the minor version, resetting patch and clearing prerelease and build metadata.
     pub fn inc_minor(&mut self) {
         self.version.minor = self.version.minor.saturating_add(1);
         self.version.patch = 0;
         self.version.pre = Prerelease::EMPTY;
+        self.version.build = BuildMetadata::EMPTY;
     }
 
-    /// Bumps the patch version, or only clears the prerelease when one is present.
+    /// Bumps the patch version and clears build metadata, or only clears the prerelease and
+    /// build metadata when one is present.
     pub fn inc_patch(&mut self) {
         if self.version.pre.is_empty() {
             self.version.patch = self.version.patch.saturating_add(1);
         } else {
             self.version.pre = Prerelease::EMPTY;
         }
+        self.version.build = BuildMetadata::EMPTY;
     }
 
-    /// Bumps the `beta.N` prerelease counter.
+    /// Bumps the `beta.N` prerelease counter and clears build metadata on success.
     ///
     /// From a stable or non-beta-prerelease version this bumps the patch and sets `beta.1`;
-    /// from `beta.N` it increments `N`.
+    /// from `beta.N` it increments `N`. On a counter error the version is left untouched,
+    /// build metadata included.
     ///
     /// # Errors
     ///
@@ -100,6 +105,7 @@ impl Semver {
             self.version.pre =
                 Prerelease::new(&format!("beta.{}", beta.saturating_add(1))).map_err(Error::Semver)?;
         }
+        self.version.build = BuildMetadata::EMPTY;
         Ok(())
     }
 
@@ -113,10 +119,11 @@ impl Semver {
         self.inc_beta().map_err(rhai_err)
     }
 
-    /// Bumps the `alpha.N` prerelease counter.
+    /// Bumps the `alpha.N` prerelease counter and clears build metadata on success.
     ///
     /// From a stable or non-alpha-prerelease version this bumps the patch and sets `alpha.1`;
-    /// from `alpha.N` it increments `N`.
+    /// from `alpha.N` it increments `N`. On a counter error the version is left untouched,
+    /// build metadata included.
     ///
     /// # Errors
     ///
@@ -134,6 +141,7 @@ impl Semver {
             self.version.pre =
                 Prerelease::new(&format!("alpha.{}", alpha.saturating_add(1))).map_err(Error::Semver)?;
         }
+        self.version.build = BuildMetadata::EMPTY;
         Ok(())
     }
 
@@ -331,5 +339,59 @@ mod tests {
         let pre = Semver::parse("1.2.3-alpha.1").unwrap();
         let stable = Semver::parse("1.2.3").unwrap();
         assert!(pre < stable);
+    }
+
+    #[test]
+    fn test_inc_major_clears_build() {
+        let mut sv = Semver::parse("1.2.3-alpha.1+sha.5114f85").unwrap();
+        sv.inc_major();
+        assert_eq!(Semver::to_string(&sv), "2.0.0");
+    }
+
+    #[test]
+    fn test_inc_minor_clears_build() {
+        let mut sv = Semver::parse("1.2.3-alpha.1+sha.5114f85").unwrap();
+        sv.inc_minor();
+        assert_eq!(Semver::to_string(&sv), "1.3.0");
+    }
+
+    #[test]
+    fn test_inc_patch_clears_build() {
+        let mut sv = Semver::parse("1.2.3-alpha.1+sha.5114f85").unwrap();
+        sv.inc_patch();
+        assert_eq!(Semver::to_string(&sv), "1.2.3");
+    }
+
+    #[test]
+    fn test_inc_beta_from_prerelease_clears_build() {
+        let mut sv = Semver::parse("1.2.3-alpha.1+sha.5114f85").unwrap();
+        sv.inc_beta().unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.4-beta.1");
+    }
+
+    #[test]
+    fn test_inc_beta_from_stable_clears_build() {
+        let mut sv = Semver::parse("1.2.3+sha.5114f85").unwrap();
+        sv.inc_beta().unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.4-beta.1");
+    }
+
+    #[test]
+    fn test_inc_alpha_counter_branch_clears_build() {
+        let mut sv = Semver::parse("1.2.3-alpha.1+sha.5114f85").unwrap();
+        sv.inc_alpha().unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.3-alpha.2");
+    }
+
+    #[test]
+    fn test_inc_beta_rejected_counter_keeps_build() {
+        let mut sv = Semver::parse("1.2.3-beta.rc+sha.5114f85").unwrap();
+        assert!(sv.inc_beta().is_err());
+        assert_eq!(sv.version.major, 1);
+        assert_eq!(sv.version.minor, 2);
+        assert_eq!(sv.version.patch, 3);
+        assert_eq!(sv.version.pre.as_str(), "beta.rc");
+        assert_eq!(sv.version.build.as_str(), "sha.5114f85");
+        assert!(!sv.use_v);
     }
 }
