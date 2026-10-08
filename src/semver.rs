@@ -92,16 +92,14 @@ impl Semver {
     /// # Errors
     ///
     /// Returns [`Error::Semver`] if the resulting prerelease string is invalid, and
-    /// [`Error::Other`] if the existing `beta.` suffix is not a number.
+    /// [`Error::ParseInt`] if the existing `beta.` suffix is not a number.
     pub fn inc_beta(&mut self) -> Result<()> {
         if self.version.pre.is_empty() || !self.version.pre.starts_with("beta.") {
             self.version.patch = self.version.patch.saturating_add(1);
             self.version.pre = Prerelease::new("beta.1").map_err(Error::Semver)?;
         } else {
             let str = self.version.pre.strip_prefix("beta.").unwrap_or_default();
-            let beta = str
-                .parse::<u32>()
-                .map_err(|e| Error::Other(format!("invalid beta counter '{str}': {e}")))?;
+            let beta = str.parse::<u32>()?;
             self.version.pre =
                 Prerelease::new(&format!("beta.{}", beta.saturating_add(1))).map_err(Error::Semver)?;
         }
@@ -128,16 +126,14 @@ impl Semver {
     /// # Errors
     ///
     /// Returns [`Error::Semver`] if the resulting prerelease string is invalid, and
-    /// [`Error::Other`] if the existing `alpha.` suffix is not a number.
+    /// [`Error::ParseInt`] if the existing `alpha.` suffix is not a number.
     pub fn inc_alpha(&mut self) -> Result<()> {
         if self.version.pre.is_empty() || !self.version.pre.starts_with("alpha.") {
             self.version.patch = self.version.patch.saturating_add(1);
             self.version.pre = Prerelease::new("alpha.1").map_err(Error::Semver)?;
         } else {
             let str = self.version.pre.strip_prefix("alpha.").unwrap_or_default();
-            let alpha = str
-                .parse::<u32>()
-                .map_err(|e| Error::Other(format!("invalid alpha counter '{str}': {e}")))?;
+            let alpha = str.parse::<u32>()?;
             self.version.pre =
                 Prerelease::new(&format!("alpha.{}", alpha.saturating_add(1))).map_err(Error::Semver)?;
         }
@@ -393,5 +389,59 @@ mod tests {
         assert_eq!(sv.version.pre.as_str(), "beta.rc");
         assert_eq!(sv.version.build.as_str(), "sha.5114f85");
         assert!(!sv.use_v);
+    }
+
+    // ── Résidu de la conversion ParseInt (Scenario « un compteur non numérique erreur et
+    // laisse la version intacte ») : l'ancre ci-dessus ne verrouillait que l'échec et les
+    // champs ; l'affichage du rejet est verrouillé ici. On verrouille le texte porté par la
+    // crate — le préfixe `ParseIntError `, affichage de @crate::Error::ParseInt (table
+    // Display de ./lib.rs) — et non le suffixe : il vient de @std::num::ParseIntError et
+    // appartient à la dépendance, comme les textes openssl (key.sdd) ou rhai. ──
+    #[test]
+    fn test_inc_beta_rejected_counter_displays_parse_int_error() {
+        let mut sv = Semver::parse("1.2.3-beta.rc").unwrap();
+        let err = sv.inc_beta().unwrap_err();
+        assert!(
+            matches!(err, Error::ParseInt(_)),
+            "la variante typée est la seule voie, ni Other ni Semver : {err}"
+        );
+        assert!(
+            err.to_string().starts_with("ParseIntError "),
+            "l'affichage contracté est `ParseIntError ` + le texte de ParseIntError : {err}"
+        );
+    }
+
+    #[test]
+    fn test_inc_alpha_rejected_counter_displays_parse_int_error() {
+        let mut sv = Semver::parse("1.2.3-alpha.rc").unwrap();
+        let err = sv.inc_alpha().unwrap_err();
+        assert!(
+            matches!(err, Error::ParseInt(_)),
+            "la variante typée est la seule voie, ni Other ni Semver : {err}"
+        );
+        assert!(
+            err.to_string().starts_with("ParseIntError "),
+            "l'affichage contracté est `ParseIntError ` + le texte de ParseIntError : {err}"
+        );
+    }
+
+    // ── Face script de la même conversion (la tâche prévoit cette face dans CE module ;
+    // l'inventaire met les autres verrous script côté ./engine.rs). Voix retenue : @rhai::Engine
+    // local enregistré par semver_rhai_register, comme le Scenario « l'objet Rhai connaît ses
+    // méthodes » de la spec. Seul le texte porté est contractuel : on verrouille la mention
+    // `ParseIntError ` dans l'erreur remontée, jamais le préfixe d'affichage complet de rhai
+    // (enveloppe interne), ni le suffixe de @std::num::ParseIntError. ──
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_inc_beta_rejected_counter_carries_parse_int_error() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        let err = engine
+            .eval::<()>(r#"let w = semver_from("1.2.3-beta.rc"); w.inc_beta();"#)
+            .expect_err("un compteur non numérique doit faire échouer le script");
+        assert!(
+            err.to_string().contains("ParseIntError "),
+            "l'erreur de script doit porter `ParseIntError ` : {err}"
+        );
     }
 }

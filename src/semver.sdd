@@ -316,7 +316,7 @@ Tasks:
     le `mod tests` sous `#[cfg(test)]` de ./semver.rs pour la face Rust et sur @rhai::Engine
     local — ou @Script::new_bare — pour la face script, la batterie de features de l'AGENTS.md
     servant de validation aux Scenario de portes. Inventaire exact de ce qui est verrouillé :
-    ./semver.rs aligne vingt-sept tests inline —
+    ./semver.rs aligne trente tests inline —
     `test_parse_without_v_prefix` et `test_parse_with_v_prefix` (champs et drapeau sur deux
     entrées saines) ; `test_to_string_preserves_v_prefix` et `test_to_string_without_v_prefix`
     (@std::fmt::Display sur versions stables sans pre ni build) ; `test_comparison_lt`,
@@ -336,12 +336,18 @@ Tasks:
     `test_prerelease_is_less_than_stable` ; sept verrous d'effacement du `build` depuis la
     tâche « Effacer `build` » — un par mutateur sur `1.2.3-alpha.1+sha.5114f85`, le premier
     bras de `inc_beta` depuis le stable, et l'ancre `test_inc_beta_rejected_counter_keeps_build`
-    qui tient le rejet en état strictement intact. ./engine.rs verrouille de son côté
+    qui tient le rejet en état strictement intact ; trois verrous de rejet typé depuis la
+    tâche « ParseInt typé » — variante @crate::Error::ParseInt et préfixe `ParseIntError ` côté
+    Rust pour `beta` et `alpha`, porté de `ParseIntError ` côté script par @rhai::Engine local
+    enregistré par @crate::semver::semver_rhai_register. ./engine.rs verrouille de son côté
     `test_semver_parse_and_to_string`, `test_semver_comparison_operators` (laissant `!=`, `<=`,
     `>=` sans verrou de script) et `test_semver_inc_minor`. Restent sans test : tout affichage
-    exact d'erreur des deux côtés de la barrière Rust/script — dont la variante et le texte
-    des rejets de compteur, dont l'ancre d'état intact ne verrouille que l'échec et les
-    champs —, les rejets d'espaces et de préfixes, les compteurs `0`/`01`/bornes, le
+    exact d'erreur des deux côtés de la barrière Rust/script — hormis les rejets de
+    compteur, dont la variante, le préfixe `ParseIntError ` et le porté de script sont
+    verrouillés depuis la tâche « ParseInt typé », le suffixe de @std::num::ParseIntError et
+    l'enveloppe de @rhai restant délibérément non verrouillés —, les rejets d'espaces et de
+    préfixes, les compteurs `0`/`01`/bornes et le rejet d'amplitude
+    `1.2.3-beta.4294967296` (Given du Scenario « un compteur non numérique », Then sans jeu), le
     label nu, les traversées croisées, l'effacement du `build` sur le bras stable de
     `inc_patch`, la survie du drapeau après mutation, l'égalité et l'ordre à version égale,
     `type_of` et les propriétés d'objet, les
@@ -351,7 +357,7 @@ Tasks:
     @std::hash::Hash de @crate::Semver sur `version` seule (décision actée : `use_v` est
     cosmétique), test d'abord ; la rustdoc du struct devient vraie, et la phrase « Standard
     semver ordering » de ./docs/rhai_helpers.md est la tâche jumelle de ./docs.sdd.
-  [ ] Faire échouer @crate::Semver::inc_beta et @crate::Semver::inc_alpha en
+  [x] Faire échouer @crate::Semver::inc_beta et @crate::Semver::inc_alpha en
     @crate::Error::ParseInt (variante typée existante) au lieu de @crate::Error::Other
     (décision actée) ; le texte de script passe à `ParseIntError ...`.
   [x] Effacer `build` (@semver::BuildMetadata::EMPTY) aux cinq mutateurs (décision actée :
@@ -499,7 +505,8 @@ Scenario: la mutation reste visible et l'erreur du script rattrapable
   Then le rendu est `v1.2.4`, les formes globale et pointée mutant également la variable exclusive
   When `semver_from("nope")` est évalué dans un `try` avec `catch`, ou
     `let w = semver_from("1.2.3-beta.rc"); w.inc_beta();`
-  Then la première erreur, attrapable, commence par `Semver error `, la seconde par
-    `Error: invalid beta counter 'rc': `
+  Then la première erreur, attrapable, commence par `Semver error `, la seconde porte
+    `ParseIntError ` — l'affichage de @crate::Error::ParseInt ; le suffixe de
+    @std::num::ParseIntError et l'enveloppe de @rhai ne sont verrouillés nulle part
   And l'évaluation ne fait paniquer aucun moteur
   But le sort des valeurs aliasées ou clonées reste la sémantique interne de @rhai, non verrouillée
