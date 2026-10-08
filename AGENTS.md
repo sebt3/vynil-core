@@ -27,6 +27,10 @@ Détail complet dans `.specdd/bootstrap.project.md`. Règles clés :
 - **Reconciliation à la clôture** : une tâche qui change un comportement oblige à reprendre les
   sections descriptives de sa spec (`Exposes`, `Accepts`, `Handles`, `Raises`) à l'état que le
   contrat produit. Un `Must` amendé ne tient pas lieu de mise à jour de ce qui décrit l'avant.
+- **Autonomie de chaînage** (décision du développeur principal) : une tâche déjà inscrite dans
+  une spec claire, en périmètre `Owns`, se déroule sans go préalable — tests d'abord,
+  implémentation minimale, validation, `[x]`. On revient vers lui sur un doute de contrat, une
+  frontière à trancher, ou une incertitude remontée par un agent — pas à chaque lot.
 - Jamais de tâche `[x]` sans synthèse du `validator` au vert.
 - **Bijection spec ↔ code** : un fichier n'est écrit que sous l'autorité de la spec dont
   l'`Owns` le nomme, ou d'une `Can modify` qu'elle déclare. Une tâche qui déborde du fichier

@@ -28,10 +28,10 @@ References:
 Must:
   Écrire la prose en anglais et tenir les identifiants, signatures, messages d'erreur et blocs
     de code verbatim du Rust. Mesuré sur les quatre fichiers : aucun mot français, et les seuls
-    non-ASCII sont les tirets longs, les ellipses et les flèches. La règle bilingue demandée par
-    le développeur principal est une intention non encore traduite en contrat : sa forme est la
-    tâche ouverte ci-dessous, et ni cette page ni aucune autre ne devient bilingue avant
-    l'arbitrage.
+    non-ASCII sont les tirets longs, les ellipses et les flèches. L'intention bilingue un temps
+    crue de cette spec a été arbitrée hors d'elle : elle visait la documentation du dépôt parent
+    `vynil`, pas les pages d'ici (tâche close ci-dessous) — l'anglais est le contrat de la
+    prose, sans dette ouverte.
   Nommer, pour chaque fonction, type, méthode ou helper documenté, la feature cargo ou le tier
     d'enregistrement qui le fait exister, tels que ./Cargo.toml et le câblage réels de
     ./src/engine.rs les donnent — pas tels qu'on les devine. Un item documenté sous une feature
@@ -81,14 +81,12 @@ Scenario: un comportement vu de l'utilisateur n'est nulle part documenté
     taisaient le refus des mots de passe de `72` octets et passent pour incomplètes
 
 Tasks:
-  [ ] Arbitrer la forme de la règle bilingue demandée par le développeur principal (« une spec
-    racine qui porte l'ensemble de la doc, avec ces règles de base (bilingues, etc) »). Mesuré :
-    les trois pages et ./README.md sont intégralement en anglais (zéro mot français, seuls
-    non-ASCII les tirets longs, ellipses et flèches), donc rien ici n'est bilingue aujourd'hui et
-    le `Must` ci-dessus contracte l'anglais. Trancher : double prose FR/EN par page, une page
-    par langue, un résumé d'ouverture dans l'autre langue, ou renvoi de l'intention — puis
-    transformer le verdict en `Must` et en tâche d'exécution. Tant que ce n'est pas tranché, la
-    règle applicable est celle qui est écrite.
+  [x] Clore la règle bilingue — arbitrage du développeur principal, consignés mots pour mots :
+    « quand j'ai parlé bilinguisme, je pensais aux docs de vynil et pas celles de vynil-core. Le
+    but ici n'est pas de changer les docs. » L'intention appartenait au dépôt parent ; les pages
+    d'ici gardent l'anglais, seul état mesuré et seul contrat du `Must`. Les formes explorées
+    (double prose, page par langue, résumé d'ouverture) ne se posent plus pour cette spec — elles
+    se poseraient pour les docs de `vynil`, hors du périmètre de ce dépôt.
   [ ] ./docs/rhai_helpers.md section 12 : corriger la phrase sur reqwest (reçu de
     ./src/engine.sdd, qui gardait cette part dans une tâche mêlée à la rustdoc de ./lib.rs,
     désormais tâche de ./src/lib.sdd).
@@ -153,6 +151,7 @@ Tasks:
 
 Done when:
   Les trois pages et ./README.md ne contiennent plus une phrase contredisant la spec d'un module,
-    et chaque fait contracté visible d'un consommateur y trouve sa ligne ; la règle bilingue est
-    tranchée dans sa forme et écrite en `Must` ; les seize tâches ouvertes sont closes ou
+    et chaque fait contracté visible d'un consommateur y trouve sa ligne ; l'intention bilingue
+    est arbitrée — hors périmètre, elle visait les docs de `vynil` — et l'anglais tenu en `Must` ;
+    les quinze tâches ouvertes restantes sont closes ou
     explicitement remises en doute par le développeur principal.

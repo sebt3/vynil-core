@@ -284,10 +284,11 @@ Tasks:
     être rejoués sans @new_hbs) ; ./hbs_json.rs a ses neufs tests internes déjà cantonnés dans
     ./hbs_json.sdd, et l'auxiliaire `render` de ces tests (Handlebars nu, non strict,
     échappement remis) ne doit PAS servir d'oracle pour ce module. Les faits de @tracing::warn
-    (texte et nombre, comme dans le Scenario `to_decimal`) ne sont pas assertionables avec les
-    moyens du dépôt : aucun `Subscriber` de capture en dev-deps (mesuré ; en écrire un à la main
-    contre @tracing nu reste possible et n'est pas décidé) — les tests convertis n'assertionnent
-    que le rendu, les warns restent consignés dans la spec comme faits du code.
+    (texte et nombre, comme dans le Scenario `to_decimal`) ne sont assertionables qu'avec un
+    `Subscriber` de capture : @tracing-subscriber entre en dev-deps sous l'`Owns` de
+    ./vyvil-core.sdd à cette fin seule. Les tests convertis n'assertionnent un warn que là où le
+    contrat le nomme ; les autres warns consignés dans les specs restent des faits du code sans
+    verrou, choisis comme tels.
   [ ] Affirmer @core::marker::Send et @core::marker::Sync de @crate::hbs::HandleBars par une
     assertion de compilation (décision actée).
   [ ] Passer `pub use core_helpers::*` en `pub(crate)` (décision actée : aucun consommateur
@@ -334,6 +335,15 @@ Tasks:
     son couplage « ./hbs.rs suit » est défait dans ./src/engine.sdd, et la clause « alignés sur
     ./engine.sdd » est retirée d'ici — les deux voies ne s'alignent plus par contrat.
 
+  [ ] Verrou pilote des faits de @tracing::warn du Scenario `to_decimal` : le nombre `8` rend
+    `0` après DEUX warns portant « handlebars::to_decimal received a non-string parameter: » et
+    le @core::fmt::Debug du @serde_json::Value (Number(8) × 2, mesuré par le `validator`) ;
+    `"999"` après un seul, portant String("999"). Assertionable depuis qu'@tracing-subscriber
+    entre en dev-deps sous l'`Owns` de ./vyvil-core.sdd — tâche jumelle de cet ajout, même commit,
+    le test ne compile pas sans la dépendance. Le captureur doit rester confiné au fil du test
+    (les tests tournent en parallèle) : la méthode est à l'avenant des moyens de la dépendance,
+    pas du dépôt. Premier verrou de warn du dépôt — il fixe le précédent que les autres specs
+    convertiront ou écarteront en connaissance de cause.
   [ ] Uniformiser ou assumer les textes de @tracing::warn de la voie douce : `argon_hash`,
     `bcrypt_hash` et `crc32_hash` disent « received a non-string password » et `header_basic`
     « username »/« password », alors que `base64_decode`, `base64_encode`, `url_encode`,

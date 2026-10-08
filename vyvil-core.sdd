@@ -72,6 +72,12 @@ Must:
     propre description disaient deux choses différentes — le code, lui, vivait du côté de la
     description. Un compte tenu dans une section (« ces deux textes sont l'affichage exact ») est
     une dette différée : l'écrire en « chacun de ces textes » plutôt que de le maintenir.
+  Porter @tracing-subscriber en `@std::cargo::dev-dependencies` de ./Cargo.toml, pour une seule
+    raison actée par le développeur principal : tester les @tracing::warn que les specs de
+    ./src/ consignés comme faits du code — le texte porté et le nombre — là où un `Scenario`
+    l'exige. Rien d'autre n'entre en `@std::cargo::dev-dependencies` sans raison écrite ici, et
+    la dépendance n'en sort pas : les tests observent le harnais de logs, la face publiée ne
+    l'exporte pas.
 
 Must not:
   Dépendre de vynil, kuberest, kydah ou d'un autre consommateur de cette crate.
@@ -84,6 +90,14 @@ Depends on:
   ./tooling.sdd
 
 Tasks:
+  [ ] Ajouter @tracing-subscriber en `@std::cargo::dev-dependencies` de ./Cargo.toml : les trois
+    dev-deps actuels (@wiremock, @tempfile, @tower-test) n'offrent aucun `Subscriber` de capture
+    (mesuré par le `validator`), et écrire un `Subscriber` à la main contre @tracing nu a été
+    écarté par le développeur principal au profit de la dépendance, dont la raison est écrite au
+    `Must` ci-dessus. Tâche jumelle du premier verrou qu'elle rend compilable — « Verrou pilote
+    des faits de warn » de ./src/hbs.sdd : la dépendance sans le verrou serait une raison sans
+    emploi, le verrou sans la dépendance ne compile pas ; les deux se cochent dans le même
+    commit. Porte jouée : `cargo test --no-default-features --features hbs,crypto`.
   [x] Spec `src/chrono.sdd` produite (spec-reverse) puis revue.
   [x] Spec `src/client_name.sdd` produite (spec-reverse) puis revue.
   [x] Spec `src/engine.sdd` produite (spec-reverse) puis revue.
