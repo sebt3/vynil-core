@@ -90,7 +90,7 @@ Depends on:
   ./tooling.sdd
 
 Tasks:
-  [ ] Ajouter @tracing-subscriber en `@std::cargo::dev-dependencies` de ./Cargo.toml : les trois
+  [x] Ajouter @tracing-subscriber en `@std::cargo::dev-dependencies` de ./Cargo.toml : les trois
     dev-deps actuels (@wiremock, @tempfile, @tower-test) n'offrent aucun `Subscriber` de capture
     (mesuré par le `validator`), et écrire un `Subscriber` à la main contre @tracing nu a été
     écarté par le développeur principal au profit de la dépendance, dont la raison est écrite au

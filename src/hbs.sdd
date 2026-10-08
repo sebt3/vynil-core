@@ -335,7 +335,7 @@ Tasks:
     son couplage « ./hbs.rs suit » est défait dans ./src/engine.sdd, et la clause « alignés sur
     ./engine.sdd » est retirée d'ici — les deux voies ne s'alignent plus par contrat.
 
-  [ ] Verrou pilote des faits de @tracing::warn du Scenario `to_decimal` : le nombre `8` rend
+  [x] Verrou pilote des faits de @tracing::warn du Scenario `to_decimal` : le nombre `8` rend
     `0` après DEUX warns portant « handlebars::to_decimal received a non-string parameter: » et
     le @core::fmt::Debug du @serde_json::Value (Number(8) × 2, mesuré par le `validator`) ;
     `"999"` après un seul, portant String("999"). Assertionable depuis qu'@tracing-subscriber

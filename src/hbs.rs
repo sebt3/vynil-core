@@ -453,8 +453,9 @@ mod tests {
     /// borne `71` acceptée / `72` refusée verrouillée dans `hashes.rs`) : la voie douce — un
     /// mot de passe de `71` octets rend un hash bcrypt valide (`$2b$`), un mot de passe de
     /// `72` octets refusé par `crate::hashes::bcrypt_hash` tombe en `warn` puis chaîne vide
-    /// rendue, jamais en `RenderError`. Le compte de `warn` n'est pas assertionné : aucun
-    /// `Subscriber` de capture n'est en dev-deps, il reste consigné dans la spec.
+    /// rendue, jamais en `RenderError`. Le compte de `warn` n'est pas assertionné : le contrat
+    /// de `bcrypt_hash` ne le nomme pas — les warn ne s'assertionnent que là où le contrat les
+    /// nomme (précédent `to_decimal` de `warn_tests`).
     #[test]
     fn bcrypt_hash_helper_renders_hash_at_71_bytes_and_empty_at_72() {
         let mut hbs = HandleBars::new();
@@ -478,5 +479,96 @@ mod tests {
             refused.is_empty(),
             "72 bytes must fall into warn + the empty string, got {refused:?}"
         );
+    }
+}
+
+/// Verrou pilote des faits de `tracing::warn` du Scenario `to_decimal` (`hbs.sdd`) : le helper
+/// rend `0` après UN seul warn portant le texte
+/// `handlebars::to_decimal received a non-string parameter: ` suivi du `Debug` de la valeur
+/// (`String("999")`), et après DEUX warns au même texte sur le nombre `8` (`Number(8)` × 2,
+/// double coercion mesurée par le `validator`). Le helper n'est pas gated `crypto` : ce module
+/// est au `#[cfg(test)]` nu pour que le verrou joue sous la porte `hbs` seule comme sous
+/// `hbs` + `crypto`. Le captureur reste confiné au fil du test —
+/// `tracing::subscriber::with_default` (thread-local), jamais `set_global_default` — donc
+/// insensible aux warns des autres fils (les tests Rust tournent en parallèle).
+#[cfg(test)]
+mod warn_tests {
+    use super::HandleBars;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    /// Couche de capture minimale : ne retient que le texte formaté du champ `message` de
+    /// chaque événement — ni format `fmt`, ni niveau, ni cible, ni horodatage — le strict
+    /// nécessaire pour assertionner le texte et le nombre des warns du contrat.
+    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for MessageCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = MessageOnly(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().extend(visitor.0);
+        }
+    }
+
+    /// Ne visite que `message` : les warns des helpers n'ont que ce champ, les autres (s'il y
+    /// en avait) sont ignorés comme le contrat ne les nomme pas.
+    struct MessageOnly(Vec<String>);
+
+    impl Visit for MessageOnly {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    /// Rend `template` sous le subscriber de capture confiné au fil courant et retourne la
+    /// sortie rendue avec les textes de warn capturés, dans l'ordre d'émission.
+    fn render_with_warn_capture(template: &str) -> (String, Vec<String>) {
+        let captured: Arc<Mutex<Vec<String>>> = Arc::default();
+        let subscriber =
+            tracing_subscriber::registry::Registry::default().with(MessageCapture(Arc::clone(&captured)));
+        let mut hbs = HandleBars::new();
+        let out = tracing::subscriber::with_default(subscriber, || {
+            hbs.render(template, &Value::Null)
+                .expect("to_decimal must never fail the render")
+        });
+        let warns = captured.lock().unwrap().clone();
+        (out, warns)
+    }
+
+    /// Contrat `to_decimal` (Scenario `to_decimal` de `hbs.sdd`, double site de warn consigné
+    /// comme fait du code) : la chaîne hors base 8 échoue seule la conversion radix — UN warn
+    /// portant le préfixe « received a non-string parameter » suivi du `Debug` de la valeur ;
+    /// le nombre `8` échoue deux fois (coercition vide puis radix de `""`) — DEUX warns au
+    /// même texte portant `Number(8)`. Les deux rendus sont `0`, jamais d'erreur de rendu.
+    #[test]
+    fn to_decimal_helper_renders_zero_after_one_warn_on_non_octal_string_and_two_on_number() {
+        const WARN_PREFIX: &str = "handlebars::to_decimal received a non-string parameter: ";
+
+        let (out, warns) = render_with_warn_capture("{{ to_decimal \"999\" }}");
+        assert_eq!(out, "0", "a non-octal string must render 0, never fail");
+        assert_eq!(warns.len(), 1, "one warn site reached on a non-octal string");
+        assert!(
+            warns[0].starts_with(WARN_PREFIX) && warns[0].ends_with("String(\"999\")"),
+            "expected the contracted prefix followed by the Debug of the value, got {:?}",
+            warns[0]
+        );
+
+        let (out, warns) = render_with_warn_capture("{{ to_decimal 8 }}");
+        assert_eq!(out, "0", "a number must render 0, never fail");
+        assert_eq!(
+            warns.len(),
+            2,
+            "the double coercion of the number 8 warns twice (empty coercion then radix of \"\")"
+        );
+        for warn in &warns {
+            assert!(
+                warn.starts_with(WARN_PREFIX) && warn.ends_with("Number(8)"),
+                "expected the contracted prefix followed by the Debug of the value, got {warn:?}"
+            );
+        }
     }
 }
