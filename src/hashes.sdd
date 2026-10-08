@@ -20,9 +20,9 @@ References:
     toutes deux gated `crypto` avec leurs affichages d'attribut : @crate::Error::Argon2hash
     `Argon2 password_hash error {0}` (payload @argon2::password_hash::Error via `#[from]`) et
     @crate::Error::BcryptError `Bcrypt hash error {0}` (payload @bcrypt::BcryptError via
-    `#[from]`). La table de features de la rustdoc racine annonce à tort `argon_hash`
-    « Handlebars + Rhai » et liste `argon` — deux noms que ./hashes.rs n'enregistre pas côté
-    script ; la rustdoc est à corriger (voir `Tasks`).
+    `#[from]`). La table de features de la rustdoc racine est vraie depuis la tâche close de
+    ./src/lib.sdd : `argon_hash` y figure Handlebars seul et la face script crypto est nommée
+    par le trio `Argon` (`new_argon` + `.hash`) / `bcrypt_hash` / `gen_private_key`.
   ./engine.rs — @Script::new_bare est l'unique appelant des deux registres :
     @crate::hashes::hashes_rhai_register inconditionnellement (./engine.rs vit déjà sous `rhai`
     seul, après @crate::chrono::chrono_rhai_register), @crate::hashes::crypto_hashes_rhai_register

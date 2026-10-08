@@ -264,10 +264,23 @@ Tasks:
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   mocks publics, module `password` ungated, gate `rhai` de `glob`, `error_chain` sans gate.
 
-  [ ] Corriger la rustdoc de ./lib.rs : `argon_hash` est Handlebars seul, la face script est
+  [x] Corriger la rustdoc de ./lib.rs : `argon_hash` est Handlebars seul, la face script est
     `new_argon` + `.hash` (décision actée : le code est juste, la doc fausse). Constaté depuis
     ./src/hashes.sdd, qui portait cette tâche avant le transfert : ./lib.rs est de cet `Owns`
     seul, la correction l'est donc aussi.
+  [ ] Corriger la queue de la phrase « injected by `new_bare` » de ./lib.rs : « `Registry` /
+    `s3_*` / `RestClient` / `k8s_*` when their feature is enabled » est fausse pour `s3_*`,
+    `RestClient` et `k8s_*` — jamais câblés par @crate::engine::Script::new_bare même portes
+    ouvertes (./src/engine.sdd, `Must not` et Scenario « never-auto-wired même portes
+    ouvertes ») ; `Registry` seul est vrai. Rendez la phrase au consentement de l'appelant :
+    ce que `new_bare` n'injecte pas ne se réclame d'aucune feature.
+  [ ] Rendre robustes hors graphe default les liens intra-doc de la table des features de
+    ./lib.rs : mesuré cinq warnings sous `cargo doc --no-default-features`-au-sens-large
+    (`cargo doc --no-deps` default — `k8s::K8sGeneric`, `k8s::K8sObject`, `oci::Registry`,
+    `s3::s3_get_yaml`, `s3::s3_list_keys` non résolus quand les modules sont gated off). La
+    porte `RUSTDOCFLAGS="-D warnings"` ne contracte que `--all-features` (./tooling.sdd) et
+    ces warnings ne tournent nulle part en CI : la tâche n'est pas d'étendre la porte mais de
+    rendre les liens vrais sur tout graphe (gating des liens ou littéraux de code).
   [ ] Corriger la table de features de ./lib.rs sur la glue Rhai de `password` : la glue est
     `rhai` seule, seul le câblage de ./engine.rs est gated `password` (décision actée : le
     code fait foi). Tâche jumelle de « Corriger la rustdoc de ./password.rs » de
@@ -279,7 +292,7 @@ Tasks:
     n'appelle rien depuis ./key.rs, dont le module est `#[cfg(feature = "crypto")]` et ne compile
     donc pas sous cette porte. Jumelle de la tâche de ./src/key.sdd, à cocher dans le même commit.
     Porte qui joue le `cfg` : `cargo test --no-default-features --features rhai` (./tooling.sdd).
-  [ ] Corriger la rustdoc de ./lib.rs sur les faces toujours présentes : « Additional,
+  [x] Corriger la rustdoc de ./lib.rs sur les faces toujours présentes : « Additional,
     feature-gated » est faux pour `yaml`, `semver`, `glob` et `date_now`, présents sous `rhai`
     seul, et `argon_hash` n'existe pas côté Rhai. Reçu de ./src/engine.sdd, dont la tâche mêlée
     est dissoute : ./lib.rs est de cet `Owns` seul, et la phrase sur reqwest de

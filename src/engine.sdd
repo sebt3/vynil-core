@@ -46,10 +46,10 @@ References:
   ../docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
     section 12 contient une phrase fausse sur reqwest « dependency de base » (à corriger, §`Tasks`).
   ./lib.rs (rustdoc racine) — quickstart `new_bare(vec![...])` + `run_file(&PathBuf)` ;
-    deux mentions fausses, à corriger (§`Tasks`) : « Additional, feature-gated » pour
-    yaml/semver/glob/date_now alors qu'elles sont ALWAYS sous `rhai`, et le nom `argon_hash`
-    présenté en « Handlebars + Rhai » alors que le nom Rhai côté crypto est le trio
-    `bcrypt_hash` + type `Argon` + `new_argon`/`hash`.
+    les deux mentions corrigées par ./src/lib.sdd (tâches closes) : « Additional,
+    feature-gated » cède à « Also available under `rhai` alone » pour yaml/semver/glob/
+    date_now/crc32_hash, et `argon_hash` a quitté « Handlebars + Rhai » pour la face crypto
+    réelle — trio `bcrypt_hash` + type `Argon` + `new_argon`/`hash`.
 
 Must:
   N'exister que sous la porte `rhai` : structure, méthodes, fonctions libres et ré-exports

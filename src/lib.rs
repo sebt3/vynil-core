@@ -17,7 +17,7 @@
 //! | `hbs` | ✅ | [`hbs::HandleBars`] engine |
 //! | `hbs-scripting` | ✅ | `register_helper_dir` / `rhai_register_helper_dir` (`handlebars/script_helper`). Implies `hbs` + `rhai`. Keep it separate because `script_helper` pulls `smartstring` which breaks `String + &String` in some graphs (see `hbs` docs) |
 //! | `http` | ✅ | [`http::RestClient`] (reqwest) + [`http_mock::RestClientMock`]. Implies `rhai` |
-//! | `crypto` | ✅ | `argon_hash` / `bcrypt_hash` / `gen_private_key` helpers (Handlebars + Rhai) |
+//! | `crypto` | ✅ | `argon_hash` / `bcrypt_hash` / `gen_private_key` helpers (Handlebars). In Rhai: the `Argon` type via `new_argon` with its `.hash` method, plus `bcrypt_hash` / `gen_private_key` |
 //! | `k8s` | ❌ | Generic K8s handlers ([`k8s::K8sGeneric`], [`k8s::K8sObject`], …) + mocks. Implies `rhai` |
 //! | `oci` | ❌ | [`oci::Registry`] + OCI mock. Implies `rhai` |
 //! | `s3` | ❌ | S3 helpers ([`s3::s3_get_yaml`], [`s3::s3_list_keys`]). Implies `rhai` |
@@ -70,10 +70,12 @@ assert_eq!(out, "Hello world!");
 //!
 //! Common: `sha256`, `log_debug/info/warn/error`, `url_encode`, `get_env`, `to_decimal`,
 //! `base64_encode/decode`, `json_encode/decode`, `basename`, `dirname`.
-//! Additional, feature-gated: `yaml_encode/decode`, `semver_from` + `inc_*`, `glob`,
-//! `date_now`/`format`, `crc32_hash`/`bcrypt_hash`/`argon`, `gen_private_key`,
-//! `gen_password` (feature `password`), `file_*` (feature `fs`), `shell_*` (feature `shell`),
-//! `Registry` / `s3_*` / `RestClient` / `k8s_*` when their feature is enabled.
+//! Also available under `rhai` alone, no extra feature: `yaml_encode/decode`,
+//! `semver_from` + `inc_*`, `glob`, `date_now`/`format`, `crc32_hash`.
+//! Feature-gated: `Argon` (`new_argon` + `.hash`) / `bcrypt_hash` / `gen_private_key`
+//! (feature `crypto`), `gen_password` (feature `password`), `file_*` (feature `fs`),
+//! `shell_*` (feature `shell`), `Registry` / `s3_*` / `RestClient` / `k8s_*` when their
+//! feature is enabled.
 //!
 //! Scripts also get `assert` and `import_run` / `import_template` shims for optional imports.
 //!
