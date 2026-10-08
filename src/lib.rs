@@ -1197,4 +1197,22 @@ mod tests {
             assert_eq!(crate::Error::UnsupportedMethod.to_string(), "Unsupported method");
         }
     }
+
+    // ── Seam for key.sdd Scenario « sans crypto le module et ses helpers disparaissent »:
+    // compiled and executed only by `cargo test --no-default-features --features rhai`.
+    // Script-only: nothing here reaches into ./key.rs, whose module does not compile under
+    // this gate. The error shape is rhai's own (`Function not found: …` at time of
+    // writing); only the failure and the carried mention of `gen_private_key` are locked. ──
+    #[cfg(all(test, feature = "rhai", not(feature = "crypto")))]
+    #[test]
+    fn new_bare_without_crypto_rejects_gen_private_key() {
+        let mut script = Script::new_bare(vec![]);
+        let err = script
+            .eval(r#"gen_private_key("ed25519")"#)
+            .expect_err("no `crypto`: the bare engine must not know gen_private_key");
+        assert!(
+            err.to_string().contains("gen_private_key"),
+            "the failure must be about gen_private_key, got: {err}"
+        );
+    }
 }

@@ -272,7 +272,7 @@ Tasks:
     `rhai` seule, seul le câblage de ./engine.rs est gated `password` (décision actée : le
     code fait foi). Tâche jumelle de « Corriger la rustdoc de ./password.rs » de
     ./src/password.sdd, à cocher dans le même commit.
-  [ ] Écrire dans le `mod tests` racine de ./lib.rs le verrou du Scenario `sans crypto le module
+  [x] Écrire dans le `mod tests` racine de ./lib.rs le verrou du Scenario `sans crypto le module
     et ses helpers disparaissent` de ./src/key.sdd : sous
     `#[cfg(all(test, feature = "rhai", not(feature = "crypto")))]`, @Script::new_bare doit échouer
     sur `gen_private_key("ed25519")` en fonction inconnue — le test n'évalue que du script et

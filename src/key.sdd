@@ -188,7 +188,7 @@ Tasks:
     @crate::key::key_rhai_register ou @Script::new_bare ; les deux Scenario de gating
     appartiennent à la batterie de features de la crate. Vingt Scenario, dix-neuf verrous
     inline dans ./key.rs nommés d'après leur Scenario (sept posés avant cette tâche, treize
-    pendant) et une clause sans assertion possible, consignée dans le Scenario même :
+    pendant) et une clause sans assertion possible dans ./key.rs, consignée dans le Scenario même :
     `sans crypto le module et ses helpers disparaissent`. Comptes vérifiés à la batterie :
     vingt `key::tests` sous `default` et `--all-features`, dix sous `crypto` seul, zéro sous
     `--no-default-features` — le module n'y est pas compilé, c'est précisément le verrou de la
@@ -198,7 +198,7 @@ Tasks:
     `hbs,crypto` à la matrice de ./test.yml. Morsure éprouvée par quatre dérives restaurées byte-identiques : pré-filtre
     de `bits` devant ed25519, surcharge binaire retirée de l'enregistreur, surcharge coercitive
     ajoutée, garde de taille remplacé par un cast tronquant.
-  [ ] Faire jouer l'évaluation du Scenario `sans crypto le module et ses helpers disparaissent` :
+  [x] Faire jouer l'évaluation du Scenario `sans crypto le module et ses helpers disparaissent` :
     @Script::new_bare — instrument que le Scenario nomme, mesuré vif sur la porte `rhai` seul —
     doit échouer sur `gen_private_key("ed25519")` en fonction inconnue. Le verrou s'écrit dans
     ./lib.rs, pas ici : @crate::key n'est compilé que sous `crypto`, donc le
@@ -347,11 +347,13 @@ Scenario: sans crypto le module et ses helpers disparaissent
   Then @crate::key n'existe pour aucun consommateur
   And avec `cargo check --no-default-features --features rhai`, l'évaluation de
     `gen_private_key("ed25519")` sur un @Script::new_bare échoue en fonction inconnue
-    (clause tenue par construction et non par une exécution : ./engine.rs n'appelle
-    @crate::key::key_rhai_register que dans un bloc `#[cfg(feature = "crypto")]`, si bien que
-    sans `crypto` aucun nom n'est enregistré. La compilation du graphe `rhai` seul est jouée
-    par `cargo hack check --each-feature` ; l'évaluation, elle, n'est jouée par aucune porte de
-    test de la batterie — l'ajouter est la tâche de ./tooling.sdd, pas un test d'ici)
+    (clause tenue par construction — ./engine.rs n'appelle @crate::key::key_rhai_register que
+    dans un bloc `#[cfg(feature = "crypto")]`, si bien que sans `crypto` aucun nom n'est
+    enregistré — et par l'exécution depuis
+    `new_bare_without_crypto_rejects_gen_private_key` de ./lib.rs : l'évaluation échoue en
+    fonction inconnue, le texte porté nomme `gen_private_key`, et la porte qui joue ce verrou
+    est `cargo test --no-default-features --features rhai`, entrée de la matrice de
+    ./.github/workflows/test.yml)
 
 Scenario: sans rhai la face Rust reste et la porte script ferme
   Given la crate compilée par `cargo check --no-default-features --features crypto`
