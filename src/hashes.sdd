@@ -252,7 +252,7 @@ Tasks:
 # Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
-  [ ] Rendre parlante la branche d'encodage du sel, décidée par le développeur principal (« les
+  [x] Rendre parlante la branche d'encodage du sel, décidée par le développeur principal (« les
     erreurs doivent être parlantes ») : @argon2::password_hash::SaltString::encode_b64 ne rend
     plus « Entropy failure: … » mais @crate::Error::Other « Salt encoding failure: … », l'encodage
     n'étant pas de l'entropie. Pas @variant-Error::Argon2hash, qui porte les échecs de hachage

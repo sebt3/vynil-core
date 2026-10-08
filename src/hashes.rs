@@ -32,15 +32,16 @@ impl Argon {
     /// # Errors
     ///
     /// Returns [`Error::Other`] carrying `Entropy failure: ...` when the system entropy
-    /// source fails (`OsRng::try_fill_bytes`) or when the salt bytes fail to encode as a
-    /// [`SaltString`] (in practice unreachable for 16 bytes). Never panics.
+    /// source fails (`OsRng::try_fill_bytes`), or `Salt encoding failure: ...` when the
+    /// salt bytes fail to encode as a [`SaltString`] (in practice unreachable for 16
+    /// bytes). Never panics.
     pub fn new() -> Result<Self> {
         let mut salt_bytes = [0_u8; 16];
         OsRng
             .try_fill_bytes(&mut salt_bytes)
             .map_err(|e| Error::Other(format!("Entropy failure: {e}")))?;
-        let salt =
-            SaltString::encode_b64(&salt_bytes).map_err(|e| Error::Other(format!("Entropy failure: {e}")))?;
+        let salt = SaltString::encode_b64(&salt_bytes)
+            .map_err(|e| Error::Other(format!("Salt encoding failure: {e}")))?;
         Ok(Self {
             salt,
             argon: Argon2::default(),
