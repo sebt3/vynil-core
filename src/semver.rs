@@ -11,9 +11,9 @@ use semver::{BuildMetadata, Prerelease, Version};
 
 /// Semver wrapper that remembers whether the original string had a leading `v`.
 ///
-/// Implements `Display` so `to_string()` round-trips the `v` prefix. Ordering is delegated to
-/// the inner `semver::Version`.
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+/// Implements `Display` so `to_string()` round-trips the `v` prefix. Equality, ordering and
+/// hashing delegate to the inner `semver::Version`; the `v` flag is cosmetic (display only).
+#[derive(Clone, Debug)]
 pub struct Semver {
     /// The parsed semantic version.
     pub version: Version,
@@ -149,6 +149,32 @@ impl Semver {
     #[cfg(feature = "rhai")]
     pub fn rhai_inc_alpha(&mut self) -> RhaiRes<()> {
         self.inc_alpha().map_err(rhai_err)
+    }
+}
+
+impl PartialEq for Semver {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+    }
+}
+
+impl Eq for Semver {}
+
+impl PartialOrd for Semver {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Semver {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.version.cmp(&other.version)
+    }
+}
+
+impl std::hash::Hash for Semver {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.version.hash(state);
     }
 }
 
@@ -442,6 +468,85 @@ mod tests {
         assert!(
             err.to_string().contains("ParseIntError "),
             "l'erreur de script doit porter `ParseIntError ` : {err}"
+        );
+    }
+
+    // ── Scenario « l'ordre suit semver, le v n'y compte pas » (l'égalité et l'ordre à
+    // version égale, lacune nommé par l'inventaire des Tasks). Les trois verrous Rust verrouillent
+    // le `Must` « use_v n'entre ni dans l'égalité, ni dans l'ordre, ni dans le Hash » :
+    // à version égale et drapeaux opposés, @std::cmp::PartialEq vrai, `1.2.3 < v1.2.3` et
+    // `v1.2.3 > 1.2.3` faux (les deux sens nommés par le Then), et même @std::hash::Hash.
+    // Le premier Then du Scenario (`2.0.0` domine `1.99.99`, `1.2.3-alpha.1` sous `1.2.3`)
+    // est déjà tenu par `test_comparison_major_beats_minor` et
+    // `test_prerelease_is_less_than_stable` : non rejoué. État d'avant mesuré : le derive
+    // sur le tuple (version, use_v) rend `1.2.3 != v1.2.3` et `1.2.3 < v1.2.3` (false < true). ──
+    #[test]
+    fn test_v_flag_not_in_equality() {
+        let plain = Semver::parse("1.2.3").unwrap();
+        let prefixed = Semver::parse("v1.2.3").unwrap();
+        assert_eq!(
+            plain, prefixed,
+            "à version égale et drapeaux opposés, l'égalité ne doit rien au `v`"
+        );
+    }
+
+    #[test]
+    fn test_v_flag_not_in_ordering() {
+        let plain = Semver::parse("1.2.3").unwrap();
+        let prefixed = Semver::parse("v1.2.3").unwrap();
+        // Verrouillés par variable intermédiaire : le harnais pedantic (`nonminimal_bool`)
+        // refuse `!(a < b)` sous une autre forme, et ce sont bien `<` et `>` que le Then nomme.
+        let lt = plain < prefixed;
+        assert!(
+            !lt,
+            "`1.2.3 < v1.2.3` doit être faux : le drapeau n'entre pas dans l'ordre"
+        );
+        let gt = prefixed > plain;
+        assert!(
+            !gt,
+            "`v1.2.3 > 1.2.3` doit être faux : le drapeau n'entre pas dans l'ordre"
+        );
+    }
+
+    #[test]
+    fn test_v_flag_not_in_hash() {
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
+        let hash_of = |s: &Semver| {
+            let mut hasher = DefaultHasher::new();
+            s.hash(&mut hasher);
+            hasher.finish()
+        };
+        let plain = Semver::parse("1.2.3").unwrap();
+        let prefixed = Semver::parse("v1.2.3").unwrap();
+        assert_eq!(
+            hash_of(&plain),
+            hash_of(&prefixed),
+            "deux valeurs égales doivent avoir le même hash"
+        );
+    }
+
+    // ── Face script du même Scenario : « ces verdicts valent aussi en script, `==` et `<`
+    // empruntant les fermetures enregistrées ». Voix retenue comme chez les trois verrous
+    // voisins : @rhai::Engine local enregistré par semver_rhai_register. ──
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_v_flag_transparent_to_eq_and_lt() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        assert!(
+            engine
+                .eval::<bool>(r#"semver_from("1.2.3") == semver_from("v1.2.3")"#)
+                .unwrap(),
+            "le `==` enregistré doit rendre vrai à version égale et drapeaux opposés"
+        );
+        assert!(
+            !engine
+                .eval::<bool>(r#"semver_from("1.2.3") < semver_from("v1.2.3")"#)
+                .unwrap(),
+            "le `<` enregistré doit rendre faux à version égale et drapeaux opposés"
         );
     }
 }

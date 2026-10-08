@@ -123,7 +123,7 @@ Tasks:
     par le store en mémoire, décision actée. Reçu de ./src/s3.sdd et ./src/oci.sdd, qui pointaient
     tous les deux sur ce même paragraphe : traité comme une seule tâche pour ne pas le faire se
     contredire deux fois.
-  [ ] ./docs/rhai_helpers.md, section Semver : rendre vraie la phrase « Standard semver ordering »
+  [x] ./docs/rhai_helpers.md, section Semver : rendre vraie la phrase « Standard semver ordering »
     (l'ordre et le hash sur `version` seule, `use_v` cosmétique) — tâche jumelle de
     « Implémenter à la main @std::cmp::PartialEq, @std::cmp::Ord et @std::hash::Hash » de
     ./src/semver.sdd, à cocher avec elle (reçu de ./src/semver.sdd).
