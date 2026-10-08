@@ -41,13 +41,14 @@ References:
     n'existe aucun helper Handlebars `to_semver`, `from_semver` ou `semver_*`. Ce module n'a pas
     de pendant Handlebars et n'importe jamais @crate::hbs ; ./hbs.rs, s'il en créait un jour,
     en serait l'unique contrat, dans sa propre spec.
-  ../docs/rhai_helpers.md — section 5 : table des neuf noms de script, le préfixe « `v`
+  ./docs/rhai_helpers.md — section 5 : table des neuf noms de script, le préfixe « `v`
     souvenir et reproduction », le comportement d'inc_patch en présence de pré-release
-    et l'annotation « Standard semver ordering (prerelease < stable) ». Elle est muette sur les
-    champs d'objet, les erreurs de compteur, la préservation du `build` et les transitions de
-    labels ; son annotation d'ordre n'est vraie qu'une fois le comparateur écrit à la main hors `use_v`
-    (voir `Tasks`), et la préservation du `build` qu'elle tait devient « effacé à chaque
-    bump ». Sa table de couverture déclare semver « Always (given `rhai`) », conforme.
+    et l'annotation « Standard semver ordering (prerelease < stable) ». Elle documente
+    l'effacement du `build` aux mutateurs depuis la tâche jumelle close ici, mais reste muette
+    sur les champs d'objet, les erreurs de compteur et les transitions de labels ; son
+    annotation d'ordre n'est vraie qu'une fois le comparateur écrit à la main hors `use_v`
+    (voir `Tasks`) — c'est elle, et non plus le `build`, que la tâche de comparaison rendra
+    vraie. Sa table de couverture déclare semver « Always (given `rhai`) », conforme.
   ./Cargo.toml — `semver = { version = "1.0.24", features = ["serde"] }` : dépendance NON
     optionnelle, rattachée à aucune feature, verrouillée `1.0.28` ; @rhai est verrouillé
     `1.25.1` au lock.
@@ -172,8 +173,8 @@ Must not:
 Depends on:
   semver — @semver::Version parse/@std::fmt::Display/@std::cmp::Ord, @semver::Prerelease (dont
     le déréf rend appelables `starts_with`, `strip_prefix` et le `is_empty` utilisé comme test de
-    présence) et @semver::Error via `#[from]` ; @semver::BuildMetadata n'est pas importé faute
-    de jamais être assigné. Dépendance non optionnelle `semver = "1.0.24"` avec la feature
+    présence) et @semver::Error via `#[from]` ; @semver::BuildMetadata, importé depuis
+    l'effacement du `build`, que les cinq mutateurs assignent à `BuildMetadata::EMPTY`. Dépendance non optionnelle `semver = "1.0.24"` avec la feature
     `serde`, verrouillée `1.0.28` dans ./Cargo.lock. La grammaire acceptée, le refus du préfixe
     `v`, des zéros têtes et des espaces, l'ordre interne des identifiants de pré-release,
     l'affichage et la chaîne exacte de @semver::Error appartiennent à la dépendance et ne sont
@@ -315,7 +316,7 @@ Tasks:
     le `mod tests` sous `#[cfg(test)]` de ./semver.rs pour la face Rust et sur @rhai::Engine
     local — ou @Script::new_bare — pour la face script, la batterie de features de l'AGENTS.md
     servant de validation aux Scenario de portes. Inventaire exact de ce qui est verrouillé :
-    ./semver.rs aligne vingt tests inline —
+    ./semver.rs aligne vingt-sept tests inline —
     `test_parse_without_v_prefix` et `test_parse_with_v_prefix` (champs et drapeau sur deux
     entrées saines) ; `test_to_string_preserves_v_prefix` et `test_to_string_without_v_prefix`
     (@std::fmt::Display sur versions stables sans pre ni build) ; `test_comparison_lt`,
@@ -332,25 +333,30 @@ Tasks:
     `patch`, contrairement à son jumeau beta) ; `test_parse_invalid_returns_error` (trois
     rejets, sans un seul affichage verrouillé) ; `test_opt_parse_invalid_returns_none` et
     `test_opt_parse_valid_returns_some` (Some/None sans vérification de champ) ;
-    `test_prerelease_is_less_than_stable`. ./engine.rs verrouille de son côté
+    `test_prerelease_is_less_than_stable` ; sept verrous d'effacement du `build` depuis la
+    tâche « Effacer `build` » — un par mutateur sur `1.2.3-alpha.1+sha.5114f85`, le premier
+    bras de `inc_beta` depuis le stable, et l'ancre `test_inc_beta_rejected_counter_keeps_build`
+    qui tient le rejet en état strictement intact. ./engine.rs verrouille de son côté
     `test_semver_parse_and_to_string`, `test_semver_comparison_operators` (laissant `!=`, `<=`,
     `>=` sans verrou de script) et `test_semver_inc_minor`. Restent sans test : tout affichage
-    exact d'erreur des deux côtés de la barrière Rust/script, les rejets d'espaces et de
-    préfixes, les compteurs `0`/`01`/bornes, les rejets de compteur avec version intacte, le
-    label nu, les traversées croisées, toute préservation de build, la survie du drapeau après
-    mutation, l'égalité et l'ordre à version égale, `type_of` et les propriétés d'objet, les
+    exact d'erreur des deux côtés de la barrière Rust/script — dont la variante et le texte
+    des rejets de compteur, dont l'ancre d'état intact ne verrouille que l'échec et les
+    champs —, les rejets d'espaces et de préfixes, les compteurs `0`/`01`/bornes, le
+    label nu, les traversées croisées, l'effacement du `build` sur le bras stable de
+    `inc_patch`, la survie du drapeau après mutation, l'égalité et l'ordre à version égale,
+    `type_of` et les propriétés d'objet, les
     coercitions et arités refusées, l'engine nu contre @Script::new_bare, le double
     enregistrement, la construction par littéral et la forme pointée des mutateurs.
   [ ] Implémenter à la main @std::cmp::PartialEq, @std::cmp::Ord (et son PartialOrd) et
     @std::hash::Hash de @crate::Semver sur `version` seule (décision actée : `use_v` est
     cosmétique), test d'abord ; la rustdoc du struct devient vraie, et la phrase « Standard
-    semver ordering » de ../docs/rhai_helpers.md est la tâche jumelle de ./docs.sdd.
+    semver ordering » de ./docs/rhai_helpers.md est la tâche jumelle de ./docs.sdd.
   [ ] Faire échouer @crate::Semver::inc_beta et @crate::Semver::inc_alpha en
     @crate::Error::ParseInt (variante typée existante) au lieu de @crate::Error::Other
     (décision actée) ; le texte de script passe à `ParseIntError ...`.
-  [ ] Effacer `build` (@semver::BuildMetadata::EMPTY) aux cinq mutateurs (décision actée :
+  [x] Effacer `build` (@semver::BuildMetadata::EMPTY) aux cinq mutateurs (décision actée :
     la provenance d'avant le bump serait fausse après), test d'abord. Documenter « resets
-    minor/patch, clears prerelease and build » dans ../docs/rhai_helpers.md est la tâche
+    minor/patch, clears prerelease and build » dans ./docs/rhai_helpers.md est la tâche
     jumelle de ./docs.sdd, à cocher dans le même commit.
 
 Scenario: le même type sous deux chemins dans tous les graphes
