@@ -1,7 +1,8 @@
 //! Password generation with per-class minimums.
 //!
-//! `generate` is the core Rust API; Rhai bindings (`gen_password`, `gen_password_alphanum`)
-//! are gated behind the `password` feature.
+//! `generate` is the core Rust API; the Rhai bindings (`gen_password`,
+//! `gen_password_alphanum`) compile under `rhai` alone; only the automatic
+//! registration by `Script::new_bare` is gated behind the `password` feature.
 
 use crate::{Error, Result};
 use rand::{

@@ -23,7 +23,7 @@
 //! | `s3` | ❌ | S3 helpers ([`s3::s3_get_yaml`], [`s3::s3_list_keys`]). Implies `rhai` |
 //! | `fs` | ❌ | Filesystem access from Rhai (`file_read`, `file_write`, …) |
 //! | `shell` | ❌ | Shell execution (`shell::run` / `shell::get_out` + Rhai `shell_run`) |
-//! | `password` | ❌ | `gen_password` / `gen_password_alphanum` (opt-in to avoid name collisions) |
+//! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
 //!
 //! ```toml
 //! # default: Rhai + Handlebars + HTTP + crypto

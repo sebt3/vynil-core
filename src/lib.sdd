@@ -281,7 +281,7 @@ Tasks:
     porte `RUSTDOCFLAGS="-D warnings"` ne contracte que `--all-features` (./tooling.sdd) et
     ces warnings ne tournent nulle part en CI : la tâche n'est pas d'étendre la porte mais de
     rendre les liens vrais sur tout graphe (gating des liens ou littéraux de code).
-  [ ] Corriger la table de features de ./lib.rs sur la glue Rhai de `password` : la glue est
+  [x] Corriger la table de features de ./lib.rs sur la glue Rhai de `password` : la glue est
     `rhai` seule, seul le câblage de ./engine.rs est gated `password` (décision actée : le
     code fait foi). Tâche jumelle de « Corriger la rustdoc de ./password.rs » de
     ./src/password.sdd, à cocher dans le même commit.
