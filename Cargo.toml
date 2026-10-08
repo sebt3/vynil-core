@@ -62,7 +62,8 @@ s3 = ["dep:object_store", "dep:futures", "dep:tokio", "rhai"]
 # Filesystem access from Rhai scripts (file_read/file_write/file_copy/create_dir/read_dir/is_file/is_dir).
 fs = []
 # Shell command execution (run/get_out always available under this feature alone; the
-# shell_run/shell_output Rhai bindings additionally need "rhai").
+# shell_run/shell_output Rhai bindings additionally need "rhai"). No whitelist, no timeout,
+# no sandbox: this cargo opt-in is the only guard against running arbitrary commands.
 shell = []
 # vynil-core's own gen_password/gen_password_alphanum Rhai + Handlebars helpers (minimum-count
 # based). Off by default so consumers with their own password generation semantics (e.g. a

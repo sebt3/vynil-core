@@ -22,8 +22,9 @@ References:
     gated : @crate::Error::Stdio `#[error("Stdio error {0}")]` avec `#[from]` de
     @std::io::Error, @crate::Error::UTF8 `#[error("UTF8 error {0}")]` avec `#[from]` de
     @std::string::FromUtf8Error et @crate::Error::Other `#[error("Error: {0}")]`. La table de
-    features de la rustdoc racine présente `shell` par « `shell::run` / `shell::get_out` + Rhai
-    `shell_run` » et oublie `shell_output` : la table est à compléter (voir `Tasks`).
+    features de la rustdoc racine nomme les quatre faces — `shell::run` / `shell::get_out` +
+    Rhai `shell_run` / `shell_output` — et dit l'assomption unix seul depuis la tâche close de
+    ./src/lib.sdd.
   ./engine.rs — ./engine.rs n'existe que sous `rhai` ; son import et son appel de
     @crate::shell::shell_rhai_register dans @Script::new_bare sont gated `shell` seuls, placés
     après @crate::oci::oci_rhai_register et avant @Script::add_common — la condition effective
@@ -38,9 +39,10 @@ References:
     Handlebars, sans un mot sur les risques d'exécution.
   ../docs/rhai_helpers.md — section 10 : `shell_run(command: string)` rend un `int` avec flux
     hérités, `shell_output(command: string)` rend une `string` et « errors if the exit code is
-    non-zero or if anything was written to stderr (even on exit 0) ». La doc est à
-    compléter sur le `sh` littéral (unix seul) et sur le code `128 + signal` rendu sur mort par
-    signal (voir `Tasks`).
+    non-zero or if anything was written to stderr (even on exit 0) ». La page dit le
+    `sh` littéral (unix seul), le verdict `128 + signal` rendu sur mort par signal et le
+    risque d'exécution depuis les tâches closes de ./docs.sdd — la section est à l'état du
+    contrat.
 
 Must:
   La table des portes est exactement : @crate::shell::run et @crate::shell::get_out sous
@@ -231,8 +233,7 @@ Handles:
 Tasks:
 # Ce qui restait ici hors de ./shell.rs : `shell_output` à la table de ./lib.rs est transféré
 # à ./src/lib.sdd et la description de la feature `shell` à ./vyvil-core.sdd (tâches jumelles,
-# même commit). La part ../docs/ reste ici, marquée bloquée : c'est la dette de cette spec sur
-# un fichier qu'elle ne peut pas écrire tant qu'il n'a pas d'`Owns`.
+# même commit).
 # Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
@@ -249,7 +250,7 @@ Tasks:
     partagé par @crate::shell::rhai_run et @crate::shell::rhai_get_stdout, et joindre un
     extrait de stderr borné à `Command failed, rc=<n>` (décisions actées) ; test d'abord depuis
     les Scenario signal et code non nul.
-  [ ] Documenter le risque d'exécution de commandes (aucune whitelist, timeout ni bac à sable ;
+  [x] Documenter le risque d'exécution de commandes (aucune whitelist, timeout ni bac à sable ;
     l'opt-in cargo est le seul garde-fou, décision actée) dans la rustdoc de ./shell.rs.
     Jumelles, hors de cet `Owns` et à cocher dans le même commit : la description de la feature
     `shell` dans ./Cargo.toml (./vyvil-core.sdd), la table et la rustdoc de ./lib.rs avec

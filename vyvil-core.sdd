@@ -60,10 +60,10 @@ Must:
     partie en périmètre et nomme sa jumelle, et les tâches jumelles se cochent dans le même
     commit — seule façon de tenir la frontière et l'arbre vert à la fois, une face publique
     changée dans un module cassant la compilation de l'appelant hors périmètre.
-  Tenir un artefact sans `Owns` pour un trou de gouvernance et non pour une zone libre :
-    ../docs/ (trois pages) et ./README.md n'appartiennent à aucune spec alors que quatorze
-    specs de ./src/ les nomment dans leurs `References:` ; aucune tâche ne peut les toucher
-    tant qu'ils ne sont pas attribués.
+  Tenir un artefact sans `Owns` pour un trou de gouvernance et non pour une zone libre : le
+    remède est l'attribution, jamais la tolérance. Les trois pages de ./docs/ et ./README.md
+    appartiennent à ./docs.sdd depuis son attribution (tâche close) ; un artefact qui
+    redeviendrait sans propriétaire est un trou à boucher avant toute tâche le visant.
   Reprendre, à la clôture de toute spec dont une tâche a changé un comportement, les sections
     descriptives de cette spec — `Exposes`, `Accepts`, `Handles`, `Raises` et leur prose
     d'énumération — et les mettre à l'état que le contrat changé produit. Un `Must` amendé d'une
@@ -147,7 +147,18 @@ Tasks:
     mesurées — dont l'anglais, seul état réel des pages (zéro mot français mesuré) : la règle
     bilingue y est tâche ouverte à traduire en `Must`, pas un contrat inventé. Les dix specs de
     ./src/ qui portaient ces tâches ne gardent que leur part de code et nomment leur jumelle.
-  [ ] Documenter le risque d'exécution de commandes de `shell` dans la description de la
+  [ ] Balayer les chemins `../docs/` restés dans les specs de ./src/ et de ./vyvil-core.sdd.
+    Mesure de référence (rejouable au grep `\.\./docs/`, répartition validée par le
+    `validator`) : trente-trois occurrences courantes — dix-neuf `References:`, quatre
+    commentaires vifs de `Tasks:`, deux corps `[ ]` dont cette tâche elle-même, deux prose
+    descriptive (le `Handles` de ./src/hashes.sdd et le `Scenario` de ./src/password.sdd) et
+    six corps `[x]` archives. Les pages vivent sous ./docs/ depuis l'attribution à ./docs.sdd
+    et la convention des specs est le chemin depuis la racine de la crate — reprendre d'une
+    passe les lignes ouvertes (`References:`, commentaires vifs, corps `[ ]`, prose
+    descriptive) en ./docs/, sans toucher aux corps `[x]`, cette tâche comprise une fois
+    close. La vérité du contenu nommé n'est pas en cause (les sections citées ont été
+    revérifiées contre la page réelle) ; seul le chemin pourrit.
+  [x] Documenter le risque d'exécution de commandes de `shell` dans le commentaire
     feature `shell` de ./Cargo.toml : aucune whitelist, aucun timeout, aucun bac à sable,
     l'opt-in cargo est le seul garde-fou (décision actée). Tâche jumelle de « Documenter le
     risque d'exécution de commandes » de ./src/shell.sdd, à cocher dans le même commit.

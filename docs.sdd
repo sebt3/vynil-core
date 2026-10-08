@@ -137,12 +137,12 @@ Tasks:
   [ ] ./docs/rhai_helpers.md, section Semver : les six opérateurs exigent deux `Semver`, pas de
     coercition mixte ni de `<=>` — envelopper chaque opérande dans `semver_from` ; décision actée
     (reçu de ./src/semver.sdd).
-  [ ] ./docs/rhai_helpers.md section 10 : le `128 + signal` que rend `shell_run` quand le
+  [x] ./docs/rhai_helpers.md section 10 : le `128 + signal` que rend `shell_run` quand le
     processus est tué par un signal (et `-1` hors unix). Le fait est contracté par
     ./src/shell.sdd (`Must` et `Handles`) ; il n'est pas encore verrouillé par un test, ./shell.rs
     n'ayant aucun `#[cfg(test)]` — le documenter sans le dire verrouillé serait le deuxième
     mensonge de la page (reçu de ./src/shell.sdd).
-  [ ] ./docs/rhai_helpers.md section 10 : le risque d'exécution de commandes que porte la feature
+  [x] ./docs/rhai_helpers.md section 10 : le risque d'exécution de commandes que porte la feature
     `shell` — aucune whitelist, aucun timeout, aucun bac à sable, l'opt-in cargo étant le seul
     garde-fou, décision actée. Jumelles du même fait, à cocher dans le même commit : la rustdoc de
     ./shell.rs (./src/shell.sdd), la table et la rustdoc de ./lib.rs avec l'assomption unix seul

@@ -200,8 +200,12 @@ disabled. Symbol set is shell/quoting-safe: `! # % * + - . : = ? @ _`.
 
 | Signature | Returns | Notes |
 |---|---|---|
-| `shell_run(command: string)` | `int` | Runs via `sh -c`; stdout/stderr are inherited (go straight to the process's own streams); returns the exit code |
-| `shell_output(command: string)` | `string` | Runs via `sh -c`, captures stdout; **errors** if the exit code is non-zero *or* if anything was written to stderr (even on exit 0) |
+| `shell_run(command: string)` | `int` | Runs via `sh -c`; stdout/stderr are inherited (go straight to the process's own streams); returns the exit code — `128 + signal` when killed by a signal on unix, `-1` when neither is available |
+| `shell_output(command: string)` | `string` | Runs via `sh -c`, captures stdout; **errors** if the exit code is non-zero *or* if anything was written to stderr (even on exit 0); the failure message carries that same verdict as `rc=<n>` |
+
+Command execution carries risk: there is no whitelist, no timeout and no sandbox — the
+cargo opt-in on the `shell` feature is the only guard. Unix-only by assumption: `sh` is
+hard-coded and there is no windows branch.
 
 ## 11. Feature `oci` (auto-wired)
 

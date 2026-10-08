@@ -297,7 +297,7 @@ Tasks:
     seul, et `argon_hash` n'existe pas côté Rhai. Reçu de ./src/engine.sdd, dont la tâche mêlée
     est dissoute : ./lib.rs est de cet `Owns` seul, et la phrase sur reqwest de
     ../docs/rhai_helpers.md section 12 est la tâche de ./docs.sdd.
-  [ ] Compléter ./lib.rs côté `shell` : nommer `shell_output` dans la table des features, la
+  [x] Compléter ./lib.rs côté `shell` : nommer `shell_output` dans la table des features, la
     face ShellOutput de `shell_run` n'y figurant pas, et y documenter l'assomption unix seul.
     Tâche jumelle de « Documenter le risque d'exécution de commandes » de ./src/shell.sdd et de
     la description de feature portée par ./vyvil-core.sdd, à cocher dans le même commit.

@@ -2,6 +2,10 @@
 //!
 //! `run` / `get_out` are the Rust APIs; `shell_run` / `shell_output` are the Rhai
 //! bindings gated behind the `shell` feature (plus `rhai` for the bindings).
+//!
+//! Command execution carries risk: there is no whitelist, no timeout and no sandbox —
+//! the cargo opt-in on the `shell` feature is the only guard. Commands are handed to a
+//! literal `sh -c`: the module is unix-only by assumption, with no windows branch.
 
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
