@@ -65,9 +65,22 @@ mod tests {
         assert_eq!(key.bits(), 2048);
     }
 
+    // ── Scenario « reconnaissance d'algorithme insensible à la casse » (Then sur `ED25519`) ──
+    // Refuse : un `ED25519` qui partirait sur la voie rsa, ou sur toute voie rendant un PEM
+    // relisable mais pas ed25519 — le « PEM ed25519 valide » est verrouillé par la relecture
+    // (en-tête + @openssl::pkey::PKey::private_key_from_pem + id()), voie déjà en place dans
+    // les verrous voisins du module. Les deux `And` (`Ed25519`, `Rsa` 2048) jouent dans
+    // `comparison_stays_case_insensitive`, déjà complet.
     #[test]
     fn algorithm_is_case_insensitive() {
-        gen_private_key("ED25519", 0).unwrap();
+        let pem = gen_private_key("ED25519", 0).unwrap();
+        assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        let key = PKey::private_key_from_pem(pem.as_bytes()).unwrap();
+        assert_eq!(
+            key.id(),
+            Id::ED25519,
+            "un `ED25519` majuscule doit rendre ed25519"
+        );
     }
 
     #[test]
@@ -75,11 +88,19 @@ mod tests {
         assert!(gen_private_key("dsa", 0).is_err());
     }
 
+    // ── Scenario « deux générations consécutives diffèrent » ──
+    // Refuse : une génération figée (deux PEM égaux) et, par l'`And`, une voie ed25519 qui
+    // rendrait des PEM distincts mais non relisibles ou d'un autre algorithme — chacun se
+    // relit en clé ed25519, même voie de relecture que les verrous voisins.
     #[test]
     fn two_generations_differ() {
         let a = gen_private_key("ed25519", 0).unwrap();
         let b = gen_private_key("ed25519", 0).unwrap();
         assert_ne!(a, b);
+        for pem in [&a, &b] {
+            let key = PKey::private_key_from_pem(pem.as_bytes()).unwrap();
+            assert_eq!(key.id(), Id::ED25519, "chaque PEM rendu se relit en clé ed25519");
+        }
     }
 
     #[test]
@@ -230,8 +251,8 @@ mod tests {
         }
 
         // ── Scenario « la surcharge unaire de script applique 4096 sur rsa » ──
-        // Seule génération 4096 de toute la suite (coût mesuré ~1,3 s par clef, openssl
-        // CLI). Refuse : unaire branchée autre part que DEFAULT_RSA_BITS (bits() lu dans
+        // Seule génération 4096 de toute la suite, donc sa plus coûteuse. Refuse : unaire
+        // branchée autre part que DEFAULT_RSA_BITS (bits() lu dans
         // le PEM décodé — voie indépendante — cesserait de valoir 4096) et une constante
         // dérivée de la valeur testée (4096 est posé littéral, DEFAULT_RSA_BITS vérifié
         // égal en plus, non l'inverse).
