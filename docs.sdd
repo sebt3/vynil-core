@@ -105,7 +105,7 @@ Tasks:
     est optionnel ; et ./docs/mocking.md : documenter les trois trous du mock `http`
     (`new_client`, `http_get_yaml`, `http_head`), décision actée — le mock ne change pas (reçu de
     ./src/http.sdd).
-  [ ] ./docs/rhai_helpers.md : `new_global` = tous les espaces de noms, `k8s_resource` sans `/`
+  [x] ./docs/rhai_helpers.md : `new_global` = tous les espaces de noms, `k8s_resource` sans `/`
     sans vérification de version, `get_cluster_version`, `get_kind`/`original_kind`, `get_url` en
     JSON seul, les waits ; et ./docs/mocking.md : le tableau des différences connues du mock k8s,
     dont `patch` qui n'écrit pas dans `created` — décisions actées (reçu de ./src/k8s.sdd).

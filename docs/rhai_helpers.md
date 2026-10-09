@@ -339,10 +339,10 @@ group/version/kind and scope.
 
 | Signature | Returns | Notes |
 |---|---|---|
-| `k8s_resource(name: string)` | `K8sGeneric` | Cluster-scoped (or the resource's actual scope if it's not cluster-scoped and no namespace is given) |
+| `k8s_resource(name: string)` | `K8sGeneric` | No namespace restriction: cluster-scoped kinds query cluster-wide, and namespaced kinds query **all namespaces** (`Api::all_with`, like `kubectl -A`) |
 | `k8s_resource(name: string, ns: string)` | `K8sGeneric` | Namespaced |
-| `k8s_resource(api_version: string, name: string, ns: string)` | `K8sGeneric` | Disambiguates by explicit `group/version`, for resources whose kind/plural exists in multiple API groups |
-| `<K8sGeneric>.scope` (get) | `string` | `"cluster"` or `"namespace"` |
+| `k8s_resource(api_version: string, name: string, ns: string)` | `K8sGeneric` | With a `/` in `api_version` (e.g. `"acme.io/v1"`), resolves by **exact** group and version — for resources whose kind/plural exists in multiple API groups. Without a `/` (e.g. `"v1"`), the version is silently ignored and resolution falls back to the plain `k8s_resource(name, ns)` path: `k8s_resource("v9", "mod", "ns")` succeeds as long as `mod` resolves at *any* version — the version is never checked |
+| `<K8sGeneric>.scope` (get) | `string` | `"cluster"` or `"namespace"` — the *resource's* discovery scope, not the query's: a `k8s_resource(name)` handle on a namespaced kind reports `"namespace"` while its queries span every namespace |
 | `<K8sGeneric>.exist` (get) | `bool` | Whether discovery actually found the resource |
 | `<K8sGeneric>.list()` | dynamic | Full object list |
 | `<K8sGeneric>.list(labels: string)` | dynamic | Label-selector-filtered list |
@@ -361,8 +361,8 @@ group/version/kind and scope.
 
 | Signature | Returns | Notes |
 |---|---|---|
-| `<K8sObject>.kind` (get) | `string` | Kind as reported by the API server for this object |
-| `<K8sObject>.original_kind` (get) | `string` | Kind the `K8sGeneric` was originally resolved for |
+| `<K8sObject>.kind` (get) | `string` | Kind read from the object's own runtime type fields as fetched; an empty string when those fields are absent |
+| `<K8sObject>.original_kind` (get) | `string` | Kind the `K8sGeneric` was resolved to when this handle was built — reliable where `.kind` can come back empty; prefer this one (decision on record) |
 | `<K8sObject>.metadata` (get) | dynamic | |
 | `<K8sObject>.delete()` | `()` | Foreground deletion |
 | `<K8sObject>.wait_deleted(timeout: int)` | `()` | Waits (seconds) until the object's UID is gone |
@@ -370,7 +370,20 @@ group/version/kind and scope.
 | `<K8sObject>.wait_status(prop: string, timeout: int)` | `()` | Waits until `status.<prop>` is boolean `true` |
 | `<K8sObject>.wait_status_prop(prop: string, timeout: int)` | `()` | Waits until `status.<prop>` merely exists (non-null) |
 | `<K8sObject>.wait_status_string(prop: string, value: string, timeout: int)` | `()` | Waits until `status.<prop> == value` |
-| `<K8sObject>.wait_for(predicate: Fn, timeout: int)` | `()` | Re-evaluates `predicate` on every watch event until it returns `true` or `timeout` seconds pass. `predicate` gets the object as a map (`o.metadata` / `o.spec` / `o.status` / …, same shape as `<K8sGeneric>.get`) so it can test arbitrarily nested fields — e.g. `\|o\| o.status.ceph.versions.overall.len() == 1 && o.status.ceph.health != "HEALTH_ERR"`. An error raised inside `predicate` aborts the wait with that error |
+| `<K8sObject>.wait_for(predicate: Fn, timeout: int)` | `()` | Re-evaluates `predicate` on every watch event until it returns `true` or `timeout` seconds pass. `predicate` gets the object as a map (`o.metadata` / `o.spec` / `o.status` / …, same shape as `<K8sGeneric>.get`) so it can test arbitrarily nested fields — e.g. `\|o\| o.status.ceph.versions.overall.len() == 1 && o.status.ceph.health != "HEALTH_ERR"`. If `predicate` raises, the watch runs to its natural end but the first predicate error then wins — it fails the wait whether the condition later held, timed out, or the watch broke |
+
+All `wait_*` methods take `timeout` in **seconds**; a negative value is clamped to `0` and the
+timeout fires immediately (never an argument error). Each wait opens a `kube` watch on the object,
+re-checks its condition on every watch event, and returns `()` once the condition holds; a global
+timeout or a broken watch surfaces as a Rhai error, and neither is retried today. `wait_deleted`
+waits until the object's `uid` is observed as deleted; on a handle with no `uid` it fails
+immediately, before any timeout, with `cannot wait for deletion of <name>: uid is missing`.
+
+Retrying transient watch failures (HTTP 429/5xx, timeouts, connection drops, expired `410 Gone`)
+with exponential backoff, failing fast on definitive ones (401/403/404, invalid request) and on an
+object deleted mid-wait (`object <name> was deleted while waiting`), and making `wait_for`
+predicate errors non-fatal (the wait continues and a later satisfying event wins; only the last
+predicate error is reported, and only at timeout) are decided and pending implementation.
 
 `wait_for` under the mock (tests / `agent package test`) does not poll: it evaluates `predicate` once against the seeded object and errors if it returns `false` — seed the object in its converged state, or assert the failure explicitly.
 
@@ -379,9 +392,9 @@ group/version/kind and scope.
 | Signature | Returns | Notes |
 |---|---|---|
 | `new_k8s_raw()` | `K8sRaw` | |
-| `<K8sRaw>.get_url(url: string)` | dynamic | Raw authenticated GET against the API server, relative to its base URL |
-| `<K8sRaw>.get_cluster_version()` | dynamic | `GET /version` |
-| `<K8sRaw>.get_api_resources()` | dynamic | `GET /apis`, requesting the `APIGroupDiscoveryList` format |
+| `<K8sRaw>.get_url(url: string)` | dynamic | Raw authenticated GET — relative URLs are resolved against the API server's base URL, absolute ones pass verbatim. Returns the **JSON body alone** (a map/value), with no `{code, headers, body, json}` wrapper like `RestClient`'s: this is the JSON accessor into the Kubernetes API, not a generic HTTP client (decision on record). A non-2xx answer is an error whose message already carries the `Status` message, reason and code (e.g. `ApiError: … (404)`); a non-JSON body fails as an error rather than surfacing as a string |
+| `<K8sRaw>.get_cluster_version()` | dynamic | Returns the JSON body of the server's `/version` endpoint (cluster version info). This is the script name for the Rust method `get_api_version` — no `get_api_version` name is registered in script, and there is no alias (intentional mapping, decision on record) |
+| `<K8sRaw>.get_api_resources()` | dynamic | `GET /apis` raw, requesting the `APIGroupDiscoveryList` format — the discovery cache is not consulted and nothing is filtered or flattened |
 
 ### Workload helpers — `K8sDeploy` / `K8sDaemonSet` / `K8sStatefulSet` / `K8sJob`
 

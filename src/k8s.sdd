@@ -53,14 +53,14 @@ References:
     feature `k8s` (à vérifier à la compilation, `s3` le garde) ; @tokio est déclaré avec la
     feature `time` explicite, `tokio::time::timeout` étant utilisé directement au lieu de
     dépendre de l'unification de features de @kube (décision actée). Aucun @cfg interne : les deux fichiers s'éteignent/allument en bloc.
-  ./docs/rhai_helpers.md — section k8s : la doc ment sur `new_global` (« the resource's
-    actual scope » — le code rend all-namespaces pour les ressources namespaced, voir `Must`) ;
-    `get_deamonset` (typo) y est documentée telle quelle : le doc assume, le contrat freeze ; le
-    nom script `get_cluster_version` (méthode Rust `get_api_version`) y est à documenter.
-  ./docs/mocking.md — section k8s_mock : table fidèle sur les noms ; silencieuse sur les
-    différences sémantiques (kind exact/sensible à la casse du mock, snapshot du `list`,
-    `get_meta` objet complet, `created` vs `mocks`, ns rempli par `apply` seul) — à documenter
-    sous forme de tableau « différences connues » (`Tasks`).
+  ./docs/rhai_helpers.md — section k8s : la page rend l'état du contrat — `new_global` dit
+    all-namespaces et la distinction scope-de-ressource / scope-de-query est tracée, la typo
+    `get_deamonset` est assumée telle quelle (le doc assume, le contrat freeze), le nom script
+    `get_cluster_version` (méthode Rust `get_api_version`) et l'absence d'alias sont nommés.
+  ./docs/mocking.md — section k8s_mock : le tableau « différences connues » est en place
+    (kind exact/sensible à la casse, snapshot du `list` aux deux arités sous `list`, `get_meta`
+    objet complet, `created` vs `mocks`, ns rempli par `apply` seul et quand absent, workloads
+    en échec à la construction) — table fidèle sur les noms, sémantique rendue au `Must`.
   ./tooling.sdd — harnais : ./k8s.rs compte 18 @allow (16 `needless_pass_by_value` + 2
     `expect_used` commentés « panic by design ») et 14 @core::marker::must_use ;
     ./k8s_mock.rs 7 @allow + 10 @core::marker::must_use ; deux `#[macro_export]` pub sur

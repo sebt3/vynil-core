@@ -119,22 +119,31 @@ with no cluster, no `set_client_name` call, nothing.
 `mocks` is a flat list of full object maps, each expected to carry `kind`, `metadata.name`, and
 (for namespaced kinds) `metadata.namespace` — the same shape a real `kubectl get -o json` object
 would have. `K8sGeneric`/`K8sObject`/workload lookups filter this list by kind + name(+
-namespace).
+namespace). The kind match is an **exact, case-sensitive** string comparison against the name
+passed to `k8s_resource(...)` — where the real client resolves kind *or* plural, case-insensitively
+(in the mock, a fixture with `kind: "pods"` is not found by `k8s_resource("Pod", ...)`).
 
-### Behavior notes
+### Behavior notes — known differences from the real client
+
+The surface (type and function names) is complete; the differences below are semantic, and they
+are all accepted — the mock will not change (decision on record).
 
 | Operation | Mock behavior |
 |---|---|
-| `k8s_resource(...)`, `get_deployment`/`get_deamonset`/`get_statefulset`/`get_job` | Constructs the mock handle immediately (no discovery round-trip); doesn't fail if nothing matches yet — failure happens on the subsequent `get`/lookup |
-| `.get(name)` / `.get_meta(name)` / `.list()` / `.list_labels(...)` / `.list_meta()` | Searches `mocks` by kind (+ name/namespace where relevant) |
-| `.create(data)` / `.replace(name, data)` / `.patch(name, data)` / `.apply(name, data)` | Deep-merges `data` onto any existing matching entry (by kind + name + namespace) and appends the merged result to `created` — inspect `created` after running a script to assert what would have been sent to the cluster |
-| `.delete(name)`, `.wait_deleted(...)` | No-ops that always succeed |
+| `k8s_resource(...)`, `get_deployment`/`get_deamonset`/`get_statefulset`/`get_job` | Constructs the mock handle immediately (no discovery round-trip); a `k8s_resource` handle snapshots the fixtures whose `kind` equals the requested name into the handle at that point and doesn't fail if nothing matches yet — that failure happens on the subsequent `get`/lookup; `k8s_resource(api_version, name, ns)` ignores group and version entirely (mocks are keyed by kind only). The four workload constructors are the exception: they search the fixture store **at construction** and fail immediately when none matches (see the `K8sDeploy`/… row below) |
+| `.list()` / `.list(labels)` / `.list_meta()` | Return the **snapshot taken at handle construction**, shaped `{"items": [...]}` (no list metadata; the labels selector is ignored). Objects written after the handle was built never appear here — only `get`/`get_obj` fall back to the live store |
+| `.get(name)` / `.get_meta(name)` / `.get_obj(name)` | Look up `name` in the snapshot first, then fall back to the live `mocks` store (matching kind + name + the handle's namespace); no match → the Rhai error `Failed to find <kind> <name> in the Mock database`. `get_meta` returns the **full object**, where the real client returns metadata only |
+| `.create(data)` / `.replace(name, data)` / `.apply(name, data)` | Backfill `kind` from the handle; `apply` alone also fills `metadata.namespace` from the handle's ns **when absent** (and only when the body already carries `metadata` as a map — `create`/`replace` never touch the namespace). Deep-merge `data` onto any matching existing entry (kind + name + namespace) and record that **merged view** in `created` (an upsert: a second write for the same kind/name/ns merges into the existing `created` entry rather than appending), then upsert the written object into `mocks`. Inspect `created` after running a script to assert what would have been sent to the cluster |
+| `.patch(name, data)` | Deep-merges `data` into the matching `mocks` entry (or inserts it) and **never records anything in `created`** — the one write that leaves no trace in the write-log, unlike create/replace/apply |
+| `.delete(name)`, `.wait_deleted(...)` | No-ops that always succeed (the object stays in `mocks`) |
 | `<K8sObject>.wait_condition`/`wait_status`/`wait_status_prop`/`wait_status_string` | Always immediately satisfied |
 | `<K8sObject>.wait_for(predicate, timeout)` | Evaluates `predicate` **once** against the seeded object (no polling, `timeout` ignored): `Ok` if it returns `true`, error otherwise. Seed the object converged, or assert the error |
+| `<K8sObject>.kind` / `.original_kind` | Both return the kind of the `k8s_resource(...)` handle the object came from |
 | `<K8sGeneric>.exist` | Always `true` |
+| `<K8sGeneric>.scope` | Always `"namespace"`, whatever the kind's real discovery scope |
 | `update_k8s_crd_cache()` | Overridden to a no-op — the real macro-registered version would try to reach a live cluster to refresh discovery, which would panic without a wired client |
 | `<K8sRaw>.get_url`/`get_cluster_version`/`get_api_resources` | Always return `{}` |
-| `K8sDeploy`/`K8sDaemonSet`/`K8sStatefulSet`/`K8sJob` | All backed by one shared `K8sWorkloadMock` struct; `.metadata`/`.spec`/`.status` read the matching sub-key straight out of the fixture object (`Dynamic::UNIT` if absent); `wait_available`/`wait_done` are no-ops |
+| `K8sDeploy`/`K8sDaemonSet`/`K8sStatefulSet`/`K8sJob` | All backed by one shared `K8sWorkloadMock` struct; construction matches a fixture on kind + name **and** namespace exactly (no fixture → `Failed to find <kind> <name> in namespace <ns> in the Mock database`); `.metadata`/`.spec`/`.status` read the matching sub-key straight out of the fixture object (`Dynamic::UNIT` if absent); `wait_available`/`wait_done` are no-ops |
 
 ---
 
