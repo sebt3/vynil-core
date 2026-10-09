@@ -74,14 +74,22 @@ No match → a Rhai error: `"Failed to find <METHOD> <path> in the Mock database
 
 ### Gap vs. the real `RestClient`
 
-- No `http_get_yaml` standalone function. Unlike the methods above, the real `http_get_yaml` isn't
+The mock registers 26 of the real client's 29 names. The three missing ones are an accepted
+decision — the mock will not change:
+
+- `new_client` — the real client registers its constructor under two names, `new_http_client` and
+  `new_client`; the mock registers only `new_http_client`, so `new_client(...)` is an
+  unknown-function error on the mock engine.
+- `http_head` — the real `.head` is also registered under the `http_head` alias; the mock
+  registers only `.head`.
+- `http_get_yaml` — not registered at all. Unlike the methods above, the real `http_get_yaml` isn't
   a `RestClient` method — it takes a full URL and fetches it with its own throwaway client,
-  independent of any `RestClient`/fixture list. Mocking it meaningfully would need a fixture set
-  keyed by URL rather than by `(method, path)` on a client instance, which is a small design
-  decision rather than a mechanical addition — not done yet.
-- `return_obj` is exactly the map you configured — the real client's `{code, headers, body,
-  json}` shape is a convention you must reproduce yourself in the fixture if your script expects
-  it (e.g. set `return_obj = #{code: 200, json: #{...}}`).
+  independent of any `RestClient`/fixture list. Consumers redefine it in script for mock runs
+  (as vynil does); this crate does not mock it.
+
+Also by design: `return_obj` is exactly the map you configured — the real client's `{code, headers,
+body, json}` shape is a convention you must reproduce yourself in the fixture if your script expects
+it (e.g. set `return_obj = #{code: 200, json: #{...}}`).
 
 ---
 

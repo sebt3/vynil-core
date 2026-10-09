@@ -278,13 +278,13 @@ A JMESPath non-match is not an error, but the two query helpers render it asymme
 | Helper | Signature | Returns |
 |---|---|---|
 | `concat` | `(a, b)` | String concatenation |
-| `to_decimal` | `(octal: string)` | The string parsed as base-8, as a decimal string (`0` and a warning if invalid) |
+| `to_decimal` | `(octal: string)` | The string parsed as base-8, as a decimal string. A non-octal string and a non-string argument alike render `0` after a `tracing::warn!` — `0`, not the `""` the other helpers here fall back to — and neither path ever raises a `RenderError` |
 | `base64_encode` | `(s)` | |
 | `base64_decode` | `(s)` | `""` and a warning on invalid input, rather than erroring the render |
 | `url_encode` | `(s)` | Percent-encoding |
 | `header_basic` | `(username, password)` | `"Basic <base64(user:pass)>"` — a ready-to-use `Authorization` header value |
 | `argon_hash` | `(password)` | Argon2 hash (fresh random salt each call) — needs `crypto` |
-| `bcrypt_hash` | `(password)` | bcrypt hash, `DEFAULT_COST` — needs `crypto` |
+| `bcrypt_hash` | `(password)` | bcrypt hash, `DEFAULT_COST` — needs `crypto`. Passwords of `72` bytes or more are refused by the hashing backend (the accepted ceiling is `71` bytes: `71` passes, `72` is the first refusal); here the error is swallowed after a `tracing::warn!` and renders as `""` rather than failing the render |
 | `crc32_hash` | `(text)` | CRC-32, as a number |
 | `gen_private_key` | `(algo, {bits=4096})` | PKCS8 PEM. `algo`: `"rsa"` or `"ed25519"` (bits ignored for ed25519) — needs `crypto` |
 

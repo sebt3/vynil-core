@@ -49,12 +49,15 @@ section further down in this document.
 ### Why this tier is opt-in
 
 Beyond just avoiding unwanted network/cluster access by default, leaving `http`/`k8s`/`s3` out of
-`new_bare` is what makes them mockable at the call site instead of at the crate level. Each of
-these three modules has a matching mock module (`http_mock`, `k8s_mock`, `oci_mock` — see
-[mocking.md](mocking.md)) that registers the **exact same Rhai type and function names**
-(`RestClient`, `K8sGeneric`, …) against in-memory fixtures instead of a live endpoint. Because
-registration is an explicit call rather than something baked into `Script::new_bare`, a consumer
-can build two engines from the very same `.rhai` script source — one wired to the real
+`new_bare` is what makes them mockable at the call site instead of at the crate level. Mock
+modules ship for `http`, `k8s` and `oci` (`http_mock`, `k8s_mock`, `oci_mock` — see
+[mocking.md](mocking.md)); `s3` is deliberately the one network-facing module without a Rhai mock,
+tested through `object_store`'s in-memory store instead. Each mock registers (mostly) the same
+Rhai type and function names (`RestClient`, `K8sGeneric`, …) against fixture data or fixed canned
+values instead of a live endpoint, and none of them is wired in by `Script::new_bare` — even
+`oci`, whose *real* registration is auto-wired when its feature is on, keeps its mock manual.
+Because registration is an explicit call rather than something baked into `Script::new_bare`, a
+consumer can build two engines from the very same `.rhai` script source — one wired to the real
 `*_rhai_register` for production, one wired to the matching `*_mock_rhai_register` for a unit
 test — and run that script against both without touching a real cluster, registry, or HTTP
 endpoint in the test. If registration were automatic, that swap wouldn't be possible without
@@ -122,7 +125,7 @@ Also always present — these are Rhai source injected via `add_code`, not nativ
 | Signature | Returns | Notes |
 |---|---|---|
 | `crc32_hash(text: string)` | `int` | CRC-32 |
-| `bcrypt_hash(text: string)` | `string` | bcrypt, `DEFAULT_COST` — needs `crypto` |
+| `bcrypt_hash(text: string)` | `string` | bcrypt, `DEFAULT_COST` — needs `crypto`. Inputs of `72` bytes or more are rejected with a Rhai error rather than silently truncated: the accepted ceiling is `71` bytes (`71` passes, `72` is the first refusal) |
 | `new_argon()` | `Argon` | Generates a fresh random salt for this instance — needs `crypto` |
 | `<Argon>.hash(password: string)` | `string` | Argon2 PHC string (salt + hash), using the salt captured at `new_argon()` time — needs `crypto` |
 
@@ -229,8 +232,9 @@ Standalone:
 
 ## 12. HTTP client — `http::http_rhai_register` (call manually)
 
-No Cargo feature gates this (`reqwest` is a base dependency), but it is **not** called by
-`Script::new_bare` — register it yourself:
+Gated by the `http` Cargo feature (on by default; it implies `rhai`, and `reqwest` is an
+optional dependency of this crate), but it is **not** called by `Script::new_bare` — register
+it yourself:
 
 ```rust
 vynil_core::http::http_rhai_register(&mut script.engine);
