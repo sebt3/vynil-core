@@ -143,9 +143,9 @@ Needs `crypto` (default on, like `rhai`) in addition to `rhai` — the whole mod
 | `<Semver>.inc_major()` | `()` | Bumps major, resets minor/patch, clears prerelease and build metadata |
 | `<Semver>.inc_minor()` | `()` | Bumps minor, resets patch, clears prerelease and build metadata |
 | `<Semver>.inc_patch()` | `()` | Bumps patch and clears build metadata — unless already on a prerelease, in which case it clears the prerelease tag and build metadata without bumping patch |
-| `<Semver>.inc_beta()` | `()` | From stable: bumps patch and sets `beta.1`. From an existing `beta.N`: increments `N` (patch unchanged). Clears build metadata on success |
-| `<Semver>.inc_alpha()` | `()` | Same as `inc_beta` (build metadata cleared on success too), for the `alpha.N` prerelease |
-| `a == b`, `a != b`, `a < b`, `a > b`, `a <= b`, `a >= b` | `bool` | Standard semver ordering (prerelease < stable) |
+| `<Semver>.inc_beta()` | `()` | From stable: bumps patch and sets `beta.1`. From `beta.N`: increments `N` (patch unchanged). Any other prerelease — a bare `beta`, a foreign label, or `alpha.N` — counts as non-beta: patch bumped, counter reset to `1`. Clears build metadata on success |
+| `<Semver>.inc_alpha()` | `()` | Same as `inc_beta`, mirrored for `alpha.N`: the counter advances; a bare `alpha`, a foreign label, or `beta.N` count as non-alpha — patch bumped, `alpha.1` set. Build metadata cleared on success |
+| `a == b`, `a != b`, `a < b`, `a > b`, `a <= b`, `a >= b` | `bool` | Standard semver ordering (prerelease < stable). All six take two `Semver` operands — no mixed coercion (`"1.2.3" < semver_from("4.5.6")` fails as an unknown function) and no `<=>`; wrap each operand in `semver_from` |
 | `to_string(sv)` | `string` | |
 
 ## 6. `yaml`
@@ -190,7 +190,7 @@ one exposed through a public API) don't get a name collision. Auto-wired when en
 | Signature | Returns | Notes |
 |---|---|---|
 | `gen_password(len: int)` | `string` | At least 1 lowercase, 1 uppercase, 1 digit, 1 symbol |
-| `gen_password(len: int, spec: map)` | `string` | `spec` keys `lower`/`upper`/`digits`/`symbols` set the **minimum** count per class (default `1` for any key omitted or negative) |
+| `gen_password(len: int, spec: map)` | `string` | `spec` keys `lower`/`upper`/`digits`/`symbols` set the **minimum** count per class (default `1` for an omitted key; a negative value counts as `0` — that class is excluded) |
 | `gen_password_alphanum(len: int)` | `string` | Same as `gen_password(len)` but 0 symbols |
 
 Errors (Rhai exception) if the sum of class minimums exceeds `len`, or if every class is

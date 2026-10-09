@@ -114,9 +114,9 @@ Tasks:
     (`pull_image`, `list_tags` async, `verify_tag_in_registry`, `resolve_registry_auth`), assumées
     comme API durable, décision actée (reçu de ./src/oci.sdd, dont la tâche garde la part de code
     : renommer le type Rhai du mock en `Registry` et lui ajouter `get_auth_from_file`).
-  [ ] ./docs/rhai_helpers.md section 9 : un minimum négatif vaut `0` (classe exclue) et non `1`,
+  [x] ./docs/rhai_helpers.md section 9 : un minimum négatif vaut `0` (classe exclue) et non `1`,
     décision actée — le code fait foi (reçu de ./src/password.sdd).
-  [ ] ./README.md ligne 38 : `rand` est une dépendance non optionnelle, pas une dépendance de la
+  [x] ./README.md ligne 38 : `rand` est une dépendance non optionnelle, pas une dépendance de la
     feature `password` (reçu de ./src/password.sdd).
   [ ] ./docs/rhai_helpers.md lignes 51-54 : le tier non auto-enregistré est `http`/`k8s`/`oci`/
     `s3`, avec des mocks pour `http`, `k8s` et `oci` seulement — `s3` n'a pas de mock et se teste
@@ -130,11 +130,11 @@ Tasks:
   [x] ./docs/rhai_helpers.md, section Semver : documenter que les mutateurs remettent à zéro
     `minor`/`patch`, vident le pre-release et effacent `build` — tâche jumelle d'« Effacer `build`
     aux cinq mutateurs » de ./src/semver.sdd, à cocher avec elle (reçu de ./src/semver.sdd).
-  [ ] ./docs/rhai_helpers.md, section Semver : les transitions de labels telles qu'elles sont —
+  [x] ./docs/rhai_helpers.md, section Semver : les transitions de labels telles qu'elles sont —
     `beta` nu et tout label étranger comptent comme non-beta (patch poussé, compteur remis à `1`),
     traversée croisée alpha/beta identique ; décision actée, le comportement est cohérent et le
     code ne change pas (reçu de ./src/semver.sdd).
-  [ ] ./docs/rhai_helpers.md, section Semver : les six opérateurs exigent deux `Semver`, pas de
+  [x] ./docs/rhai_helpers.md, section Semver : les six opérateurs exigent deux `Semver`, pas de
     coercition mixte ni de `<=>` — envelopper chaque opérande dans `semver_from` ; décision actée
     (reçu de ./src/semver.sdd).
   [x] ./docs/rhai_helpers.md section 10 : le `128 + signal` que rend `shell_run` quand le

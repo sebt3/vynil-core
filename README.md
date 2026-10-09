@@ -35,7 +35,7 @@ releases. Each is independently optional for a consumer that only needs one — 
 | `s3` | off | `S3` client. Implies `rhai`, same reasoning as `k8s` | `object_store`, `futures`, `tokio`, `rhai` |
 | `fs` | off | Filesystem access from Rhai scripts | — |
 | `shell` | off | Shell command execution | — |
-| `password` | off | `gen_password`/`gen_password_alphanum` (off by default to avoid a name collision with a consumer's own password semantics) | `rand` |
+| `password` | off | `gen_password`/`gen_password_alphanum` (off by default to avoid a name collision with a consumer's own password semantics) | — |
 
 ```toml
 # default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases
