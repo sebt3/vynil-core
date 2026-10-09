@@ -81,6 +81,12 @@ Handles:
     module n'en ajoute aucune.
 
 Tasks:
+  [x] Retirer le `#[allow(dead_code)]` de ./rt.rs : sa justification (« tant qu'aucun
+    appelant de `block_on` n'existe », clause des quatre tâches de migration) est épuisée :
+    `http`/`oci`/`k8s` appellent `block_on` depuis leur migration (`a2ffac6`), `s3` avec la
+    tâche jumelle de ./s3.sdd — les quatre graphes que compilent le gate `any(...)` ont des
+    appelants. Prouvé par les deux `cargo hack --each-feature` rejoués, 14/14.
+    Jumelle de la tâche de découpage de ./s3.sdd, cochée dans le même commit qu'elle.
   [x] Créer ./rt.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs (module PRIVÉ,
     sous `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]`,
     sans `pub`) : tests d'abord. Cette tâche ne MIGRE AUCUN APPELANT : le remplacement des

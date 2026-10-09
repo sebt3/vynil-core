@@ -195,7 +195,19 @@ Tasks:
     traversent pas les fonctions publiques ; les remplacer par des tests des fonctions
     internes `get_yaml_from_store` / `list_keys_from_store` (seam décidé), plus les Scenario
     sans réseau (erreurs de build, credentials incomplets, facettes Rhai).
-  [ ] Découper le corps en fonctions internes prenant un @object_store::ObjectStore, joindre
+  # Question (round découpage 2026-10-09, CONFIRMÉE par le validator — à trancher) : la
+  # « sonde mesurée sur object_store 0.11.2 » affirme « bucket vide → build Err
+  # (MissingBucketName) » ; la mesure du validator (bin hors arbre, lock 0.11.2, hors
+  # réseau) rend Ok dans les quatre formes testées, reproduisant au caractère le
+  # bucket_endpoint "https://s3..amazonaws.com/" — la failure du bucket vide appartient à
+  # la requête (URL malformée). La fausse sonde est répétée à TROIS endroits : la phrase
+  # du `Must`, le parenthétique du `Raises` (« bucket vide notamment, MissingBucketName
+  # mesuré ») et le Scenario « bucket vide fait parler le build », écrit sur ce pied-là.
+  # Options : (a) reprendre les trois endroits à la mesure (le contrat sur les gardes ne
+  # bouge pas — il s'exerce à la requête, comme le dit déjà la fin de la clause) ;
+  # (b) garde explicite bucket vide en Error::Other (changement de comportement).
+  # Le Scenario est en attente, non verrouillé en test.
+  [x] Découper le corps en fonctions internes prenant un @object_store::ObjectStore, joindre
     `prefix`/`key` par `/` normalisé, trier `s3_list_keys`, refuser les credentials
     incomplets, passer par `crate::rt::block_on` (décisions actées).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est

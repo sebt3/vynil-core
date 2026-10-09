@@ -32,7 +32,6 @@ use crate::{Error, Result};
 /// temporary runtime cannot be built (e.g. descriptor exhaustion), [`Error::Stdio`]
 /// is returned. A panic raised by `fut` itself propagates untouched — it belongs to
 /// the caller; this module never adds one.
-#[allow(dead_code)] // rt.sdd : appelants (http/oci/s3/k8s) migrent vers cette fonction dans leurs tâches propres
 pub(crate) fn block_on<F: Future>(fut: F) -> Result<F::Output> {
     if let Ok(handle) = Handle::try_current() {
         return match handle.runtime_flavor() {
