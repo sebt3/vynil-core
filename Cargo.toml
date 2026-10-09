@@ -102,7 +102,7 @@ rhai = { version = "1.20.0", features = ["sync", "serde", "internals"], optional
 # unrelated crate elsewhere in the graph happens to enable it too -- which is exactly what broke
 # after a plain `cargo update` reshuffled the dependency graph.
 smartstring = { version = "1.0.1", features = ["serde"], optional = true }
-handlebars = { version = "6.2.0", features = ["string_helpers"], optional = true }
+handlebars = { version = "6.4", features = ["string_helpers"], optional = true }
 handlebars_misc_helpers = { version = "0.17.0", default-features = false, features = ["string", "jsonnet", "regex", "uuid"], optional = true }
 # Direct dep (not via handlebars_misc_helpers's "json" feature, still pinned to jmespath 0.3.0
 # whose Function trait lacks a Send bound — see src/hbs_json.rs).

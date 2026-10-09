@@ -104,7 +104,9 @@ pub const CORE_HBS_HELPERS: &[&str] = &[
 
 /// Handlebars helpers defined with `handlebars_helper!`, kept in a private module because
 /// the macro emits its `pub struct`s without a doc hook (`missing_docs` cannot be silenced at
-/// the call site). Re-exported below so they stay reachable as `crate::hbs::<name>`.
+/// the call site). Re-exported `pub(crate)` only, for [`HandleBars::new`] and the engine
+/// registrations: the structs stay out of the public API (`hbs.sdd` decision — no consumer
+/// uses them; [`CORE_HBS_HELPERS`] is the only publication of their names).
 #[allow(missing_docs)] // structs generées par `handlebars_helper!` (vyvil-core.sdd)
 mod core_helpers {
     use super::*;
@@ -184,7 +186,18 @@ mod core_helpers {
         ""
     })));
 }
-pub use core_helpers::*;
+pub(crate) use core_helpers::*;
+
+// Assertion de compilation Send/Sync de `HandleBars` (`hbs.sdd`, Must « @crate::hbs::HandleBars
+// est @core::marker::Send et @core::marker::Sync, affirmé par une assertion de compilation
+// dans les tests ») — aucune fonction `#[test]` ne s'exécute : c'est la compilation du target
+// de test qui verrouille, par la borne `T: Send + Sync` instanciée sur `HandleBars<'static>`,
+// le type que `new()` rend aux consommateurs qui tournent sous tokio (décision actée).
+#[cfg(test)]
+const _: () = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    let _ = assert_send_sync::<crate::hbs::HandleBars<'static>>;
+};
 /// Handlebars wrapper with generic helpers pre-registered.
 ///
 /// See [`CORE_HBS_HELPERS`] for the included helper names.
@@ -246,12 +259,13 @@ impl<'a> HandleBars<'a> {
     #[cfg(feature = "rhai")]
     pub fn rhai_register_template(&mut self, name: String, template: String) -> RhaiRes<()> {
         self.register_template(name.as_str(), template.as_str())
-            .map_err(|e| format!("{e}").into())
+            .map_err(rhai_err)
     }
 
     /// Register every `*.rhai` file in `directory` as a Handlebars script helper
-    /// (requires `hbs-scripting` feature); a non-directory is a silent no-op, entries whose
-    /// file name is not UTF-8 are skipped.
+    /// (requires `hbs-scripting` feature); a non-directory is a silent no-op, entries that
+    /// are not files, whose file name is not UTF-8, or whose name is empty once the `.rhai`
+    /// suffix is removed are skipped.
     ///
     /// # Errors
     ///
@@ -266,10 +280,14 @@ impl<'a> HandleBars<'a> {
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
                     .and_then(|n| n.strip_suffix(".rhai"))
+                    .filter(|n| !n.is_empty())
                     .map(str::to_string)
                 else {
                     continue;
                 };
+                if !path.is_file() {
+                    continue;
+                }
                 self.engine
                     .register_script_helper_file(&name, path)
                     .map_err(|e| Error::Other(format!("{e:?}")))?;
@@ -293,7 +311,8 @@ impl<'a> HandleBars<'a> {
     }
 
     /// Register every `*.hbs` file in `directory` as a partial/template; a non-directory is a
-    /// silent no-op, entries whose file name is not UTF-8 are skipped.
+    /// silent no-op, entries that are not files, whose file name is not UTF-8, or whose name
+    /// is empty once the `.hbs` suffix is removed are skipped.
     ///
     /// # Errors
     ///
@@ -307,10 +326,14 @@ impl<'a> HandleBars<'a> {
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
                     .and_then(|n| n.strip_suffix(".hbs"))
+                    .filter(|n| !n.is_empty())
                     .map(str::to_string)
                 else {
                     continue;
                 };
+                if !path.is_file() {
+                    continue;
+                }
                 let tmpl = std::fs::read_to_string(path).map_err(Error::Stdio)?;
                 tracing::debug!("registering {name}");
                 self.register_template(&name, &tmpl)?;
@@ -349,17 +372,18 @@ impl<'a> HandleBars<'a> {
     /// # Errors
     ///
     /// Returns a Rhai error wrapping [`Error::SerializationError`] when the map cannot be
-    /// round-tripped to JSON, [`Error::HbsRenderError`] on compile/render failure.
+    /// serialised to JSON, [`Error::HbsRenderError`] on compile/render failure.
     // signature imposée par l'API Rhai (vyvil-core.sdd)
     #[allow(clippy::needless_pass_by_value)]
     #[cfg(feature = "rhai")]
     pub fn rhai_render(&mut self, template: String, data: rhai::Map) -> RhaiRes<String> {
-        let json_data: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&data).map_err(|e| format!("{e}"))?)
-                .map_err(|e| format!("{e}"))?;
+        let json_data = serde_json::to_value(&data)
+            .map_err(Error::SerializationError)
+            .map_err(rhai_err)?;
         self.engine
             .render_template(template.as_str(), &json_data)
-            .map_err(|e| format!("{e}").into())
+            .map_err(Error::HbsRenderError)
+            .map_err(rhai_err)
     }
 
     /// Register `template` as `name` then render it with `data`.
@@ -380,22 +404,23 @@ impl<'a> HandleBars<'a> {
     /// # Errors
     ///
     /// Returns a Rhai error wrapping [`Error::SerializationError`] when the map cannot be
-    /// round-tripped to JSON, [`Error::HbsTemplateError`] on compile failure,
+    /// serialised to JSON, [`Error::HbsTemplateError`] on compile failure,
     /// [`Error::HbsRenderError`] on render failure.
     // signature imposée par l'API Rhai (vyvil-core.sdd)
     #[allow(clippy::needless_pass_by_value)]
     #[cfg(feature = "rhai")]
     pub fn rhai_render_named(&mut self, name: String, template: String, data: rhai::Map) -> RhaiRes<String> {
-        let json_data: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&data).map_err(|e| format!("{e}"))?)
-                .map_err(|e| format!("{e}"))?;
+        let json_data = serde_json::to_value(&data)
+            .map_err(Error::SerializationError)
+            .map_err(rhai_err)?;
         self.engine
             .register_template_string(name.as_str(), template)
             .map_err(Error::HbsTemplateError)
             .map_err(rhai_err)?;
         self.engine
             .render(name.as_str(), &json_data)
-            .map_err(|e| format!("{e}").into())
+            .map_err(Error::HbsRenderError)
+            .map_err(rhai_err)
     }
 }
 
@@ -570,5 +595,189 @@ mod warn_tests {
                 "expected the contracted prefix followed by the Debug of the value, got {warn:?}"
             );
         }
+    }
+}
+
+// Unification des cinq wrappers `rhai_*` sur `rhai_err` (hbs.sdd, Must « Fabriquer les erreurs
+// des cinq wrappers rhai_* par une seule voie : @crate::rhai_err (error_chain complète) sur
+// tout échec — enregistrement, conversion serde, compilation et rendu » ; Raises « Les cinq
+// wrappers Rhai — @crate::RhaiRes échoué par @crate::rhai_err (error_chain complète) dans tous
+// les cas, `SerializationError` compris pour la conversion des données »). La face observable
+// verrouillée est l'enveloppe `String` de `EvalAltResult` produite par `rhai_err` (rhai 1.25.1 :
+// variante `ErrorRuntime`, Display précadré « Runtime error: ») portant le Display de la
+// variante de `crate::Error`. La conversion Map → Value passe par `serde_json::to_value` direct
+// (préalable du `SerializationError` réel — mesuré : les dynamique de rhai 1.25.1 sont toutes
+// sérialisables vers `Value`, la branche reste défensive, consigné au rapport).
+#[cfg(all(test, feature = "rhai"))]
+mod rhai_wrapper_tests {
+    use super::HandleBars;
+    use rhai::{Dynamic, EvalAltResult, Map};
+
+    // Gabarit d'assertion commun : la remontée arrive enveloppée par `rhai_err` (le `String` de
+    // la chaîne `error_chain`, que rhai 1.25.1 affiche sous sa variante `ErrorRuntime` — le
+    // Display de celle-ci précadre le texte de « Runtime error: ») et le texte dépréfixé
+    // commence par le Display de la variante de `crate::Error` choisie par le wrapper — Display
+    // que seul `rhai_err` sait poser, le `format!("{e}").into()` précédent affichant le payload
+    // brut de bout en chaîne (variante déjà formatée en amont pour `rhai_register_template`,
+    // d'où un verrou vert d'avance sur ce wrapper, consigné au rapport).
+    fn assert_rhai_err(err: &EvalAltResult, variant_display_prefix: &str) {
+        assert!(
+            matches!(err, EvalAltResult::ErrorRuntime(..)),
+            "the failure must reach the script through the `rhai_err` string envelope, got {err:?}"
+        );
+        let shown = err.to_string();
+        let inner = shown.strip_prefix("Runtime error: ").unwrap_or(&shown);
+        assert!(
+            inner.starts_with(variant_display_prefix),
+            "the Display of the crate::Error variant must lead the message (rhai envelope \
+             « Runtime error: » stripped), got {shown}"
+        );
+    }
+
+    #[test]
+    fn rhai_register_template_wraps_hbs_template_error() {
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .rhai_register_template("bad".to_string(), "{{#each}}".to_string())
+            .expect_err("an invalid template must fail the registration");
+        assert_rhai_err(&err, "Registering template failed with error: ");
+    }
+
+    #[test]
+    fn rhai_register_partial_dir_wraps_hbs_template_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.hbs"), "{{#each}}").unwrap();
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .rhai_register_partial_dir(dir.path().display().to_string())
+            .expect_err("an invalid `*.hbs` file must fail the directory");
+        assert_rhai_err(&err, "Registering template failed with error: ");
+    }
+
+    #[test]
+    fn rhai_render_wraps_render_failure_in_renderer_error() {
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .rhai_render("{{ missing }}".to_string(), Map::new())
+            .expect_err("strict mode must fail a missing path");
+        assert_rhai_err(&err, "Renderer error: ");
+    }
+
+    /// Verrou de caractérisation (vert avant comme après : consigné au rapport) — la table des
+    /// dynamique rhai 1.25.1 est totalement sérialisable vers `Value` (octets → tableau de
+    /// nombres, non-finis → `null`), le round-trip par chaîne comme `to_value` convertissaient
+    /// déjà tout : aucune Map ne déclenche la branche `SerializationError`, qui reste la branche
+    /// défensive promise par la rustdoc. Ce test fixe la forme convertie par la voie directe.
+    #[test]
+    fn rhai_render_converts_map_to_value_without_string_round_trip() {
+        // `Union::Blob` : converti en tableau de nombres par `to_value` (et par l'ancien
+        // round-trip, fait mesuré — d'où le statut de caractérisation, pas de verrou rouge).
+        let mut data = Map::new();
+        data.insert("blob".into(), Dynamic::from(vec![1_u8, 2, 3]));
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .rhai_render("{{ blob.[0] }}".to_string(), data)
+            .expect("a byte blob converts through `to_value` and renders");
+        assert_eq!(out, "1");
+    }
+
+    #[test]
+    fn rhai_render_named_wraps_compile_then_render_failures() {
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .rhai_render_named("bad".to_string(), "{{#each}}".to_string(), Map::new())
+            .expect_err("a template invalid at compile time must fail");
+        assert_rhai_err(&err, "Registering template failed with error: ");
+        let err = hbs
+            .rhai_render_named("strict".to_string(), "{{ missing }}".to_string(), Map::new())
+            .expect_err("a template valid but missing its data path must fail the render");
+        assert_rhai_err(&err, "Renderer error: ");
+    }
+
+    #[cfg(feature = "hbs-scripting")]
+    #[test]
+    fn rhai_register_helper_dir_wraps_script_error_in_other_debug_text() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("broken.rhai"), "fn {").unwrap();
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .rhai_register_helper_dir(dir.path().display().to_string())
+            .expect_err("an invalid `*.rhai` script must fail the registration");
+        assert_rhai_err(&err, "Error: ");
+    }
+}
+
+/// Sauts des deux registres de répertoire (`hbs.sdd`, Must « Enregistrer les répertoires en
+/// boucle plate non récursive à nom plat » : entrée « dont le nom est vide après retrait du
+/// suffixe (`.hbs` / `.rhai` pur) ou qui n'est pas un fichier (sous-dossier nommé
+/// `x.hbs`/`x.rhai`) silencieusement sautée » ; Must not « `a.hbs.hbs` s'enregistre sous le nom
+/// `a.hbs` (un seul suffixe retiré, décision actée) ; un fichier nommé `.hbs` pur n'est jamais
+/// enregistré sous un nom vide »).
+#[cfg(test)]
+mod dir_skip_tests {
+    use super::HandleBars;
+
+    #[test]
+    fn register_partial_dir_skips_empty_name_and_non_files_and_keeps_single_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.hbs"), "hello {{ name }}").unwrap();
+        std::fs::write(root.join("d.hbs.hbs"), "double suffix").unwrap();
+        // Nom vide après retrait du suffixe : contenu volontairement invalide — avant le saut,
+        // sa compilation sous le nom vide faisait échouer la boucle (verrou rouge pour la
+        // bonne raison).
+        std::fs::write(root.join(".hbs"), "{{#each}}").unwrap();
+        // Pseudo-fichier-répertoire portant le suffixe attendu : sauté, jamais lu.
+        std::fs::create_dir(root.join("x.hbs")).unwrap();
+        std::fs::write(root.join("b.txt"), "ignored").unwrap();
+
+        let mut hbs = HandleBars::new();
+        hbs.register_partial_dir(root.to_path_buf())
+            .expect("entries that must be skipped never abort the directory");
+
+        let mut names: Vec<&str> = hbs
+            .engine_mut()
+            .get_templates()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        assert!(
+            names.contains(&"a"),
+            "the valid entry registers flat, got {names:?}"
+        );
+        assert!(
+            names.contains(&"d.hbs"),
+            "`d.hbs.hbs` registers as `d.hbs` — one suffix removed, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"x") && !names.contains(&"b"),
+            "the `x.hbs` subdirectory and `b.txt` are skipped, got {names:?}"
+        );
+        assert!(
+            names.iter().all(|n| !n.is_empty()),
+            "the pure `.hbs` is never registered under an empty name, got {names:?}"
+        );
+    }
+
+    #[cfg(feature = "hbs-scripting")]
+    #[test]
+    fn register_helper_dir_skips_empty_name_and_non_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("ok.rhai"), "\"hi from rhai\"").unwrap();
+        // Nom vide après retrait du suffixe : script invalide — avant le saut, sa compilation
+        // sous le nom vide faisait échouer la boucle.
+        std::fs::write(root.join(".rhai"), "fn {").unwrap();
+        std::fs::create_dir(root.join("sub.rhai")).unwrap();
+
+        let mut hbs = HandleBars::new();
+        hbs.register_helper_dir(root.to_path_buf())
+            .expect("entries that must be skipped never abort the scripting directory");
+
+        let out = hbs
+            .render("{{ ok }}", &serde_json::Value::Null)
+            .expect("the valid `*.rhai` entry registered and renders");
+        assert_eq!(out, "hi from rhai");
     }
 }

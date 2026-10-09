@@ -126,11 +126,20 @@ Tasks:
     sous la porte `oci` seule que parce que @oci-client tire @reqwest, ce qui n'est pas notre
     contrat (décision du développeur principal, vérification des deux portes par l'agent
     `validator`).
+  [x] Relever le plancher @handlebars de ./Cargo.toml (« 6.2.0 » → « 6.4 ») : le lock monte
+    déjà 6.4.4 et tout est vérifié sur cette version. Tâche jumelle de « Relever le plancher
+    `handlebars` de ./Cargo.toml à 6.4 » de ./src/hbs.sdd, à cocher dans le même commit.
   [x] Retirer `dep:futures` de la feature `k8s` de ./Cargo.toml (`futures` n'est importé
     que par ./src/s3.rs, qui le garde). Tâche jumelle de « Cargo : retirer `dep:futures` de
     la feature `k8s` » de ./src/k8s.sdd, à cocher dans le même commit.
-  [ ] Créer `src/rt.rs` depuis `src/rt.sdd` (tests d'abord) et migrer les quatre modules
-    (`http`, `oci`, `s3`, `k8s`).
+  [x] `crate::rt::block_on` migré dans les quatre modules réseau — record de transfert
+    intégral, aucune part en périmètre de cette spec : la déclaration de `mod rt` dans
+    ./lib.rs est close dans ./src/lib.sdd (« la déclaration est le fait de cette spec »),
+    la création du module est close dans ./src/rt.sdd (`cbe8f41`, `mod rt` ligne 404,
+    privé) et les quatre migrations sont closes chez les specs propriétaires :
+    ./src/oci.sdd (`a2ffac6`), ./src/s3.sdd et ./src/rt.sdd ensemble (`9b64dd7`) ;
+    ./src/http.sdd et ./src/k8s.sdd restent `[ ]` sous leurs questions consignées — le
+    module est déclaré, vivant, sans dead_code depuis la jumelle s3.
   [x] Attribuer ../docs/ et ./README.md, prérequis de toute tâche documentaire : les trois
     pages de ../docs/ (rhai_helpers.md, handlebars_helpers.md, mocking.md) et ./README.md ne
     sont dans l'`Owns` d'aucune spec, alors que quatorze specs de ./src/ les nomment dans leurs

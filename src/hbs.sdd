@@ -31,8 +31,8 @@ References:
   ./Cargo.toml — la liste de la feature `hbs` : `dep:handlebars`,
     `dep:handlebars_misc_helpers`, `dep:jmespath`, `dep:toml` (ligne 83) ; et
     `hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]`
-    (ligne 92) ; @handlebars déclaré 6.2.0 feature `string_helpers` (ligne 104) — plancher à
-    relever à 6.4, la version vérifiée (§`Tasks`) — résolu 6.4.4 au @Cargo.lock ; @handlebars_misc_helpers 0.17.0 avec `default-features = false`
+    (ligne 92) ; @handlebars déclaré 6.4 feature `string_helpers` (ligne 105), résolu 6.4.4
+    au @Cargo.lock — la version vérifiée (§`Tasks`, tâche close) ; @handlebars_misc_helpers 0.17.0 avec `default-features = false`
     et features `["string", "jsonnet", "regex", "uuid"]` (ligne 105) — donc NI `json` NI
     `http` de la dépendance ; @default de la crate inclut `hbs` et `hbs-scripting`.
   ~/.cargo/registry(handlebars_misc_helpers-0.17.0) — `new_hbs` appelle `setup_handlebars` :
@@ -162,26 +162,26 @@ Must not:
   Rouler récursif dans les répertoires, normaliser les noms ni dédoublonner les extensions :
     `a.hbs.hbs` s'enregistre sous le nom `a.hbs` (un seul suffixe retiré, décision actée) ; un
     fichier nommé `.hbs` pur n'est jamais enregistré sous un nom vide.
-  Construire @variant-Error::SerializationError dans le module, appeler @crate::yaml,
-    @crate::client_name, @crate::engine::Script, @handlebars_misc_helpers::register
-    directement, ou poser @handlebars::no_escape soi-même.
+  Appeler @crate::yaml, @crate::client_name, @crate::engine::Script,
+    @handlebars_misc_helpers::register directement, ou poser @handlebars::no_escape
+    soi-même.
 
 Depends on:
   handlebars — @handlebars::Handlebars (registre, strict mode, escape fn,
     register_template_string, render_template, render par nom, register_script_helper_file),
     la macro @handlebars_helper! avec sa sémantique d'erreurs (paramètre absent = erreur en
     strict, type mismatch = erreur), @handlebars::TemplateError et @handlebars::RenderError
-    comme payloads des deux variantes @Error ; résolu 6.4.4 au lock alors que ./Cargo.toml
-    déclare 6.2.0 — la sémantique macro citée est vérifiée sur le lock, pas sur le plancher
-    déclaré, à relever à 6.4 (§`Tasks`).
+    comme payloads des deux variantes @Error ; résolu 6.4.4 au lock, ./Cargo.toml déclare
+    le même plancher 6.4 depuis la tâche close (§`Tasks`) — la sémantique macro citée est
+    vérifiée sur cette version.
   handlebars_misc_helpers — @handlebars_misc_helpers::new_hbs porte strict+no_escape, la
     liste des groupes misc enregistrés, le décorateur `inline` et le bug `uuid_new_v7`
     (génère un v4, uuid 1.24.1) ; 0.17.0 verrouillé ; NI son feature `json` NI son `http`.
   hbs_json — @crate::hbs_json::register, six helpers contractés dans ./hbs_json.sdd.
   base64 — engine STANDARD (encode et décode des deux helpers) ; url — form_urlencoded
     (forme de `url_encode`, espace en `+`, appartient à la dépendance).
-  serde_json — @serde_json::Value comme type des paramètres souples, aller-retour Map ↔
-    JSON dans les wrappers `rhai_render*`.
+  serde_json — @serde_json::Value comme type des paramètres souples, conversion directe
+    du Map par @serde_json::to_value dans les wrappers `rhai_render*`.
   rhai (gated) — @rhai::Map pour les données des wrappers, @crate::RhaiRes, @crate::rhai_err ;
     aucun @rhai::Engine n'est créé ici : les cinq wrappers sont enregistrables par le
     consommateur, la crate elle-même ne les enregistre nulle part (zéro appelant dans ./src).
@@ -251,7 +251,8 @@ Raises:
   @crate::hbs::HandleBars::render_named — @variant-Error::HbsTemplateError (compilation) ou
     @variant-Error::HbsRenderError (rendu).
   @crate::hbs::HandleBars::register_partial_dir — @variant-Error::Stdio (read_dir, entrée,
-    lecture d'un fichier ou pseudo-fichier-répertoire) ou @variant-Error::HbsTemplateError
+    lecture d'un fichier — les non-fichiers sont sautés avant lecture, jamais lus) ou
+    @variant-Error::HbsTemplateError
     (première compilation ratée).
   @crate::hbs::HandleBars::register_helper_dir — @variant-Error::Stdio (lecture) ou
     @variant-Error::Other portant le texte Debug (@core::fmt::Debug aplati, pas le Display) de
@@ -288,17 +289,26 @@ Tasks:
     `Subscriber` de capture : @tracing-subscriber entre en dev-deps sous l'`Owns` de
     ./vyvil-core.sdd à cette fin seule. Les tests convertis n'assertionnent un warn que là où le
     contrat le nomme ; les autres warns consignés dans les specs restent des faits du code sans
-    verrou, choisis comme tels.
-  [ ] Affirmer @core::marker::Send et @core::marker::Sync de @crate::hbs::HandleBars par une
+    verrou, choisis comme tels. À reprendre aussi : la branche défensive « dynamique non
+    sérialisable » des `rhai_render*` (injouable sur @rhai 1.25.1, mesure sous la tâche
+    d'unification) — verrou par characterization de la face, pas de la branche.
+  [x] Affirmer @core::marker::Send et @core::marker::Sync de @crate::hbs::HandleBars par une
     assertion de compilation (décision actée).
-  [ ] Passer `pub use core_helpers::*` en `pub(crate)` (décision actée : aucun consommateur
+  [x] Passer `pub use core_helpers::*` en `pub(crate)` (décision actée : aucun consommateur
     — vynil, kuberest, miryad-core — n'utilise les structs) ; `CORE_HBS_HELPERS` reste public.
-  [ ] `register_partial_dir` / `register_helper_dir` : sauter le nom vide et les non-fichiers ;
+  [x] `register_partial_dir` / `register_helper_dir` : sauter le nom vide et les non-fichiers ;
     `a.hbs.hbs` reste `a.hbs` (décision actée).
-  [ ] Unifier les cinq wrappers Rhai sur @crate::rhai_err et construire réellement
+  [x] Unifier les cinq wrappers Rhai sur @crate::rhai_err et construire réellement
     @variant-Error::SerializationError pour la conversion Map → Value (décision actée).
-  [ ] Relever le plancher `handlebars` de ./Cargo.toml à 6.4 (décision actée : tout est
-    vérifié sur 6.4.4).
+    # Fait mesuré (round unification 2026-10-09) : la branche « dynamique non sérialisable »
+    # du Scenario est injouable en test — la table @serde::Serialize de @rhai::Dynamic
+    # (Serialize, rhai 1.25.1) ne peut échouer sur aucune entrée reproductible ; la clause
+    # tient comme contrat défensif, verrouillée par la face caractérisation (l'enveloppe
+    # rhai_err est verrouillée, pas la branche elle-même). À rejouer si un input la rend
+    # jouable ; à reprendre à la tâche de conversion.
+  [x] Relever le plancher `handlebars` de ./Cargo.toml à 6.4 (décision actée : tout est
+    vérifié sur 6.4.4). Tâche jumelle de « Relever le plancher @handlebars de ./Cargo.toml »
+    de ./vyvil-core.sdd, cochée dans le même commit.
   [x] Adapter le helper Handlebars `bcrypt_hash` au refus par @crate::hashes::bcrypt_hash des
     mots de passe de `72` octets et plus (voir ./hashes.sdd) : l'échec tombe dans la voie douce
     de cette spec — @tracing::warn puis chaîne vide — sans @handlebars::RenderError. La part
@@ -350,6 +360,11 @@ Tasks:
     `to_decimal` et `concat` disent « received a non-string parameter ». Le `Must` vient d'être
     mis à ce que fait le code : reste à décider si le code doit s'aligner sur le patron, ce qui
     change trois messages vus par les exploitants.
+    # Question (consignée 2026-10-09) : la tâche nomme elle-même l'indécis — « uniformiser OU
+    # ASSUMER ». Le patron à deux familles est cohérent (les mot de passe disent « password »,
+    # les paramètres génériques disent « parameter ») et le Must le décrit tel quel ; uniformiser
+    # doucherait la précision des premiers. Trancher : assumer (cocher sans geste, la tâche
+    # devenant le record de l'assomption) ou aligner sur un texte unique (lequel ?).
 
 Scenario: new compose les trois couches et les deux réglages hérités
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
@@ -493,7 +508,7 @@ Scenario: uuid_new_v7 rend un v4, défaut amont documenté
 Scenario: la face Rhai type toutes ses erreurs
   Given la crate compilée `hbs`+`rhai`
   When @crate::hbs::HandleBars::rhai_render reçoit une `name` et `data` valides
-  Then le @rhai::Map est converti par aller-retour @serde_json et le rendu sort en chaîne
+  Then le @rhai::Map est converti directement par @serde_json::to_value et le rendu sort en chaîne
   When la CONVERSION serde échoue (Map contenant une dynamique non sérialisable)
   Then l'erreur Rhai passe par @crate::rhai_err et porte @variant-Error::SerializationError,
     comme le promet la rustdoc
