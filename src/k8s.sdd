@@ -45,8 +45,8 @@ References:
     @crate::set_client_name (bug de l'application fille, acceptée), en PRODUCTION comme en
     runtime Rhai.
   ./rt.sdd — les 33 ponts async → sync de ./k8s.rs passent par `crate::rt::block_on`.
-  ./Cargo.toml — `k8s = ["dep:kube", "dep:k8s-openapi", "dep:futures", "dep:tokio", "rhai"]`
-    (ligne 55) implique `rhai`. @kube 3.1.0 `["runtime","client","derive"]` (lock 3.1.0,
+  ./Cargo.toml — `k8s = ["dep:kube", "dep:k8s-openapi", "dep:tokio", "rhai"]` (ligne 55)
+    implique `rhai` — `dep:futures` en est sorti (tâche Cargo close de cette spec). @kube 3.1.0 `["runtime","client","derive"]` (lock 3.1.0,
     déclaré = verrouillé : pas de dérive ici, contrairement à @rhai/@handlebars) ;
     @k8s_openapi 0.27.1 `["latest","schemars"]` default-features false (0.27.1 lock) ;
     @futures n'est importé nulle part dans ./k8s.rs ni ./k8s_mock.rs : `dep:futures` sort de la
@@ -61,8 +61,10 @@ References:
     (kind exact/sensible à la casse, snapshot du `list` aux deux arités sous `list`, `get_meta`
     objet complet, `created` vs `mocks`, ns rempli par `apply` seul et quand absent, workloads
     en échec à la construction) — table fidèle sur les noms, sémantique rendue au `Must`.
-  ./tooling.sdd — harnais : ./k8s.rs compte 18 @allow (16 `needless_pass_by_value` + 2
-    `expect_used` commentés « panic by design ») et 14 @core::marker::must_use ;
+  ./tooling.sdd — harnais : ./k8s.rs compte 20 @allow (16 `needless_pass_by_value` + 4
+    `expect_used` commentés « panic by design » — dont les 2 posés par la migration
+    `crate::rt::block_on`, sous la question ouverte des `Tasks:`) et 14
+    @core::marker::must_use ;
     ./k8s_mock.rs 7 @allow + 10 @core::marker::must_use ; deux `#[macro_export]` pub sur
     macros @crate::register_k8s_object/@crate::register_k8s_generic/@crate::register_k8s_raw
     — surface publique de crates.io servant aussi au mock.
@@ -99,7 +101,7 @@ Must:
     exposée en script sous `update_k8s_crd_cache` par le registre generic) : @tokio::time::timeout
     de @std::time::Duration::from_mins(1) (60 s RÉELLES) autour d'une nouvelle discovery ;
     succès → REMPLACE le contenu du @tokio::sync::RwLock ; timeout ou échec → le VANCIEN cache
-    est GARDÉ et SEUL UN warn trace (`E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 60s` —
+    est GARDÉ et SEUL UN warn trace (`E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 60s, keeping old cache` —
     le texte dit 60 s comme l'implémentation (décision actée : texte corrigé) ; warn d'échec
     `E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache`) ; ne retourne rien.
   Résoudre une ressource par le CACHE SEULEMENT (@crate::k8s::K8sGeneric::new à partir de 479,
@@ -227,7 +229,7 @@ Must:
     = 4 types `K8sDeploy`/`K8sDaemonSet`/`K8sStatefulSet`/`K8sJob`, chacun 1 constructeur
     (`get_deployment`/`get_deamonset` TYPO verrouillée/`get_statefulset`/`get_job`, ns+name
     obligatoires, AUCUN namespace `default` par défaut) + 3 getters `metadata`/`spec`/`status`
-    + `wait_available` ou `wait_done` (Job) ; les trois constructeurs workload
+    + `wait_available` ou `wait_done` (Job) ; les quatre constructeurs workload
     construisent l'@core::default::Api UNE fois (doublon supprimé, nettoyage) et l'objet typé
     @k8s_openapi est PORTÉ par le handle, getter via string round-trip @core::primitive::str →
     @serde_json → @rhai::Dynamic, `spec`/`status` absent → @rhai::Dynamic::UNIT.
@@ -412,22 +414,30 @@ Handles:
     sont perdus silencieusement (workloads typés, borne documentée).
 
 Tasks:
-  [ ] Convertir les Scenario sans test en tests passants. ./k8s.rs a 28 tests inline (résolution
-    APIService agrégé, job_is_completed ×5, prepare_handle ×7, conditions ×15) et ./k8s_mock.rs 8
+  [ ] Convertir les Scenario sans test en tests passants. ./k8s.rs a 40 tests inline (résolution
+    APIService agrégé, job_is_completed ×8, prepare_handle ×11, conditions ×15, seam tower-test
+    pour le pont et les `rhai_*` de K8sRaw) et ./k8s_mock.rs 8
     (wait_for once + registers compilent + update_cache noop) : couverts par les Scenario ci-dessus
     via ces tests ; NON COUVERTS faute de seam : les LazyLock panic (messages), update_cache
     timeout et garde de cache (besoin d'un @kube::Client mock — @tower-test est en dev-deps),
     la résolution par CACHE (kind/plural/ambiguïté — même besoin), les `rhai_*` face API
     (get/list/404, SSA params, injection labels/owner en script), K8sRaw (url verbatim, corps
-    JSON, renomme `get_cluster_version`), workloads (typo, 2×Api, replis spec.status), et cotes
+    JSON, renomme `get_cluster_version`), workloads (typo, replis spec.status — la face typée
+    des quatre constructeurs y porte aussi son comportement : `ns` vide → traité comme absent
+    comme chez le resolveur generic, le verrou @tower-test et l'implémentation voyageant
+    ensemble faute de seam pour le rouge d'abord), et cotes
     du mock : get_meta objet complet, list snapshot, created/mocks divergence patch, kind
     casse-exact, ns backfill apply-seul, PoisonError.
 
-  [ ] Corriger le texte du warn de `update_cache` (60 s) ; traiter `ns = ""` comme absent et
+  [x] Corriger le texte du warn de `update_cache` (60 s) ; traiter `ns = ""` comme absent et
     supprimer la branche `default_namespaced_with` morte ; dédoublonner `ownerReferences` par
     `uid` ; un seul `Api` dans les constructeurs workload ; conversion directe en Dynamic dans
     les `rhai_*` (décisions actées, test d'abord).
-  [ ] Unifier « Job terminé » : `job_is_completed` = condition `Complete=True` OU `completionTime`
+    # Le `ns = ""` rendu ici est celui du resolveur generic (`new`/`new_api_version`, les cinq
+    # entrées) ; la face typée des quatre constructeurs workload garde son `Then` de Scenario à
+    # la tâche de conversion, où le verrou @tower-test et l'implémentation voyagent ensemble
+    # (aucun rouge d'abord possible sans seam) — placement tranché par le primaire.
+  [x] Unifier « Job terminé » : `job_is_completed` = condition `Complete=True` OU `completionTime`
     présent, retirer `succeeded > 0` seul ; adapter les 5 tests inline (décision actée).
   [ ] Écrire le helper de wait unique : retry avec backoff sur erreur transitoire du watch
     (429, 5xx, timeout, coupure, `410`), échec immédiat sur erreur définitive (401, 403, 404,
@@ -452,8 +462,10 @@ Tasks:
     # construction ratée rend `.ok()` — effet silencieux, ancien cache gardé. La voie douce
     # est déjà la sienne (l. 403) mais rien ne contracte le silence du pont ; un `warn` au
     # passage serait l'homogène. Trancher avec la tâche du texte 60 s.
-  [ ] Cargo : retirer `dep:futures` de la feature `k8s` (vérifier `cargo hack`), déclarer
-    `tokio` avec `time` (décision actée).
+  [x] Cargo : retirer `dep:futures` de la feature `k8s` (vérifier `cargo hack`), déclarer
+    `tokio` avec `time` (décision actée — déjà déclaré ainsi, consigné sans geste). Tâche
+    jumelle de « Retirer `dep:futures` de la feature `k8s` » de ./vyvil-core.sdd, à cocher
+    dans le même commit.
   [ ] StatefulSet : corriger la spec (`unwrap_or(1)`, déjà le code) et son Scenario.
   [ ] Enregistrer explicitement `update_k8s_crd_cache` (no-op) dans `k8s_mock_rhai_register`.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.

@@ -91,6 +91,12 @@ fn timeout_duration(timeout: i64) -> std::time::Duration {
     std::time::Duration::from_secs(u64::try_from(timeout).unwrap_or(0))
 }
 
+/// Normalizes a requested namespace: an empty string is treated as absent (k8s.sdd `Must`,
+/// décision actée), so a handle falls back to all-namespaces instead of an invalid URL.
+fn normalize_ns(ns: Option<String>) -> Option<String> {
+    ns.filter(|s| !s.is_empty())
+}
+
 // ── k8sgeneric ───────────────────────────────────────────────────────────────
 
 /// Shared kube client, built from the injected factory on first access.
@@ -165,7 +171,7 @@ pub fn update_cache() {
                 tracing::warn!("E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache");
             }
             Err(_) => {
-                tracing::warn!("E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 30s, keeping old cache");
+                tracing::warn!("E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 60s, keeping old cache");
             }
         }
     })
@@ -474,6 +480,9 @@ impl K8sGeneric {
     #[must_use]
     #[allow(clippy::expect_used)] // panic by design: signature non-Result, même exception que CACHE (k8s.sdd Raises) — remonté à la réconciliation
     pub fn new(name: &str, ns: Option<String>) -> K8sGeneric {
+        // Un ns vide est traité comme absent (k8s.sdd `Must`, décision actée) : pas d'URL
+        // invalide, repli all-namespaces ; le `ns` stocké sur le handle suit la même règle.
+        let ns = normalize_ns(ns);
         crate::rt::block_on(async move {
             if let Some((res, cap)) = CACHE
                 .read()
@@ -492,12 +501,12 @@ impl K8sGeneric {
                 .map(|(_, res)| res)
             {
                 tracing::debug!("K8sGeneric::new Using {}/{}/{}", res.group, res.version, res.kind);
-                let api = if cap.scope == Scope::Cluster || ns.is_none() {
-                    Api::all_with(CLIENT.clone(), &res)
-                } else if let Some(namespace) = ns.clone() {
-                    Api::namespaced_with(CLIENT.clone(), &namespace, &res)
-                } else {
-                    Api::default_namespaced_with(CLIENT.clone(), &res)
+                // Scope retenu (k8s.sdd `Must`) : Cluster OU ns absent OU ns vide →
+                // all_with ; sinon namespaced_with. `default_namespaced_with` était
+                // inatteignable (exigeait ns.is_none() faux et ns == None) — supprimé.
+                let api = match ns.as_ref().filter(|_| cap.scope != Scope::Cluster) {
+                    Some(namespace) => Api::namespaced_with(CLIENT.clone(), namespace, &res),
+                    None => Api::all_with(CLIENT.clone(), &res),
                 };
                 K8sGeneric {
                     api: Some(api),
@@ -528,6 +537,9 @@ impl K8sGeneric {
     #[must_use]
     #[allow(clippy::expect_used)] // panic by design: signature non-Result, même exception que CACHE (k8s.sdd Raises) — remonté à la réconciliation
     pub fn new_api_version(api_group: &str, version: &str, name: &str, ns: Option<String>) -> K8sGeneric {
+        // Un ns vide est traité comme absent (k8s.sdd `Must`, décision actée), même règle que
+        // dans `Self::new`.
+        let ns = normalize_ns(ns);
         crate::rt::block_on(async move {
             if let Some((res, cap)) = CACHE
                 .read()
@@ -553,12 +565,11 @@ impl K8sGeneric {
                     res.version,
                     res.kind
                 );
-                let api = if cap.scope == Scope::Cluster || ns.is_none() {
-                    Api::all_with(CLIENT.clone(), &res)
-                } else if let Some(namespace) = ns.clone() {
-                    Api::namespaced_with(CLIENT.clone(), &namespace, &res)
-                } else {
-                    Api::default_namespaced_with(CLIENT.clone(), &res)
+                // Même scope retenu que `Self::new` (k8s.sdd `Must`) ; branche
+                // `default_namespaced_with` inatteignable supprimée.
+                let api = match ns.as_ref().filter(|_| cap.scope != Scope::Cluster) {
+                    Some(namespace) => Api::namespaced_with(CLIENT.clone(), namespace, &res),
+                    None => Api::all_with(CLIENT.clone(), &res),
                 };
                 K8sGeneric {
                     api: Some(api),
@@ -844,7 +855,8 @@ impl K8sGeneric {
 
 /// Normalizes a handle before create/replace/patch/apply: guarantees an object `metadata`,
 /// injects missing common labels (never overriding existing ones) and, for a namespaced
-/// resource in the owner's namespace, appends the owner reference.
+/// resource in the owner's namespace, appends the owner reference — unless an entry with the
+/// same `uid` is already present (dedup, k8s.sdd `Must`).
 fn prepare_handle(
     mut handle: serde_json::Map<String, serde_json::Value>,
     labels: Option<serde_json::Value>,
@@ -889,7 +901,15 @@ fn prepare_handle(
             .entry("ownerReferences".to_string())
             .or_insert_with(|| json!([]));
         match references {
-            serde_json::Value::Array(items) => items.push(owner),
+            serde_json::Value::Array(items) => {
+                // Dédoublonnage par `uid` (k8s.sdd `Must`, décision actée) : APPENDU par
+                // défaut, SAUF si une entrée de même uid figure déjà. Un owner sans `uid`
+                // n'a rien à faire correspondre : appendu telle quelle (jamais jeté).
+                let uid = owner.get("uid");
+                if uid.is_none() || !items.iter().any(|existing| existing.get("uid") == uid) {
+                    items.push(owner);
+                }
+            }
             // malformed (non-array) references are replaced rather than panicking
             other => *other = vec![owner].into(),
         }
@@ -1088,15 +1108,23 @@ impl K8sGeneric {
     }
 }
 
+/// Vrai si le Job est terminé : condition `Complete` à `"True"` OU `status.completionTime`
+/// présent (k8s.sdd `Must`, décision actée). `status.succeeded > 0` seul ne compte plus —
+/// un Job à `completions` multiples encore actif ne doit pas voir son erreur d'apply masquée.
+/// Le `wait_done` du workload `Job` (kube `is_job_completed`, condition `Complete`) concorde.
 fn job_is_completed(data: &serde_json::Value) -> bool {
     let Some(status) = data.get("status") else {
         return false;
     };
     if status
-        .get("succeeded")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(0)
-        > 0
+        .get("conditions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|conditions| {
+            conditions.iter().any(|c| {
+                c.get("type").and_then(serde_json::Value::as_str) == Some("Complete")
+                    && c.get("status").and_then(serde_json::Value::as_str) == Some("True")
+            })
+        })
     {
         return true;
     }
@@ -1186,59 +1214,46 @@ impl K8sRaw {
         self.get_url_as_disco("/apis".to_string()).await
     }
 
-    /// [`Self::get_url`] as a Rhai value (JSON round-trip through a string).
+    /// [`Self::get_url`] rendered as a Rhai value (direct conversion, no JSON string
+    /// round-trip — k8s.sdd `Must`, décision actée).
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error wrapping the [`Self::get_url`] errors or
-    /// [`Error::SerializationError`].
+    /// Returns a Rhai error wrapping the [`Self::get_url`] errors or a conversion failure.
     pub fn rhai_get_url(&mut self, url: String) -> RhaiRes<Dynamic> {
         crate::rt::block_on(async move {
             let res = self.get_url(url).await.map_err(rhai_err)?;
-            let v = serde_json::to_string(&res)
-                .map_err(Error::SerializationError)
-                .map_err(rhai_err)?;
-            serde_json::from_str(&v)
-                .map_err(Error::SerializationError)
-                .map_err(rhai_err)
+            to_dynamic(res)
         })
         .map_err(rhai_err)?
     }
 
-    /// [`Self::get_api_version`] as a Rhai value (JSON round-trip through a string).
+    /// [`Self::get_api_version`] rendered as a Rhai value (direct conversion, no JSON string
+    /// round-trip — k8s.sdd `Must`, décision actée).
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error wrapping the [`Self::get_api_version`] errors or
-    /// [`Error::SerializationError`].
+    /// Returns a Rhai error wrapping the [`Self::get_api_version`] errors or a conversion
+    /// failure.
     pub fn rhai_get_api_version(&mut self) -> RhaiRes<Dynamic> {
         crate::rt::block_on(async move {
             let ver = self.get_api_version().await.map_err(rhai_err)?;
-            let v = serde_json::to_string(&ver)
-                .map_err(Error::SerializationError)
-                .map_err(rhai_err)?;
-            serde_json::from_str(&v)
-                .map_err(Error::SerializationError)
-                .map_err(rhai_err)
+            to_dynamic(ver)
         })
         .map_err(rhai_err)?
     }
 
-    /// [`Self::get_api_resources`] as a Rhai value (JSON round-trip through a string).
+    /// [`Self::get_api_resources`] rendered as a Rhai value (direct conversion, no JSON
+    /// string round-trip — k8s.sdd `Must`, décision actée).
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error wrapping the [`Self::get_api_resources`] errors or
-    /// [`Error::SerializationError`].
+    /// Returns a Rhai error wrapping the [`Self::get_api_resources`] errors or a conversion
+    /// failure.
     pub fn rhai_get_api_resources(&mut self) -> RhaiRes<Dynamic> {
         crate::rt::block_on(async move {
             let ver = self.get_api_resources().await.map_err(rhai_err)?;
-            let v = serde_json::to_string(&ver)
-                .map_err(Error::SerializationError)
-                .map_err(rhai_err)?;
-            serde_json::from_str(&v)
-                .map_err(Error::SerializationError)
-                .map_err(rhai_err)
+            to_dynamic(ver)
         })
         .map_err(rhai_err)?
     }
@@ -1275,14 +1290,13 @@ impl K8sDaemonSet {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deamonset(namespace: String, name: String) -> RhaiRes<K8sDaemonSet> {
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage) : le handle porté réutilise
+        // l'`Api` de la lecture.
         let api: Api<DaemonSet> = Api::namespaced(CLIENT.clone(), &namespace);
-        let d = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+        let d = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
-        Ok(K8sDaemonSet {
-            api: Api::namespaced(CLIENT.clone(), &namespace),
-            obj: d,
-        })
+        Ok(K8sDaemonSet { api, obj: d })
     }
 
     /// Metadata rendered as a Rhai value (JSON string round-trip).
@@ -1368,14 +1382,12 @@ impl K8sStatefulSet {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_sts(namespace: String, name: String) -> RhaiRes<K8sStatefulSet> {
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage).
         let api: Api<StatefulSet> = Api::namespaced(CLIENT.clone(), &namespace);
-        let d = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+        let d = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
-        Ok(K8sStatefulSet {
-            api: Api::namespaced(CLIENT.clone(), &namespace),
-            obj: d,
-        })
+        Ok(K8sStatefulSet { api, obj: d })
     }
 
     /// Metadata rendered as a Rhai value (JSON string round-trip).
@@ -1462,14 +1474,12 @@ impl K8sDeploy {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deployment(namespace: String, name: String) -> RhaiRes<K8sDeploy> {
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage).
         let api: Api<Deployment> = Api::namespaced(CLIENT.clone(), &namespace);
-        let d = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+        let d = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
-        Ok(K8sDeploy {
-            api: Api::namespaced(CLIENT.clone(), &namespace),
-            obj: d,
-        })
+        Ok(K8sDeploy { api, obj: d })
     }
 
     /// Metadata rendered as a Rhai value (JSON string round-trip).
@@ -1541,14 +1551,12 @@ impl K8sJob {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_job(namespace: String, name: String) -> RhaiRes<K8sJob> {
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage).
         let api: Api<Job> = Api::namespaced(CLIENT.clone(), &namespace);
-        let j = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+        let j = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
-        Ok(K8sJob {
-            api: Api::namespaced(CLIENT.clone(), &namespace),
-            obj: j,
-        })
+        Ok(K8sJob { api, obj: j })
     }
 
     /// Metadata rendered as a Rhai value (JSON string round-trip).
@@ -1786,10 +1794,15 @@ mod tests {
         assert_eq!(aggregated_apiservice_group(&empty_group), None);
     }
 
+    // Contrat unifié « Job terminé » (k8s.sdd Must, décision actée) : `status.succeeded > 0`
+    // seul ne suffit plus — Scenario « apply replie un Job immuable déjà complet » : avec
+    // `completions: 3`, sans condition `Complete` ni completionTime, l'erreur d'apply reste
+    // telle quelle (« un Job à completions multiples encore actif ne doit pas voir son
+    // erreur d'apply masquée »).
     #[test]
-    fn test_job_is_completed_succeeded() {
-        let data = serde_json::json!({"status": {"succeeded": 1}});
-        assert!(job_is_completed(&data));
+    fn test_job_is_completed_succeeded_alone_not_completed() {
+        let data = serde_json::json!({"spec": {"completions": 3}, "status": {"succeeded": 1}});
+        assert!(!job_is_completed(&data));
     }
 
     #[test]
@@ -1802,6 +1815,34 @@ mod tests {
     fn test_job_is_completed_completion_time() {
         let data = serde_json::json!({"status": {"completionTime": "2024-01-01T00:00:00Z"}});
         assert!(job_is_completed(&data));
+    }
+
+    // Vrai si la condition `Complete` a `status: "True"` (k8s.sdd Must, décision actée).
+    #[test]
+    fn test_job_is_completed_complete_condition_true() {
+        let data = serde_json::json!({"status": {"conditions": [{"type": "Complete", "status": "True"}]}});
+        assert!(job_is_completed(&data));
+    }
+
+    // La disjonction est indépendante : `Complete=False` n'invalide pas la branche
+    // `completionTime` présent.
+    #[test]
+    fn test_job_is_completed_complete_false_with_completion_time() {
+        let data = serde_json::json!({"status": {
+            "conditions": [{"type": "Complete", "status": "False"}],
+            "completionTime": "2024-01-01T00:00:00Z"
+        }});
+        assert!(job_is_completed(&data));
+    }
+
+    // Scenario k8s.sdd : « status.conditions Complete=False sans completionTime → l'erreur
+    // @variant-Error::KubeError reste telle quelle — job_is_completed ne ment pas ».
+    #[test]
+    fn test_job_is_completed_complete_false_no_completion_time() {
+        let data = serde_json::json!({
+            "status": {"conditions": [{"type": "Complete", "status": "False"}], "active": 2}
+        });
+        assert!(!job_is_completed(&data));
     }
 
     #[test]
@@ -1910,6 +1951,119 @@ mod tests {
                 .get("ownerReferences")
                 .is_none()
         );
+    }
+
+    // Dédoublonnage par `uid` (k8s.sdd Must, décision actée) : « l'owner est APPENDU à
+    // l'array ownerReferences existante SAUF si une entrée de même uid y figure déjà ».
+    // Deux injections du même owner (deux écritures successives sur le même handle) ne
+    // produisent qu'une entrée.
+    #[test]
+    fn prepare_handle_owner_ref_deduped_by_uid() {
+        let owner = serde_json::json!({"apiVersion": "v1", "kind": "Pod", "name": "owner", "uid": "abc"});
+        let first = prepare_handle(
+            map(serde_json::json!({"kind": "ConfigMap"})),
+            None,
+            Some(owner.clone()),
+            Some("mynamespace".to_string()),
+            Some("mynamespace".to_string()),
+            true,
+        );
+        let second = prepare_handle(
+            first,
+            None,
+            Some(owner),
+            Some("mynamespace".to_string()),
+            Some("mynamespace".to_string()),
+            true,
+        );
+        let refs = second["metadata"]["ownerReferences"].as_array().unwrap();
+        assert_eq!(refs.len(), 1, "une entrée de même uid n'est pas dupliquée");
+        assert_eq!(refs[0]["uid"], "abc");
+    }
+
+    #[test]
+    fn prepare_handle_owner_ref_different_uid_appended() {
+        let input = map(serde_json::json!({
+            "kind": "ConfigMap",
+            "metadata": {"ownerReferences": [{"apiVersion": "v1", "kind": "Pod", "name": "o1", "uid": "abc"}]}
+        }));
+        let owner = serde_json::json!({"apiVersion": "v1", "kind": "Pod", "name": "o2", "uid": "def"});
+        let out = prepare_handle(
+            input,
+            None,
+            Some(owner),
+            Some("mynamespace".to_string()),
+            Some("mynamespace".to_string()),
+            true,
+        );
+        let refs = out["metadata"]["ownerReferences"].as_array().unwrap();
+        assert_eq!(refs.len(), 2, "un uid différent est appendu en fin d'array");
+        assert_eq!(refs[1]["uid"], "def");
+    }
+
+    // Face par défaut du Must (k8s.sdd l.145-147) : « l'owner est APPENDU à l'array
+    // ownerReferences existante SAUF si une entrée de MÊME uid y figure déjà ». Un owner
+    // sans clé `uid` n'a pas de uid à faire correspondre : l'exception ne peut pas porter,
+    // l'entrée est appendue telle quelle (jamais jetée en silence).
+    #[test]
+    fn prepare_handle_owner_ref_without_uid_appended() {
+        let input = map(serde_json::json!({"kind": "ConfigMap"}));
+        let owner = serde_json::json!({"apiVersion": "v1", "kind": "Pod", "name": "owner-no-uid"});
+        let out = prepare_handle(
+            input,
+            None,
+            Some(owner),
+            Some("mynamespace".to_string()),
+            Some("mynamespace".to_string()),
+            true,
+        );
+        let refs = out["metadata"]["ownerReferences"].as_array().unwrap();
+        assert_eq!(refs.len(), 1, "un owner sans uid est appendu, pas jeté");
+        assert_eq!(refs[0]["name"], "owner-no-uid");
+    }
+
+    // Le contrat ne dédoublonne QUE par uid : deux owners sans uid → deux entrées
+    // (aucune correspondance de uid possible entre eux).
+    #[test]
+    fn prepare_handle_two_owners_without_uid_both_appended() {
+        let owner_a = serde_json::json!({"apiVersion": "v1", "kind": "Pod", "name": "a"});
+        let owner_b = serde_json::json!({"apiVersion": "v1", "kind": "Pod", "name": "b"});
+        let first = prepare_handle(
+            map(serde_json::json!({"kind": "ConfigMap"})),
+            None,
+            Some(owner_a),
+            Some("mynamespace".to_string()),
+            Some("mynamespace".to_string()),
+            true,
+        );
+        let out = prepare_handle(
+            first,
+            None,
+            Some(owner_b),
+            Some("mynamespace".to_string()),
+            Some("mynamespace".to_string()),
+            true,
+        );
+        let refs = out["metadata"]["ownerReferences"].as_array().unwrap();
+        assert_eq!(
+            refs.len(),
+            2,
+            "sans uid, aucune déduplication possible : les deux restent"
+        );
+        assert_eq!(refs[0]["name"], "a");
+        assert_eq!(refs[1]["name"], "b");
+    }
+
+    // Scenario « new_global = toutes les namespaces » (k8s.sdd) : `k8s_resource("pods", "")`
+    // (ns vide) « se comporte comme sans ns, sans URL invalide ». Seam de la normalisation
+    // appliquée par `K8sGeneric::new`/`new_api_version` AVANT la construction du handle (les
+    // constructeurs eux-mêmes touchent le LazyLock CACHE — hors seam sans cluster, consigné
+    // aux Tasks) ; le `ns` stocké sur le handle suit la même normalisation.
+    #[test]
+    fn empty_ns_is_treated_as_absent() {
+        assert_eq!(normalize_ns(None), None);
+        assert_eq!(normalize_ns(Some(String::new())), None);
+        assert_eq!(normalize_ns(Some("app".to_string())), Some("app".to_string()));
     }
 
     // ── Condition closures ────────────────────────────────────────────────────
@@ -2114,5 +2268,84 @@ mod tests {
             !K8sObject::have_status_value("phase".to_string(), "Running".to_string())
                 .matches_object(Some(&obj))
         );
+    }
+
+    // ── Seam `rhai_*` de K8sRaw ───────────────────────────────────────────────
+    // Face verrou : le corps JSON du serveur rendu en Dynamic par l'appel (k8s.sdd Must,
+    // décision actée : « les wrappers rhai_* convertissent en Dynamic directement
+    // (to_dynamic), sans le double round-trip identité actuel »). Ces verrous sont écrits
+    // AVANT le nettoyage et verrouillent le comportement attendu identique après (la
+    // conversion directe n'est pas observable de l'extérieur — signalée au rapport comme
+    // characterization, aucun test échouant n'existe pour un nettoyage à comportement
+    // inchangé).
+    fn mocked_raw() -> (
+        K8sRaw,
+        tower_test::mock::Handle<http::Request<Body>, http::Response<Body>>,
+    ) {
+        let (mock_service, handle) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+        (
+            K8sRaw {
+                client: kube::Client::new(mock_service, "ns"),
+            },
+            handle,
+        )
+    }
+
+    // Le handle est bâti sur un runtime dédié (le `tower::Buffer` de `Client::new` se spawn
+    // à la construction), l'appel `rhai_*` part du fil principal SANS runtime (voie secours
+    // `rt::block_on`, runtime temporaire) — même patron que `mocked_generic` ci-dessus.
+    fn raw_dynamic_served(
+        body: &'static str,
+        call: impl FnOnce(&mut K8sRaw) -> RhaiRes<Dynamic>,
+    ) -> serde_json::Value {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut raw, handle) = server_rt.block_on(async { mocked_raw() });
+        let responder = server_rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let (_req, send) = handle.next_request().await.expect("service not called");
+            send.send_response(
+                http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.as_bytes().to_vec()))
+                    .unwrap(),
+            );
+        });
+        let out = call(&mut raw).expect("le corps JSON doit être servi en Dynamic");
+        server_rt.block_on(responder).unwrap();
+        serde_json::to_value(&out).expect("le Dynamic rendu est sérialisable")
+    }
+
+    #[test]
+    fn rhai_get_url_returns_json_body_as_dynamic() {
+        let rendered = raw_dynamic_served(
+            r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x"},"data":{"k":"v"},"count":42}"#,
+            |raw| raw.rhai_get_url("/api/v1/namespaces/ns/configmaps".to_string()),
+        );
+        assert_eq!(rendered["kind"], "ConfigMap");
+        assert_eq!(rendered["data"]["k"], "v");
+        assert_eq!(rendered["count"], 42, "l'entier traverse la conversion");
+    }
+
+    #[test]
+    fn rhai_get_api_version_returns_version_body() {
+        let rendered = raw_dynamic_served(
+            r#"{"major":"1","minor":"31","gitVersion":"v1.31.0"}"#,
+            K8sRaw::rhai_get_api_version,
+        );
+        assert_eq!(rendered["gitVersion"], "v1.31.0");
+    }
+
+    #[test]
+    fn rhai_get_api_resources_returns_discovery_body() {
+        let rendered = raw_dynamic_served(
+            r#"{"kind":"APIGroupDiscoveryList","apiVersion":"apidiscovery.k8s.io/v2","items":[]}"#,
+            K8sRaw::rhai_get_api_resources,
+        );
+        assert_eq!(rendered["kind"], "APIGroupDiscoveryList");
+        assert!(rendered["items"].is_array());
     }
 }

@@ -52,7 +52,7 @@ default = ["http", "crypto", "rhai", "hbs", "hbs-scripting"]
 # RhaiRes), not a plain Rust API with a Rhai wrapper on top like the other modules below — so
 # unlike them it isn't independently rhai-optional, at least until a consumer actually needs
 # "k8s without rhai".
-k8s = ["dep:kube", "dep:k8s-openapi", "dep:futures", "dep:tokio", "rhai"]
+k8s = ["dep:kube", "dep:k8s-openapi", "dep:tokio", "rhai"]
 # Registry::push_image et al. take/return rhai types (Map, ImmutableString) directly in their
 # core signatures, same reasoning as k8s above.
 oci = ["dep:oci-client", "dep:tokio", "rhai"]

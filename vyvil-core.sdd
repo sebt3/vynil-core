@@ -126,6 +126,9 @@ Tasks:
     sous la porte `oci` seule que parce que @oci-client tire @reqwest, ce qui n'est pas notre
     contrat (décision du développeur principal, vérification des deux portes par l'agent
     `validator`).
+  [x] Retirer `dep:futures` de la feature `k8s` de ./Cargo.toml (`futures` n'est importé
+    que par ./src/s3.rs, qui le garde). Tâche jumelle de « Cargo : retirer `dep:futures` de
+    la feature `k8s` » de ./src/k8s.sdd, à cocher dans le même commit.
   [ ] Créer `src/rt.rs` depuis `src/rt.sdd` (tests d'abord) et migrer les quatre modules
     (`http`, `oci`, `s3`, `k8s`).
   [x] Attribuer ../docs/ et ./README.md, prérequis de toute tâche documentaire : les trois
