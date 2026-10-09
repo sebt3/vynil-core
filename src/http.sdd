@@ -103,9 +103,9 @@ Must:
     une CLONE de la map d'en-têtes via @reqwest::RequestBuilder::header sur chaque paire —
     ajout et non remplacement côté requête.
   Contracter trois étages par verbe (labels @variant-Error::MethodFailed figés, verbe capitalisé) :
-    `http_*` → @reqwest::Response (@crate::http::RestClient::http_get/http_head : @std::result::Result<@reqwest::Response,@reqwest::Error>
-    BRUT ; @crate::http::RestClient::http_patch/http_put/http_post/http_delete/http_post_form/http_delete_with_body :
-    @crate::Result, @variant-Error::ReqwestError) ; `body_*` → texte, non-2xx →
+    `http_*` → @reqwest::Response sous @crate::Result, @variant-Error::ReqwestError —
+    get/head compris, plus d'exception (la forme BRUT @reqwest::Error est morte : @reqwest::Error
+    0.12 n'a aucun constructeur public et le `Must not` l'excluait déjà) ; `body_*` → texte, non-2xx →
     @variant-Error::MethodFailed(VERBE, code, corps sous le texte exact `The server returned the error: {status} {reason} | {text}`),
     avec labels exactement `Get`/`Patch`/`Put`/`Post`/`Delete` ;
     @crate::http::RestClient::body_delete et @crate::http::RestClient::body_delete_with_body
@@ -365,8 +365,12 @@ Tasks:
     `Content-Type`/`Accept` et skip de `post_form` insensibles à la casse, suppression de la
     boucle de log de `add_header_json_accept`, rustdoc corrigée (décisions actées).
   [ ] Renommer `five_sec` en constante `DEFAULT_TIMEOUT` (5 min, non configurable) ; log
-    `CLIENT:` déplacé dans `get_client` ; tous les `http_*` rendent `crate::Result` avec
-    `Error::ReqwestError`, get/head compris (changement d'API publique).
+    `CLIENT:` déplacé dans `get_client`. La part « tous les `http_*` rendent `crate::Result`
+    avec `Error::ReqwestError`, get/head compris » est rendue par la tâche de migration
+    `crate::rt::block_on` de cette spec (les deux `http_get`/`http_head` n'avaient aucun
+    constructeur public pour un `reqwest::Error` brut — `crate::Result` était la seule forme
+    sans panique, et c'est la forme que l'`Exposes` et le `Must not` de cette spec nomment
+    déjà) ; ce qui reste ouvert est le renommage et le déplacement du log.
   [ ] `rhai_*` : `code` par `i64::from`, échec de lecture du corps = erreur seule ;
     `post_form` refuse les valeurs composites ; figer par test le contrat « statut jamais
     erreur » et les deux politiques JSON (décisions actées).
@@ -381,6 +385,18 @@ Tasks:
     actée) ; tester `body_post` hors runtime et sur `current_thread`.
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
+    # Question (migration 2026-10-09, à trancher) : le « tester body_post hors runtime »
+    # verrouille ce qui est verrouillable — voie secours sert, erreur de transport typée
+    # sans panique — mais un Ok(texte) complet hors runtime est inaccessible : reqwest lie
+    # le timer de TotalTimeoutBody au runtime qui a émis send ; lu depuis le runtime
+    # temporaire suivant, response.text() panique dans le timer tokio. Un Ok hors runtime
+    # exigerait un pont unique pour les body_* ou un runtime temporaire partagé — interdit
+    # par ./rt.sdd (Must not). Options : (a) accepter le verrouillage partiel, la voie
+    # secours ne promet pas le succès des body_* ; (b) exclure les body_* de la voie
+    # secours (erreur explicite hors runtime) et le contracter en Raises.
+    # Le `#[allow(dead_code)]` de ./rt.rs survit à cette tâche : sous le graphe `s3` seul
+    # (mesuré), `block_on` n'a encore aucun appelant — l'allow partira avec la migration
+    # de ./s3.rs, dernier porteur de la clause.
   [ ] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
     commune avec ./oci.sdd.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.

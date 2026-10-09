@@ -380,7 +380,9 @@ Raises:
   @variant-Error::KubeError (préfixe `K8s error: ` + Display @kube interne jamais contracté) :
     tout appel API non-2xx et tout échec de transport ; @variant-Error::SerializationError :
     échec @serde_json dans les deux sens (read side double passe et write side from_dynamic/map)
-    côté low-level (@variant-Error::Stdio jamais ici) ; @variant-Error::UnsupportedMethod : méthode sur
+    côté low-level ; @variant-Error::Stdio possible depuis la migration `crate::rt::block_on`
+    (construction du runtime temporaire ratée, voie hors runtime — ./rt.sdd `Raises`) ;
+    @variant-Error::UnsupportedMethod : méthode sur
     handle non-résolu (11 sites) ; @variant-Error::RawHTTP : @http::Request builder de `K8sRaw` ;
     @variant-Error::Elapsed (dépassement) et @variant-Error::KubeWaitError (watch cassé) sur les waits.
   Erreurs à chaîne locale (Rhai uniquement, @crate::rhai_err_str) : l'unique chaîne fabriquée
@@ -437,6 +439,19 @@ Tasks:
     changer.
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
+    # Question 1 (migration 2026-10-09, à trancher — bloque la coche) : `K8sGeneric::new`
+    # et `new_api_version` ont une signature non-`Result` ; l'erreur du pont (current_thread)
+    # n'a pas de canal. L'implémentation rend un `expect` au message porteur
+    # (« requires a multi-thread tokio runtime »), `# Panics` documenté — mais le `Raises`
+    # ne nomme l'exception `expect` que pour l'initialisation de CLIENT/CACHE. Options :
+    # (a) amender le Raises pour nommer ces deux sites (la panique existait déjà avant la
+    # migration, en pire : block_in_place nu) ; (b) changer les deux signatures en
+    # `crate::Result<Self>` (changement d'API publique, crate < 1.0, mais casse les
+    # appelants rhai `new` du registre).
+    # Question 2 (même migration, à trancher) : `update_cache` sur courant_thread ou
+    # construction ratée rend `.ok()` — effet silencieux, ancien cache gardé. La voie douce
+    # est déjà la sienne (l. 403) mais rien ne contracte le silence du pont ; un `warn` au
+    # passage serait l'homogène. Trancher avec la tâche du texte 60 s.
   [ ] Cargo : retirer `dep:futures` de la feature `k8s` (vérifier `cargo hack`), déclarer
     `tokio` avec `time` (décision actée).
   [ ] StatefulSet : corriger la spec (`unwrap_or(1)`, déjà le code) et son Scenario.

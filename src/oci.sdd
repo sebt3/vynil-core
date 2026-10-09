@@ -338,7 +338,7 @@ Tasks:
     n'étant pas de cet `Owns` : « backed by in-memory fixtures » faux pour `oci`, le tier des
     lignes 51-54 et les faces Rust publiques à documenter sont les tâches de ./docs.sdd, avec
     les décisions actées correspondantes.
-  [ ] Remplacer les ponts tokio par `crate::rt::block_on` (décision actée, commune à s3 et
+  [x] Remplacer les ponts tokio par `crate::rt::block_on` (décision actée, commune à s3 et
     http ; le helper est spécifié dans ./rt.sdd).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).

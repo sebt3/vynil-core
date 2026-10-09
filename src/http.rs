@@ -11,7 +11,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use serde_yaml;
-use tokio::runtime::Handle;
 use tracing::{debug, warn};
 
 /// Read verb accepted by [`RestClient::obj_read`].
@@ -192,13 +191,14 @@ impl RestClient {
         builder.build()
     }
 
-    /// Sends a `GET` to `base/path` with the configured headers (blocks on the tokio runtime).
+    /// Sends a `GET` to `base/path` with the configured headers (blocks via `crate::rt::block_on`, see `rt.sdd`).
     ///
     /// # Errors
     ///
-    /// Returns [`reqwest::Error`] if the client cannot be built (PEM/TLS issues) or the request
-    /// fails; builder errors are also logged at warn level.
-    pub fn http_get(&mut self, path: &str) -> std::result::Result<Response, reqwest::Error> {
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level. Returns [`Error::Other`] on a
+    /// `current_thread` runtime (see `crate::rt::block_on`).
+    pub fn http_get(&mut self, path: &str) -> crate::Result<Response> {
         debug!("http_get '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
             Ok(client) => {
@@ -206,13 +206,14 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => {
                 if e.is_builder() {
                     warn!("CLIENT: {e:?}");
                 }
-                Err(e)
+                Err(Error::ReqwestError(e))
             }
         }
     }
@@ -224,13 +225,11 @@ impl RestClient {
     /// Returns [`Error::ReqwestError`] if the request or body read fails, [`Error::MethodFailed`]
     /// on a non-success status (with the body excerpt).
     pub fn body_get(&mut self, path: &str) -> crate::Result<String> {
-        let response = self.http_get(path).map_err(Error::ReqwestError)?;
+        let response = self.http_get(path)?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async move { response.text().await })
-            })
-            .map_err(Error::ReqwestError)?;
+            let text = crate::rt::block_on(async move { response.text().await })
+                .and_then(|r| r.map_err(Error::ReqwestError))?;
             return Err(Error::MethodFailed(
                 "Get".to_string(),
                 status.as_u16(),
@@ -241,9 +240,8 @@ impl RestClient {
                 ),
             ));
         }
-        let text =
-            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
-                .map_err(Error::ReqwestError)?;
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
         Ok(text)
     }
 
@@ -274,51 +272,51 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
     }
 
-    /// Sends a `HEAD` to `base/path` with the configured headers (blocks on the tokio runtime).
+    /// Sends a `HEAD` to `base/path` with the configured headers (blocks via `crate::rt::block_on`, see `rt.sdd`).
     ///
     /// # Errors
     ///
-    /// Returns [`reqwest::Error`] if the client cannot be built (PEM/TLS issues) or the request
-    /// fails; builder errors are also logged at warn level.
-    pub fn http_head(&mut self, path: &str) -> std::result::Result<Response, reqwest::Error> {
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level. Returns [`Error::Other`] on a
+    /// `current_thread` runtime (see `crate::rt::block_on`).
+    pub fn http_head(&mut self, path: &str) -> crate::Result<Response> {
         debug!("http_head '{}' ", format!("{}/{}", self.baseurl, path));
         match self.get_client() {
             Ok(client) => {
@@ -326,13 +324,14 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => {
                 if e.is_builder() {
                     warn!("CLIENT: {e:?}");
                 }
-                Err(e)
+                Err(Error::ReqwestError(e))
             }
         }
     }
@@ -345,7 +344,7 @@ impl RestClient {
     /// Returns [`Error::ReqwestError`] if the request fails, [`Error::MethodFailed`] on a
     /// non-success status.
     pub fn header_head(&mut self, path: &str) -> crate::Result<Vec<(String, String)>> {
-        let response = self.http_get(path).map_err(Error::ReqwestError)?;
+        let response = self.http_get(path)?;
         if !response.status().is_success() {
             let status = response.status();
             return Err(Error::MethodFailed(
@@ -418,8 +417,8 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
-                    .map_err(Error::ReqwestError)
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => Err(Error::ReqwestError(e)),
         }
@@ -435,10 +434,8 @@ impl RestClient {
         let response = self.http_patch(path, body)?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async move { response.text().await })
-            })
-            .map_err(Error::ReqwestError)?;
+            let text = crate::rt::block_on(async move { response.text().await })
+                .and_then(|r| r.map_err(Error::ReqwestError))?;
             return Err(Error::MethodFailed(
                 "Patch".to_string(),
                 status.as_u16(),
@@ -449,9 +446,8 @@ impl RestClient {
                 ),
             ));
         }
-        let text =
-            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
-                .map_err(Error::ReqwestError)?;
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
         Ok(text)
     }
 
@@ -492,39 +488,38 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
@@ -546,8 +541,8 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
-                    .map_err(Error::ReqwestError)
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => Err(Error::ReqwestError(e)),
         }
@@ -563,10 +558,8 @@ impl RestClient {
         let response = self.http_put(path, body)?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async move { response.text().await })
-            })
-            .map_err(Error::ReqwestError)?;
+            let text = crate::rt::block_on(async move { response.text().await })
+                .and_then(|r| r.map_err(Error::ReqwestError))?;
             return Err(Error::MethodFailed(
                 "Put".to_string(),
                 status.as_u16(),
@@ -577,9 +570,8 @@ impl RestClient {
                 ),
             ));
         }
-        let text =
-            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
-                .map_err(Error::ReqwestError)?;
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
         Ok(text)
     }
 
@@ -620,39 +612,38 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
@@ -674,8 +665,8 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
-                    .map_err(Error::ReqwestError)
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => Err(Error::ReqwestError(e)),
         }
@@ -691,10 +682,8 @@ impl RestClient {
         let response = self.http_post(path, body)?;
         if !response.status().is_success() {
             let status = response.status();
-            let text = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async move { response.text().await })
-            })
-            .map_err(Error::ReqwestError)?;
+            let text = crate::rt::block_on(async move { response.text().await })
+                .and_then(|r| r.map_err(Error::ReqwestError))?;
             return Err(Error::MethodFailed(
                 "Post".to_string(),
                 status.as_u16(),
@@ -705,9 +694,8 @@ impl RestClient {
                 ),
             ));
         }
-        let text =
-            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
-                .map_err(Error::ReqwestError)?;
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
         Ok(text)
     }
 
@@ -748,39 +736,38 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
@@ -803,8 +790,8 @@ impl RestClient {
                         req = req.header(key.to_string(), val.to_string());
                     }
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
-                    .map_err(Error::ReqwestError)
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => Err(Error::ReqwestError(e)),
         }
@@ -830,39 +817,38 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
@@ -882,8 +868,8 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
-                    .map_err(Error::ReqwestError)
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => Err(Error::ReqwestError(e)),
         }
@@ -900,10 +886,8 @@ impl RestClient {
         let response = self.http_delete(path)?;
         if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
             let status = response.status();
-            let text = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async move { response.text().await })
-            })
-            .map_err(Error::ReqwestError)?;
+            let text = crate::rt::block_on(async move { response.text().await })
+                .and_then(|r| r.map_err(Error::ReqwestError))?;
             return Err(Error::MethodFailed(
                 "Delete".to_string(),
                 status.as_u16(),
@@ -914,9 +898,8 @@ impl RestClient {
                 ),
             ));
         }
-        let text =
-            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
-                .map_err(Error::ReqwestError)?;
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
         Ok(text)
     }
 
@@ -949,39 +932,38 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
@@ -1099,8 +1081,8 @@ impl RestClient {
                 for (key, val) in self.headers.clone() {
                     req = req.header(key.to_string(), val.to_string());
                 }
-                tokio::task::block_in_place(|| Handle::current().block_on(async move { req.send().await }))
-                    .map_err(Error::ReqwestError)
+                crate::rt::block_on(async move { req.send().await })
+                    .and_then(|r| r.map_err(Error::ReqwestError))
             }
             Err(e) => Err(Error::ReqwestError(e)),
         }
@@ -1116,10 +1098,8 @@ impl RestClient {
         let response = self.http_delete_with_body(path, body)?;
         if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
             let status = response.status();
-            let text = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async move { response.text().await })
-            })
-            .map_err(Error::ReqwestError)?;
+            let text = crate::rt::block_on(async move { response.text().await })
+                .and_then(|r| r.map_err(Error::ReqwestError))?;
             return Err(Error::MethodFailed(
                 "Delete".to_string(),
                 status.as_u16(),
@@ -1130,9 +1110,8 @@ impl RestClient {
                 ),
             ));
         }
-        let text =
-            tokio::task::block_in_place(|| Handle::current().block_on(async move { response.text().await }))
-                .map_err(Error::ReqwestError)?;
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
         Ok(text)
     }
 
@@ -1175,39 +1154,38 @@ impl RestClient {
                     "code".to_string().into(),
                     Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
                 );
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let headers = result
-                            .headers()
-                            .into_iter()
-                            .map(|(key, val)| {
-                                (
-                                    key.as_str().to_string(),
-                                    val.to_str().unwrap_or_default().to_string(),
-                                )
-                            })
-                            .collect::<Vec<(String, String)>>();
-                        let text = match result.text().await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                ret.insert(
-                                    "body".to_string().into(),
-                                    Dynamic::from(format!("Error reading response body: {e}")),
-                                );
-                                ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                                ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                                return Err(format!("Error reading response body: {e}").into());
-                            }
-                        };
-                        ret.insert(
-                            "json".to_string().into(),
-                            serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
-                        );
-                        ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
-                        ret.insert("body".to_string().into(), Dynamic::from(text));
-                        Ok(ret)
-                    })
+                crate::rt::block_on(async {
+                    let headers = result
+                        .headers()
+                        .into_iter()
+                        .map(|(key, val)| {
+                            (
+                                key.as_str().to_string(),
+                                val.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect::<Vec<(String, String)>>();
+                    let text = match result.text().await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            ret.insert(
+                                "body".to_string().into(),
+                                Dynamic::from(format!("Error reading response body: {e}")),
+                            );
+                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
+                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
+                            return Err(format!("Error reading response body: {e}").into());
+                        }
+                    };
+                    ret.insert(
+                        "json".to_string().into(),
+                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                    );
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("body".to_string().into(), Dynamic::from(text));
+                    Ok(ret)
                 })
+                .map_err(rhai_err)?
             }
             Err(e) => Err(crate::error_chain(&e).into()),
         }
@@ -1262,45 +1240,44 @@ pub fn headers_has(headers: Vec<(String, String)>, name: String) -> bool {
 /// status (`SCAN-HTTP-001`), [`Error::ReqwestError`] on request/body-read failure, and
 /// [`Error::YamlError`] / [`Error::SerializationError`] when the body is not valid YAML/JSON.
 pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> RhaiRes<Dynamic> {
-    tokio::task::block_in_place(|| {
-        Handle::current().block_on(async move {
-            let mut headers = reqwest::header::HeaderMap::new();
-            match auth_type.as_str() {
-                "bearer" => {
-                    let value = format!("Bearer {credential}")
-                        .parse()
-                        .map_err(|e| Error::Other(format!("invalid bearer credential: {e}")))?;
-                    headers.insert(reqwest::header::AUTHORIZATION, value);
-                }
-                "basic" => {
-                    let encoded = STANDARD.encode(&credential);
-                    let value = format!("Basic {encoded}")
-                        .parse()
-                        .map_err(|e| Error::Other(format!("invalid basic credential: {e}")))?;
-                    headers.insert(reqwest::header::AUTHORIZATION, value);
-                }
-                _ => {}
+    crate::rt::block_on(async move {
+        let mut headers = reqwest::header::HeaderMap::new();
+        match auth_type.as_str() {
+            "bearer" => {
+                let value = format!("Bearer {credential}")
+                    .parse()
+                    .map_err(|e| Error::Other(format!("invalid bearer credential: {e}")))?;
+                headers.insert(reqwest::header::AUTHORIZATION, value);
             }
-            let client = reqwest::Client::builder()
-                .default_headers(headers)
-                .timeout(std::time::Duration::from_mins(5))
-                .build()
-                .map_err(|e| Error::Other(e.to_string()))?;
-            let response = client.get(&url).send().await.map_err(Error::ReqwestError)?;
-            if !response.status().is_success() {
-                return Err(Error::Other(format!(
-                    "SCAN-HTTP-001: HTTP {} for {}",
-                    response.status(),
-                    url
-                )));
+            "basic" => {
+                let encoded = STANDARD.encode(&credential);
+                let value = format!("Basic {encoded}")
+                    .parse()
+                    .map_err(|e| Error::Other(format!("invalid basic credential: {e}")))?;
+                headers.insert(reqwest::header::AUTHORIZATION, value);
             }
-            let body = response.text().await.map_err(Error::ReqwestError)?;
-            let value: serde_yaml::Value =
-                serde_yaml::from_str(&body).map_err(|e| Error::YamlError(e.to_string()))?;
-            let json = serde_json::to_string(&value).map_err(Error::SerializationError)?;
-            serde_json::from_str::<Dynamic>(&json).map_err(Error::SerializationError)
-        })
+            _ => {}
+        }
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(std::time::Duration::from_mins(5))
+            .build()
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let response = client.get(&url).send().await.map_err(Error::ReqwestError)?;
+        if !response.status().is_success() {
+            return Err(Error::Other(format!(
+                "SCAN-HTTP-001: HTTP {} for {}",
+                response.status(),
+                url
+            )));
+        }
+        let body = response.text().await.map_err(Error::ReqwestError)?;
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&body).map_err(|e| Error::YamlError(e.to_string()))?;
+        let json = serde_json::to_string(&value).map_err(Error::SerializationError)?;
+        serde_json::from_str::<Dynamic>(&json).map_err(Error::SerializationError)
     })
+    .and_then(|r| r)
     .map_err(rhai_err)
 }
 
@@ -1470,5 +1447,73 @@ mod tests {
         let headers = vec![("X-Total-Pages".to_string(), "3".to_string())];
         assert!(headers_has(headers.clone(), "x-total-pages".to_string()));
         assert!(!headers_has(headers, "x-total-count".to_string()));
+    }
+
+    // ── Scenario « hors runtime multi-thread, jamais de panique tokio » (http.sdd) ──
+    // Face publique choisie : `body_post` elle-même, nommée par la tâche de migration.
+    // Multi-thread : les deux ponts (send + lecture de corps) partagent le runtime vivant,
+    // le corps est servi intégralement (voie verrouillée par le Scenario).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn body_post_on_multi_thread_serves_the_full_body() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("posted"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let body = client
+            .body_post("x", "payload")
+            .expect("multi-thread : le corps doit être servi");
+        assert_eq!(body, "posted");
+    }
+
+    // Voix « hors runtime » : le runtime temporaire sert l'appel et l'échec de transport
+    // remonte TYPÉ, sans paniquer l'hôte (avant la migration : panique `Handle::current`).
+    // LIMITE CONNUE, à remonter (rapport) : la réussite complète `Ok(texte)` hors runtime
+    // n'est PAS verrouillable en deux ponts — reqwest lie le timer du timeout-client
+    // (`TotalTimeoutBody`) au runtime qui a émis `send` ; lu depuis le runtime temporaire
+    // suivant, `response.text()` panique dans le timer tokio. Un succès avec corps lu hors
+    // runtime exigerait un pont unique pour `body_*` (ou un runtime temporaire partagé,
+    // interdit par rt.sdd) — décision de spec hors de cette tâche, remontée au rapport.
+    #[test]
+    fn body_post_outside_runtime_is_served_by_the_temporary_runtime() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        // Fil courant SANS runtime tokio : la voie runtime temporaire du pont doit servir
+        // l'appel jusqu'à l'échec de transport, sans panique.
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        let result = client.body_post("x", "payload");
+        assert!(
+            result.is_err(),
+            "port fermé : erreur transport attendue, pas de panique"
+        );
+    }
+
+    // Voix `current_thread` du même Scenario : la future requête ne part PAS (le wiremock ne
+    // voit aucune requête reçue) et l'appel rend l'@variant-Error::Other explicite de rt.sdd,
+    // sans paniquer l'hôte.
+    #[tokio::test(flavor = "current_thread")]
+    async fn body_post_on_current_thread_returns_error_without_running_the_request() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("posted"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        match client.body_post("x", "payload") {
+            Err(crate::Error::Other(msg)) => assert!(
+                msg.contains("requires a multi-thread tokio runtime"),
+                "message attendu explicite, obtenu : {msg}"
+            ),
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            received.is_empty(),
+            "le futur interne ne doit pas être exécuté, reçu : {received:?}"
+        );
     }
 }

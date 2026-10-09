@@ -13,7 +13,6 @@ use oci_client::{Client, Reference, client, config, manifest, secrets::RegistryA
 use rhai::{Dynamic, Engine, ImmutableString, Map};
 use std::{collections::BTreeMap, path::PathBuf};
 use tar::{Archive, Builder};
-use tokio::{runtime::Handle, task::block_in_place};
 
 /// OCI registry client. Create with [`Registry::new`] and push/pull images.
 #[derive(Clone, Debug)]
@@ -94,14 +93,13 @@ impl Registry {
         let layers = vec![layer];
         let mut manifest = manifest::OciImageManifest::build(&layers, &config, Some(values));
         manifest.media_type = Some(manifest::OCI_IMAGE_MEDIA_TYPE.to_string());
-        let push_response = block_in_place(|| {
-            Handle::current().block_on(async move {
-                client
-                    .push(&reference, &layers, config, &self.auth.clone(), Some(manifest))
-                    .await
-            })
+        let push_response = crate::rt::block_on(async move {
+            client
+                .push(&reference, &layers, config, &self.auth.clone(), Some(manifest))
+                .await
         })
-        .map_err(|e| rhai_err(Error::OCIDistrib(e)))?;
+        .map_err(rhai_err)
+        .and_then(|r| r.map_err(|e| rhai_err(Error::OCIDistrib(e))))?;
         let manifest_url = push_response.manifest_url;
         let digest: ImmutableString = if let Some(idx) = manifest_url.rfind("sha256:") {
             manifest_url[idx..].to_string()
@@ -154,17 +152,15 @@ impl Registry {
     pub fn pull_image(&mut self, dest_dir: &PathBuf, repository: String, tag: String) -> Result<()> {
         let client = Client::new(client::ClientConfig::default());
         let reference = Reference::with_tag(self.registry.clone(), repository, tag);
-        let data = block_in_place(|| {
-            Handle::current().block_on(async move {
-                client
-                    .pull(&reference, &self.auth.clone(), vec![
-                        manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
-                        manifest::IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE,
-                    ])
-                    .await
-            })
+        let data = crate::rt::block_on(async move {
+            client
+                .pull(&reference, &self.auth.clone(), vec![
+                    manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
+                    manifest::IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE,
+                ])
+                .await
         })
-        .map_err(Error::OCIDistrib)?;
+        .and_then(|r| r.map_err(Error::OCIDistrib))?;
         for layer in data.layers {
             let mut archive = Archive::new(GzDecoder::new(&layer.data[..]));
             archive.unpack(dest_dir).map_err(Error::Stdio)?;
@@ -197,7 +193,8 @@ impl Registry {
     /// Returns a Rhai error wrapping [`Error::OCIParseError`] or [`Error::OCIDistrib`], as per
     /// [`Self::list_tags`].
     pub fn rhai_list_tags(&mut self, repository: String) -> RhaiRes<Dynamic> {
-        block_in_place(|| Handle::current().block_on(async move { self.list_tags(repository).await }))
+        crate::rt::block_on(async move { self.list_tags(repository).await })
+            .and_then(|r| r)
             .map_err(rhai_err)
             .map(|lst| lst.into_iter().collect())
     }
@@ -211,10 +208,10 @@ impl Registry {
     pub fn get_manifest(&mut self, repository: String, tag: String) -> RhaiRes<Dynamic> {
         let client = Client::new(client::ClientConfig::default());
         let image = Reference::with_tag(self.registry.clone(), repository, tag);
-        let (manifest, _) = block_in_place(|| {
-            Handle::current().block_on(async move { client.pull_manifest(&image, &self.auth.clone()).await })
-        })
-        .map_err(|e| rhai_err(Error::OCIDistrib(e)))?;
+        let (manifest, _) =
+            crate::rt::block_on(async move { client.pull_manifest(&image, &self.auth.clone()).await })
+                .map_err(rhai_err)
+                .and_then(|r| r.map_err(|e| rhai_err(Error::OCIDistrib(e))))?;
         let v = serde_json::to_string(&manifest).map_err(|e| rhai_err(Error::SerializationError(e)))?;
         serde_json::from_str(&v).map_err(|e| rhai_err(Error::SerializationError(e)))
     }
@@ -407,6 +404,38 @@ mod tests {
             "/nonexistent/key.pem".into(),
         );
         assert!(result.is_err(), "Non-existent key must produce an error");
+    }
+
+    // ── Scenario « hors runtime multi-thread, jamais de panique » (oci.sdd) ──
+    // Seam minimal : registre injoignable (port 1 refusé). `pull_image` est la face la plus
+    // proche typée `crate::Result` : l'erreur du pont y est verrouillable TYPÉE (Error::Other),
+    // sans faux registre. Le verrouillage réseau complet reste la tâche « httpmock » de oci.sdd.
+    #[test]
+    fn pull_image_outside_runtime_is_served_by_the_temporary_runtime() {
+        let dest = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new("127.0.0.1:1".into(), String::new(), String::new());
+        // Fil courant SANS runtime tokio : avant la migration, `Handle::current()` panique ;
+        // après, le runtime temporaire sert et l'échec ressort en erreur réseau.
+        let result = reg.pull_image(&dest.path().to_path_buf(), "repo/img".into(), "1.0".into());
+        assert!(
+            result.is_err(),
+            "registre injoignable : erreur réseau attendue, pas de panique"
+        );
+    }
+
+    // Même Scenario, voix `current_thread` : le pont rend l'@variant-Error::Other explicite
+    // de rt.sdd (verrouillée typée ici), sans paniquer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pull_image_on_current_thread_returns_explicit_bridge_error() {
+        let dest = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new("127.0.0.1:1".into(), String::new(), String::new());
+        match reg.pull_image(&dest.path().to_path_buf(), "repo/img".into(), "1.0".into()) {
+            Err(crate::Error::Other(msg)) => assert!(
+                msg.contains("requires a multi-thread tokio runtime"),
+                "message attendu explicite, obtenu : {msg}"
+            ),
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
     }
 
     #[cfg(feature = "k8s")]

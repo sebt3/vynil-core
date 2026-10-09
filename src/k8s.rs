@@ -83,7 +83,7 @@ fn call_get_owner_ns() -> Option<String> {
 #[allow(clippy::expect_used)] // panic by design: no error channel in the CLIENT/RAW_CLIENT static initializers (vyvil-core.sdd)
 fn build_client() -> Client {
     let f = GET_CLIENT.get().expect("k8s context not initialized");
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(async move { f() }))
+    crate::rt::block_on(async move { f() }).expect("k8s client factory requires a multi-thread tokio runtime")
 }
 
 /// Wait timeout as a [`std::time::Duration`]; a negative timeout clamps to zero (immediate timeout).
@@ -140,11 +140,9 @@ async fn async_populate_cache() -> Result<Discovery> {
 
 #[allow(clippy::expect_used)] // panic by design: no error channel in the CACHE static initializer (vyvil-core.sdd)
 fn populate_cache() -> Discovery {
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async_populate_cache())
-            .expect("create discovery (excluding api-services)")
-    })
+    crate::rt::block_on(async_populate_cache())
+        .and_then(|r| r)
+        .expect("create discovery (excluding api-services)")
 }
 
 /// Discovery cache, populated from the cluster on first access.
@@ -156,23 +154,22 @@ pub static CACHE: LazyLock<RwLock<Discovery>> = LazyLock::new(|| RwLock::new(pop
 ///
 /// Exposed to Rhai as `update_k8s_crd_cache`.
 pub fn update_cache() {
-    tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async move {
-            match tokio::time::timeout(std::time::Duration::from_mins(1), async_populate_cache()).await {
-                Ok(Ok(discovery)) => {
-                    *CACHE.write().await = discovery;
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache");
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 30s, keeping old cache"
-                    );
-                }
+    // La voie secours `rt::block_on` rend une erreur typée que `update_cache` n'a pas de
+    // canal pour rendre (rend unité, k8s.sdd) : l'appel est simplement sans effet.
+    crate::rt::block_on(async move {
+        match tokio::time::timeout(std::time::Duration::from_mins(1), async_populate_cache()).await {
+            Ok(Ok(discovery)) => {
+                *CACHE.write().await = discovery;
             }
-        });
-    });
+            Ok(Err(e)) => {
+                tracing::warn!("E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache");
+            }
+            Err(_) => {
+                tracing::warn!("E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 30s, keeping old cache");
+            }
+        }
+    })
+    .ok();
 }
 
 /// A single live Kubernetes object: its API handle plus the metadata fetched at creation.
@@ -192,15 +189,14 @@ impl K8sObject {
     ///
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     pub fn rhai_delete(&mut self) -> RhaiRes<()> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                self.api
-                    .delete(&self.obj.name_any(), &DeleteParams::foreground())
-                    .await
-                    .map_err(Error::KubeError)
-                    .map(|_| ())
-            })
+        crate::rt::block_on(async move {
+            self.api
+                .delete(&self.obj.name_any(), &DeleteParams::foreground())
+                .await
+                .map_err(Error::KubeError)
+                .map(|_| ())
         })
+        .and_then(|r| r)
         .map_err(rhai_err)
     }
 
@@ -216,14 +212,13 @@ impl K8sObject {
             .obj
             .uid()
             .ok_or_else(|| rhai_err_str(format!("cannot wait for deletion of {name}: uid is missing")))?;
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let cond = await_condition(self.api.clone(), &name, conditions::is_deleted(&uid));
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            let cond = await_condition(self.api.clone(), &name, conditions::is_deleted(&uid));
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(|e| rhai_err(Error::KubeWaitError(e)))
         .map(|_| ())
@@ -282,13 +277,12 @@ impl K8sObject {
     pub fn wait_condition(&mut self, condition: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_condition(condition));
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(Error::KubeWaitError)
         .map_err(rhai_err)?;
@@ -337,13 +331,12 @@ impl K8sObject {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
         let cond = await_condition(self.api.clone(), &name, Self::is_status(prop));
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(Error::KubeWaitError)
         .map_err(rhai_err)?;
@@ -360,13 +353,12 @@ impl K8sObject {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
         let cond = await_condition(self.api.clone(), &name, Self::have_status(prop));
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(Error::KubeWaitError)
         .map_err(rhai_err)?;
@@ -383,13 +375,12 @@ impl K8sObject {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
         let cond = await_condition(self.api.clone(), &name, Self::have_status_value(prop, value));
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(Error::KubeWaitError)
         .map_err(rhai_err)?;
@@ -439,13 +430,12 @@ impl K8sObject {
                 }
             }
         };
-        let outcome = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), await_condition(api, &name, cond))
-                    .await
-                    .map_err(Error::Elapsed)
-            })
-        });
+        let outcome = crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), await_condition(api, &name, cond))
+                .await
+                .map_err(Error::Elapsed)
+        })
+        .and_then(|r| r);
         if let Some(e) = pred_err.into_inner() {
             return Err(e);
         }
@@ -475,107 +465,117 @@ impl K8sGeneric {
     ///
     /// On ambiguity the lexicographically smallest group wins (the core group in practice).
     /// Returns a handle with `api: None` when nothing matches.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from a `current_thread` tokio runtime: the cache read rides
+    /// `crate::rt::block_on` (rt.sdd) and the signature carries no error channel — same
+    /// infrastructure-panic family as the `CACHE` initializer (k8s.sdd `Raises`).
     #[must_use]
+    #[allow(clippy::expect_used)] // panic by design: signature non-Result, même exception que CACHE (k8s.sdd Raises) — remonté à la réconciliation
     pub fn new(name: &str, ns: Option<String>) -> K8sGeneric {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                if let Some((res, cap)) = CACHE
-                    .read()
-                    .await
-                    .groups()
-                    .flat_map(|group| {
-                        group
-                            .resources_by_stability()
-                            .into_iter()
-                            .map(move |res: (ApiResource, ApiCapabilities)| (group, res))
-                    })
-                    .filter(|(_, (res, _))| {
-                        name.eq_ignore_ascii_case(&res.kind) || name.eq_ignore_ascii_case(&res.plural)
-                    })
-                    .min_by_key(|(group, _res)| group.name())
-                    .map(|(_, res)| res)
-                {
-                    tracing::debug!("K8sGeneric::new Using {}/{}/{}", res.group, res.version, res.kind);
-                    let api = if cap.scope == Scope::Cluster || ns.is_none() {
-                        Api::all_with(CLIENT.clone(), &res)
-                    } else if let Some(namespace) = ns.clone() {
-                        Api::namespaced_with(CLIENT.clone(), &namespace, &res)
-                    } else {
-                        Api::default_namespaced_with(CLIENT.clone(), &res)
-                    };
-                    K8sGeneric {
-                        api: Some(api),
-                        ns,
-                        scope: cap.scope,
-                        kind: res.kind,
-                    }
+        crate::rt::block_on(async move {
+            if let Some((res, cap)) = CACHE
+                .read()
+                .await
+                .groups()
+                .flat_map(|group| {
+                    group
+                        .resources_by_stability()
+                        .into_iter()
+                        .map(move |res: (ApiResource, ApiCapabilities)| (group, res))
+                })
+                .filter(|(_, (res, _))| {
+                    name.eq_ignore_ascii_case(&res.kind) || name.eq_ignore_ascii_case(&res.plural)
+                })
+                .min_by_key(|(group, _res)| group.name())
+                .map(|(_, res)| res)
+            {
+                tracing::debug!("K8sGeneric::new Using {}/{}/{}", res.group, res.version, res.kind);
+                let api = if cap.scope == Scope::Cluster || ns.is_none() {
+                    Api::all_with(CLIENT.clone(), &res)
+                } else if let Some(namespace) = ns.clone() {
+                    Api::namespaced_with(CLIENT.clone(), &namespace, &res)
                 } else {
-                    K8sGeneric {
-                        api: None,
-                        ns: None,
-                        scope: Scope::Cluster,
-                        kind: String::new(),
-                    }
+                    Api::default_namespaced_with(CLIENT.clone(), &res)
+                };
+                K8sGeneric {
+                    api: Some(api),
+                    ns,
+                    scope: cap.scope,
+                    kind: res.kind,
                 }
-            })
+            } else {
+                K8sGeneric {
+                    api: None,
+                    ns: None,
+                    scope: Scope::Cluster,
+                    kind: String::new(),
+                }
+            }
         })
+        .expect("k8s resource resolution requires a multi-thread tokio runtime")
     }
 
     /// Resolves a resource by api group, version and kind/plural from the discovery cache.
     ///
     /// Returns a handle with `api: None` when nothing matches.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called from a `current_thread` tokio runtime (same as [`Self::new`]: cache
+    /// read via `crate::rt::block_on`, no error channel in the signature; k8s.sdd `Raises`).
     #[must_use]
+    #[allow(clippy::expect_used)] // panic by design: signature non-Result, même exception que CACHE (k8s.sdd Raises) — remonté à la réconciliation
     pub fn new_api_version(api_group: &str, version: &str, name: &str, ns: Option<String>) -> K8sGeneric {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                if let Some((res, cap)) = CACHE
-                    .read()
-                    .await
-                    .groups()
-                    .flat_map(|group| {
-                        group
-                            .resources_by_stability()
-                            .into_iter()
-                            .map(move |res: (ApiResource, ApiCapabilities)| (group, res))
-                    })
-                    .filter(|(group, (res, _))| {
-                        group.name() == api_group
-                            && res.version == version
-                            && (name.eq_ignore_ascii_case(&res.kind)
-                                || name.eq_ignore_ascii_case(&res.plural))
-                    })
-                    .min_by_key(|(group, _res)| group.name())
-                    .map(|(_, res)| res)
-                {
-                    tracing::debug!(
-                        "K8sGeneric::new_api_version Using {}/{}/{}",
-                        res.group,
-                        res.version,
-                        res.kind
-                    );
-                    let api = if cap.scope == Scope::Cluster || ns.is_none() {
-                        Api::all_with(CLIENT.clone(), &res)
-                    } else if let Some(namespace) = ns.clone() {
-                        Api::namespaced_with(CLIENT.clone(), &namespace, &res)
-                    } else {
-                        Api::default_namespaced_with(CLIENT.clone(), &res)
-                    };
-                    K8sGeneric {
-                        api: Some(api),
-                        ns,
-                        scope: cap.scope,
-                        kind: res.kind,
-                    }
+        crate::rt::block_on(async move {
+            if let Some((res, cap)) = CACHE
+                .read()
+                .await
+                .groups()
+                .flat_map(|group| {
+                    group
+                        .resources_by_stability()
+                        .into_iter()
+                        .map(move |res: (ApiResource, ApiCapabilities)| (group, res))
+                })
+                .filter(|(group, (res, _))| {
+                    group.name() == api_group
+                        && res.version == version
+                        && (name.eq_ignore_ascii_case(&res.kind) || name.eq_ignore_ascii_case(&res.plural))
+                })
+                .min_by_key(|(group, _res)| group.name())
+                .map(|(_, res)| res)
+            {
+                tracing::debug!(
+                    "K8sGeneric::new_api_version Using {}/{}/{}",
+                    res.group,
+                    res.version,
+                    res.kind
+                );
+                let api = if cap.scope == Scope::Cluster || ns.is_none() {
+                    Api::all_with(CLIENT.clone(), &res)
+                } else if let Some(namespace) = ns.clone() {
+                    Api::namespaced_with(CLIENT.clone(), &namespace, &res)
                 } else {
-                    K8sGeneric {
-                        api: None,
-                        ns: None,
-                        scope: Scope::Cluster,
-                        kind: String::new(),
-                    }
+                    Api::default_namespaced_with(CLIENT.clone(), &res)
+                };
+                K8sGeneric {
+                    api: Some(api),
+                    ns,
+                    scope: cap.scope,
+                    kind: res.kind,
                 }
-            })
+            } else {
+                K8sGeneric {
+                    api: None,
+                    ns: None,
+                    scope: Scope::Cluster,
+                    kind: String::new(),
+                }
+            }
         })
+        .expect("k8s resource resolution requires a multi-thread tokio runtime")
     }
 
     /// Rhai constructor `k8s_resource(name, ns)`: namespaced [`Self::new`].
@@ -638,10 +638,10 @@ impl K8sGeneric {
     /// [`Error::KubeError`] if the API call fails.
     pub fn list(&self) -> Result<ObjectList<DynamicObject>> {
         if let Some(api) = self.api.clone() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async move { api.list(&ListParams::default()).await.map_err(Error::KubeError) })
-            })
+            crate::rt::block_on(
+                async move { api.list(&ListParams::default()).await.map_err(Error::KubeError) },
+            )
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -668,13 +668,12 @@ impl K8sGeneric {
     /// [`Error::KubeError`] if the API call fails.
     pub fn list_labels(&self, labels: String) -> Result<ObjectList<DynamicObject>> {
         if let Some(api) = self.api.clone() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let mut lp = ListParams::default();
-                    lp = lp.labels(&labels);
-                    api.list(&lp).await.map_err(Error::KubeError)
-                })
+            crate::rt::block_on(async move {
+                let mut lp = ListParams::default();
+                lp = lp.labels(&labels);
+                api.list(&lp).await.map_err(Error::KubeError)
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -700,13 +699,12 @@ impl K8sGeneric {
     /// [`Error::KubeError`] if the API call fails.
     pub fn list_meta(&self) -> Result<ObjectList<PartialObjectMeta>> {
         if let Some(api) = self.api.clone() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    api.list_metadata(&ListParams::default())
-                        .await
-                        .map_err(Error::KubeError)
-                })
+            crate::rt::block_on(async move {
+                api.list_metadata(&ListParams::default())
+                    .await
+                    .map_err(Error::KubeError)
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -732,10 +730,7 @@ impl K8sGeneric {
     /// [`Error::KubeError`] if the API call fails.
     pub fn get(&self, name: &str) -> Result<DynamicObject> {
         if let Some(api) = self.api.clone() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async move { api.get(name).await.map_err(Error::KubeError) })
-            })
+            crate::rt::block_on(async move { api.get(name).await.map_err(Error::KubeError) }).and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -761,10 +756,8 @@ impl K8sGeneric {
     /// [`Error::KubeError`] if the API call fails.
     pub fn get_meta(&self, name: &str) -> Result<PartialObjectMeta> {
         if let Some(api) = self.api.clone() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async move { api.get_metadata(name).await.map_err(Error::KubeError) })
-            })
+            crate::rt::block_on(async move { api.get_metadata(name).await.map_err(Error::KubeError) })
+                .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -810,14 +803,13 @@ impl K8sGeneric {
     /// [`Error::KubeError`] if the API call fails.
     pub fn delete(&self, name: &str) -> Result<()> {
         if let Some(api) = self.api.clone() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    api.delete(name, &DeleteParams::foreground())
-                        .await
-                        .map_err(Error::KubeError)
-                        .map(|_| ())
-                })
+            crate::rt::block_on(async move {
+                api.delete(name, &DeleteParams::foreground())
+                    .await
+                    .map_err(Error::KubeError)
+                    .map(|_| ())
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -916,17 +908,16 @@ impl K8sGeneric {
     pub fn create(&self, data: serde_json::Map<String, serde_json::Value>) -> Result<DynamicObject> {
         if let Some(api) = self.api.clone() {
             let handle = self.inject_labels_and_owner(data);
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    match serde_json::from_value(handle.into()) {
-                        Ok(obj) => api
-                            .create(&PostParams::default(), &obj)
-                            .await
-                            .map_err(Error::KubeError),
-                        Err(e) => Err(Error::SerializationError(e)),
-                    }
-                })
+            crate::rt::block_on(async move {
+                match serde_json::from_value(handle.into()) {
+                    Ok(obj) => api
+                        .create(&PostParams::default(), &obj)
+                        .await
+                        .map_err(Error::KubeError),
+                    Err(e) => Err(Error::SerializationError(e)),
+                }
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -960,17 +951,16 @@ impl K8sGeneric {
     ) -> Result<DynamicObject> {
         if let Some(api) = self.api.clone() {
             let handle = self.inject_labels_and_owner(data);
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    match serde_json::from_value(handle.into()) {
-                        Ok(obj) => api
-                            .replace(name, &PostParams::default(), &obj)
-                            .await
-                            .map_err(Error::KubeError),
-                        Err(e) => Err(Error::SerializationError(e)),
-                    }
-                })
+            crate::rt::block_on(async move {
+                match serde_json::from_value(handle.into()) {
+                    Ok(obj) => api
+                        .replace(name, &PostParams::default(), &obj)
+                        .await
+                        .map_err(Error::KubeError),
+                    Err(e) => Err(Error::SerializationError(e)),
+                }
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -1003,17 +993,16 @@ impl K8sGeneric {
     ) -> Result<DynamicObject> {
         if let Some(api) = self.api.clone() {
             let handle = self.inject_labels_and_owner(patch_data);
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    api.patch(
-                        name,
-                        &PatchParams::apply(&crate::get_client_name()).force(),
-                        &Patch::Apply(handle),
-                    )
-                    .await
-                    .map_err(Error::KubeError)
-                })
+            crate::rt::block_on(async move {
+                api.patch(
+                    name,
+                    &PatchParams::apply(&crate::get_client_name()).force(),
+                    &Patch::Apply(handle),
+                )
+                .await
+                .map_err(Error::KubeError)
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -1053,33 +1042,32 @@ impl K8sGeneric {
                 .to_string();
             let handle = self.inject_labels_and_owner(patch_data);
             let api_for_get = api.clone();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    match api
-                        .patch(
-                            name,
-                            &PatchParams::apply(&crate::get_client_name()).force(),
-                            &Patch::Apply(handle),
-                        )
-                        .await
-                    {
-                        Ok(obj) => Ok(obj),
-                        Err(e) => {
-                            if kind == "Job"
-                                && e.to_string().contains("immutable")
-                                && let Ok(current) = api_for_get.get(name).await
-                                && job_is_completed(&current.data)
-                            {
-                                tracing::debug!(
-                                    "Job {name} spec.template immutable but already completed — skipping"
-                                );
-                                return Ok(current);
-                            }
-                            Err(Error::KubeError(e))
+            crate::rt::block_on(async move {
+                match api
+                    .patch(
+                        name,
+                        &PatchParams::apply(&crate::get_client_name()).force(),
+                        &Patch::Apply(handle),
+                    )
+                    .await
+                {
+                    Ok(obj) => Ok(obj),
+                    Err(e) => {
+                        if kind == "Job"
+                            && e.to_string().contains("immutable")
+                            && let Ok(current) = api_for_get.get(name).await
+                            && job_is_completed(&current.data)
+                        {
+                            tracing::debug!(
+                                "Job {name} spec.template immutable but already completed — skipping"
+                            );
+                            return Ok(current);
                         }
+                        Err(Error::KubeError(e))
                     }
-                })
+                }
             })
+            .and_then(|r| r)
         } else {
             Err(Error::UnsupportedMethod)
         }
@@ -1205,17 +1193,16 @@ impl K8sRaw {
     /// Returns a Rhai error wrapping the [`Self::get_url`] errors or
     /// [`Error::SerializationError`].
     pub fn rhai_get_url(&mut self, url: String) -> RhaiRes<Dynamic> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let res = self.get_url(url).await.map_err(rhai_err)?;
-                let v = serde_json::to_string(&res)
-                    .map_err(Error::SerializationError)
-                    .map_err(rhai_err)?;
-                serde_json::from_str(&v)
-                    .map_err(Error::SerializationError)
-                    .map_err(rhai_err)
-            })
+        crate::rt::block_on(async move {
+            let res = self.get_url(url).await.map_err(rhai_err)?;
+            let v = serde_json::to_string(&res)
+                .map_err(Error::SerializationError)
+                .map_err(rhai_err)?;
+            serde_json::from_str(&v)
+                .map_err(Error::SerializationError)
+                .map_err(rhai_err)
         })
+        .map_err(rhai_err)?
     }
 
     /// [`Self::get_api_version`] as a Rhai value (JSON round-trip through a string).
@@ -1225,17 +1212,16 @@ impl K8sRaw {
     /// Returns a Rhai error wrapping the [`Self::get_api_version`] errors or
     /// [`Error::SerializationError`].
     pub fn rhai_get_api_version(&mut self) -> RhaiRes<Dynamic> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let ver = self.get_api_version().await.map_err(rhai_err)?;
-                let v = serde_json::to_string(&ver)
-                    .map_err(Error::SerializationError)
-                    .map_err(rhai_err)?;
-                serde_json::from_str(&v)
-                    .map_err(Error::SerializationError)
-                    .map_err(rhai_err)
-            })
+        crate::rt::block_on(async move {
+            let ver = self.get_api_version().await.map_err(rhai_err)?;
+            let v = serde_json::to_string(&ver)
+                .map_err(Error::SerializationError)
+                .map_err(rhai_err)?;
+            serde_json::from_str(&v)
+                .map_err(Error::SerializationError)
+                .map_err(rhai_err)
         })
+        .map_err(rhai_err)?
     }
 
     /// [`Self::get_api_resources`] as a Rhai value (JSON round-trip through a string).
@@ -1245,17 +1231,16 @@ impl K8sRaw {
     /// Returns a Rhai error wrapping the [`Self::get_api_resources`] errors or
     /// [`Error::SerializationError`].
     pub fn rhai_get_api_resources(&mut self) -> RhaiRes<Dynamic> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let ver = self.get_api_resources().await.map_err(rhai_err)?;
-                let v = serde_json::to_string(&ver)
-                    .map_err(Error::SerializationError)
-                    .map_err(rhai_err)?;
-                serde_json::from_str(&v)
-                    .map_err(Error::SerializationError)
-                    .map_err(rhai_err)
-            })
+        crate::rt::block_on(async move {
+            let ver = self.get_api_resources().await.map_err(rhai_err)?;
+            let v = serde_json::to_string(&ver)
+                .map_err(Error::SerializationError)
+                .map_err(rhai_err)?;
+            serde_json::from_str(&v)
+                .map_err(Error::SerializationError)
+                .map_err(rhai_err)
         })
+        .map_err(rhai_err)?
     }
 }
 
@@ -1291,11 +1276,9 @@ impl K8sDaemonSet {
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deamonset(namespace: String, name: String) -> RhaiRes<K8sDaemonSet> {
         let api: Api<DaemonSet> = Api::namespaced(CLIENT.clone(), &namespace);
-        let d = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
-        })
-        .map_err(rhai_err)?;
+        let d = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+            .and_then(|r| r)
+            .map_err(rhai_err)?;
         Ok(K8sDaemonSet {
             api: Api::namespaced(CLIENT.clone(), &namespace),
             obj: d,
@@ -1343,13 +1326,12 @@ impl K8sDaemonSet {
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_deamonset_available());
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
         Ok(())
@@ -1387,11 +1369,9 @@ impl K8sStatefulSet {
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_sts(namespace: String, name: String) -> RhaiRes<K8sStatefulSet> {
         let api: Api<StatefulSet> = Api::namespaced(CLIENT.clone(), &namespace);
-        let d = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
-        })
-        .map_err(rhai_err)?;
+        let d = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+            .and_then(|r| r)
+            .map_err(rhai_err)?;
         Ok(K8sStatefulSet {
             api: Api::namespaced(CLIENT.clone(), &namespace),
             obj: d,
@@ -1439,13 +1419,12 @@ impl K8sStatefulSet {
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_sts_available());
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
         Ok(())
@@ -1484,11 +1463,9 @@ impl K8sDeploy {
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deployment(namespace: String, name: String) -> RhaiRes<K8sDeploy> {
         let api: Api<Deployment> = Api::namespaced(CLIENT.clone(), &namespace);
-        let d = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
-        })
-        .map_err(rhai_err)?;
+        let d = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+            .and_then(|r| r)
+            .map_err(rhai_err)?;
         Ok(K8sDeploy {
             api: Api::namespaced(CLIENT.clone(), &namespace),
             obj: d,
@@ -1536,13 +1513,12 @@ impl K8sDeploy {
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, Self::is_deploy_available());
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
         Ok(())
@@ -1566,11 +1542,9 @@ impl K8sJob {
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_job(namespace: String, name: String) -> RhaiRes<K8sJob> {
         let api: Api<Job> = Api::namespaced(CLIENT.clone(), &namespace);
-        let j = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
-        })
-        .map_err(rhai_err)?;
+        let j = crate::rt::block_on(async move { api.get(&name).await.map_err(Error::KubeError) })
+            .and_then(|r| r)
+            .map_err(rhai_err)?;
         Ok(K8sJob {
             api: Api::namespaced(CLIENT.clone(), &namespace),
             obj: j,
@@ -1618,13 +1592,12 @@ impl K8sJob {
     pub fn wait_done(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let cond = await_condition(self.api.clone(), &name, conditions::is_job_completed());
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout_duration(timeout), cond)
-                    .await
-                    .map_err(Error::Elapsed)
-            })
+        crate::rt::block_on(async move {
+            tokio::time::timeout(timeout_duration(timeout), cond)
+                .await
+                .map_err(Error::Elapsed)
         })
+        .and_then(|r| r)
         .map_err(rhai_err)?
         .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
         Ok(())
@@ -2045,6 +2018,92 @@ mod tests {
         assert!(
             !K8sObject::have_status_value("phase".to_string(), "Running".to_string())
                 .matches_object(Some(&obj))
+        );
+    }
+
+    // ── Scenario « ponts async → sync sans panique » (k8s.sdd, Raises) ──
+    // Seam minimal : `tower_test::mock` (dev-dep déjà employée par ./oci.rs) sert de faux
+    // API server à `kube::Client::new`, et le handle `K8sGeneric` est construit à la main
+    // (champs PUBLICS) SANS toucher les LazyLock CLIENT/CACHE (aucun cluster). Face choisie :
+    // `K8sGeneric::get`, typée `crate::Result` — l'erreur du pont y est verrouillable typée.
+    use kube::client::Body;
+
+    fn mocked_generic() -> (
+        K8sGeneric,
+        tower_test::mock::Handle<http::Request<Body>, http::Response<Body>>,
+    ) {
+        let (mock_service, handle) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+        let ar = ApiResource {
+            group: String::new(),
+            version: "v1".to_string(),
+            api_version: "v1".to_string(),
+            kind: "ConfigMap".to_string(),
+            plural: "configmaps".to_string(),
+        };
+        let api: Api<DynamicObject> = Api::all_with(kube::Client::new(mock_service, "ns"), &ar);
+        (
+            K8sGeneric {
+                api: Some(api),
+                ns: Some("ns".to_string()),
+                scope: Scope::Namespaced,
+                kind: "ConfigMap".to_string(),
+            },
+            handle,
+        )
+    }
+
+    fn json_ok_response() -> http::Response<Body> {
+        http::Response::builder()
+            .status(200)
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                br#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x"}}"#.to_vec(),
+            ))
+            .unwrap()
+    }
+
+    // Voix « hors runtime » : le runtime temporaire de `crate::rt::block_on` sert la requête
+    // (répondue par le mock resté vivant sur un runtime multi-thread dédié), sans panique.
+    // Avant la migration, `Handle::current()` panique ici.
+    #[test]
+    fn get_outside_runtime_is_served_by_the_temporary_runtime() {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // `kube::Client::new` emballe le service dans un `tower::Buffer` dont le worker se
+        // spawn À LA CONSTRUCTION : le handle est donc bâti sur le runtime dédié, puis
+        // `get` est appelé depuis le fil principal SANS runtime (voie runtime temporaire).
+        let (generic, handle) = server_rt.block_on(async { mocked_generic() });
+        let responder = server_rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let (_req, send) = handle.next_request().await.expect("service not called");
+            send.send_response(json_ok_response());
+        });
+        let obj = generic
+            .get("x")
+            .expect("hors runtime, la voie runtime temporaire doit servir sans panique");
+        assert_eq!(obj.types.expect("TypeMeta servi").kind, "ConfigMap");
+        server_rt.block_on(responder).unwrap();
+    }
+
+    // Voix `current_thread` : le pont rend l'@variant-Error::Other explicite de rt.sdd (typée,
+    // face `crate::Result`) et AUCUNE requête n'atteint le faux API server.
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_on_current_thread_returns_error_without_reaching_the_api() {
+        let (generic, mut handle) = mocked_generic();
+        match generic.get("x") {
+            Err(crate::Error::Other(msg)) => assert!(
+                msg.contains("requires a multi-thread tokio runtime"),
+                "message attendu explicite, obtenu : {msg}"
+            ),
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), handle.next_request())
+                .await
+                .is_err(),
+            "le futur interne ne doit pas être exécuté : aucune requête attendue"
         );
     }
 
