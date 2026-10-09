@@ -289,7 +289,10 @@ A JMESPath non-match is not an error, but the two query helpers render it asymme
 | `gen_private_key` | `(algo, {bits=4096})` | PKCS8 PEM. `algo`: `"rsa"` or `"ed25519"` (bits ignored for ed25519) — needs `crypto` |
 
 All of the string-typed arguments above tolerate non-string JSON input by falling back to `""`
-(with a `tracing::warn!`) rather than failing the render.
+(with a `tracing::warn!`) rather than failing the render — except `to_decimal`, which falls back
+to `0` instead (see its row above), and `gen_private_key`, whose `algo` is a typed parameter:
+there a non-string fails the render with a Handlebars parameter-type error, with no warn and no
+fallback (an unknown algorithm *name* is a different case and renders `""` after a warn).
 
 ## 13. `vynil-core`'s own helpers — feature `password`
 

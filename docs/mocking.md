@@ -2,9 +2,10 @@
 
 `vynil-core` ships three Rhai test doubles, one per network/cluster-facing module: HTTP, `k8s`,
 and OCI. Each mock re-registers (mostly) the same Rhai type and function names as its real
-counterpart, backed by in-memory fixtures instead of a live network call or cluster — so a script
-written against the real API can run against a mock in a unit test with little or no change.
-There is no Handlebars equivalent; mocking only applies to the Rhai side.
+counterpart, in place of a live network call or cluster — `http_mock` and `k8s_mock` are backed by
+in-memory fixtures; `oci_mock` has no fixtures at all, every method returning a fixed canned value
+(section 3) — so a script written against the real API can run against a mock in a unit test with
+little or no change. There is no Handlebars equivalent; mocking only applies to the Rhai side.
 
 See [rhai_helpers.md](rhai_helpers.md) for the real APIs these mirror.
 

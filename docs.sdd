@@ -109,7 +109,7 @@ Tasks:
     sans vérification de version, `get_cluster_version`, `get_kind`/`original_kind`, `get_url` en
     JSON seul, les waits ; et ./docs/mocking.md : le tableau des différences connues du mock k8s,
     dont `patch` qui n'écrit pas dans `created` — décisions actées (reçu de ./src/k8s.sdd).
-  [ ] ./docs/mocking.md : « backed by in-memory fixtures » est faux pour `oci`, le mock est un
+  [x] ./docs/mocking.md : « backed by in-memory fixtures » est faux pour `oci`, le mock est un
     double constant ; ./docs/rhai_helpers.md : les faces Rust publiques de `oci` à documenter
     (`pull_image`, `list_tags` async, `verify_tag_in_registry`, `resolve_registry_auth`), assumées
     comme API durable, décision actée (reçu de ./src/oci.sdd, dont la tâche garde la part de code
@@ -139,7 +139,7 @@ Tasks:
   [x] ./docs/rhai_helpers.md, section Semver : les six opérateurs exigent deux `Semver`, pas de
     coercition mixte ni de `<=>` — envelopper chaque opérande dans `semver_from` ; décision actée
     (reçu de ./src/semver.sdd).
-  [ ] ./docs/handlebars_helpers.md : la phrase englobante « All … tolerate non-string JSON
+  [x] ./docs/handlebars_helpers.md : la phrase englobante « All … tolerate non-string JSON
     input by falling back to `""` » est imprécise au mot `All` depuis que la ligne `to_decimal`
     nomme son exception (`0`, non `""`) — la qualifier d'un cheveu, sans rien d'autre (mesuré par
     le `validator`, consigné au commit des quatre gestes bcrypt/to_decimal/§12/mock-http).
