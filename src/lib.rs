@@ -18,9 +18,9 @@
 //! | `hbs-scripting` | ✅ | `register_helper_dir` / `rhai_register_helper_dir` (`handlebars/script_helper`). Implies `hbs` + `rhai`. Keep it separate because `script_helper` pulls `smartstring` which breaks `String + &String` in some graphs (see `hbs` docs) |
 //! | `http` | ✅ | [`http::RestClient`] (reqwest) + [`http_mock::RestClientMock`]. Implies `rhai` |
 //! | `crypto` | ✅ | `argon_hash` / `bcrypt_hash` / `gen_private_key` helpers (Handlebars). In Rhai: the `Argon` type via `new_argon` with its `.hash` method, plus `bcrypt_hash` / `gen_private_key` |
-//! | `k8s` | ❌ | Generic K8s handlers ([`k8s::K8sGeneric`], [`k8s::K8sObject`], …) + mocks. Implies `rhai` |
-//! | `oci` | ❌ | [`oci::Registry`] + OCI mock. Implies `rhai` |
-//! | `s3` | ❌ | S3 helpers ([`s3::s3_get_yaml`], [`s3::s3_list_keys`]). Implies `rhai` |
+//! | `k8s` | ❌ | Generic K8s handlers (`k8s::K8sGeneric`, `k8s::K8sObject`, …) + mocks. Implies `rhai` |
+//! | `oci` | ❌ | `oci::Registry` + OCI mock. Implies `rhai` |
+//! | `s3` | ❌ | S3 helpers (`s3::s3_get_yaml`, `s3::s3_list_keys`). Implies `rhai` |
 //! | `fs` | ❌ | Filesystem access from Rhai (`file_read`, `file_write`, …) |
 //! | `shell` | ❌ | Shell execution (`shell::run` / `shell::get_out` + Rhai `shell_run` / `shell_output`); unix-only, commands are interpreted by a literal `sh -c` |
 //! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
@@ -74,8 +74,10 @@ assert_eq!(out, "Hello world!");
 //! `semver_from` + `inc_*`, `glob`, `date_now`/`format`, `crc32_hash`.
 //! Feature-gated: `Argon` (`new_argon` + `.hash`) / `bcrypt_hash` / `gen_private_key`
 //! (feature `crypto`), `gen_password` (feature `password`), `file_*` (feature `fs`),
-//! `shell_*` (feature `shell`), `Registry` / `s3_*` / `RestClient` / `k8s_*` when their
-//! feature is enabled.
+//! `shell_*` (feature `shell`), and `Registry` (feature `oci`).
+//! Never injected by `new_bare`, even with every feature enabled: `s3_*`, `RestClient`
+//! and `k8s_*` are registered only on the caller's consent — `s3_rhai_register`,
+//! `http_rhai_register` and the `k8s_*_rhai_register` registrars.
 //!
 //! Scripts also get `assert` and `import_run` / `import_template` shims for optional imports.
 //!

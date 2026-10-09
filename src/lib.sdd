@@ -145,6 +145,16 @@ Must:
     n'existe (doc, TOC et compteurs) que sous `rhai`+`hbs`, en fence `rust,no_run` : il COMPILE
     sous ces deux features sans s'exécuter, et disparaît entièrement ailleurs. Il depend de
     l'export racine @variant-Error pour son doctest terminal `Ok::<(), vynil_core::Error>`.
+  Consigner le graph-dépendant qui reste, mesuré et non contractualisé : neuf liens intra-doc
+    ne résolvent pas sous `cargo doc --no-deps --no-default-features` — huit dans ./lib.rs
+    (@struct-engine::Script ×2 dont le titre de section, @hbs ×3, @struct-http::RestClient et
+    son mock, @variant-Error::OpenSSL) et un dans ./client_name.rs (l.4) — alors que `default`
+    et `--all-features` rendent la doc de crate sans un warning. Ces neuf ne tournent sous
+    aucune porte de CI (la porte contractée est `--all-features`, ./tooling.sdd) et ne sont le
+    contrat de personne : fait consigné, pas tâche — la correction du lien ./client_name.rs
+    n'appartient qu'à ./client_name.sdd si un contrat la réclame un jour. En contrepartie, les
+    lignes ❌ de la table des features nomment leurs symboles en littéraux de code : vrais sur
+    tout graphe par construction.
 
 Must not:
   Définir ici @fn-set_client_name, @struct-Script, @struct-HandleBars, @struct-Semver ou
@@ -268,13 +278,13 @@ Tasks:
     `new_argon` + `.hash` (décision actée : le code est juste, la doc fausse). Constaté depuis
     ./src/hashes.sdd, qui portait cette tâche avant le transfert : ./lib.rs est de cet `Owns`
     seul, la correction l'est donc aussi.
-  [ ] Corriger la queue de la phrase « injected by `new_bare` » de ./lib.rs : « `Registry` /
+  [x] Corriger la queue de la phrase « injected by `new_bare` » de ./lib.rs : « `Registry` /
     `s3_*` / `RestClient` / `k8s_*` when their feature is enabled » est fausse pour `s3_*`,
     `RestClient` et `k8s_*` — jamais câblés par @crate::engine::Script::new_bare même portes
     ouvertes (./src/engine.sdd, `Must not` et Scenario « never-auto-wired même portes
     ouvertes ») ; `Registry` seul est vrai. Rendez la phrase au consentement de l'appelant :
     ce que `new_bare` n'injecte pas ne se réclame d'aucune feature.
-  [ ] Rendre robustes hors graphe default les liens intra-doc de la table des features de
+  [x] Rendre robustes hors graphe default les liens intra-doc de la table des features de
     ./lib.rs : mesuré cinq warnings sous `cargo doc --no-default-features`-au-sens-large
     (`cargo doc --no-deps` default — `k8s::K8sGeneric`, `k8s::K8sObject`, `oci::Registry`,
     `s3::s3_get_yaml`, `s3::s3_list_keys` non résolus quand les modules sont gated off). La
