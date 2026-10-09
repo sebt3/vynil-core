@@ -147,7 +147,7 @@ Tasks:
     mesurées — dont l'anglais, seul état réel des pages (zéro mot français mesuré) : la règle
     bilingue y est tâche ouverte à traduire en `Must`, pas un contrat inventé. Les dix specs de
     ./src/ qui portaient ces tâches ne gardent que leur part de code et nomment leur jumelle.
-  [ ] Balayer les chemins `../docs/` restés dans les specs de ./src/ et de ./vyvil-core.sdd.
+  [x] Balayer les chemins `../docs/` restés dans les specs de ./src/ et de ./vyvil-core.sdd.
     Mesure de référence (rejouable au grep `\.\./docs/`, répartition validée par le
     `validator`) : trente-trois occurrences courantes — dix-neuf `References:`, quatre
     commentaires vifs de `Tasks:`, deux corps `[ ]` dont cette tâche elle-même, deux prose
@@ -157,7 +157,14 @@ Tasks:
     passe les lignes ouvertes (`References:`, commentaires vifs, corps `[ ]`, prose
     descriptive) en ./docs/, sans toucher aux corps `[x]`, cette tâche comprise une fois
     close. La vérité du contenu nommé n'est pas en cause (les sections citées ont été
-    revérifiées contre la page réelle) ; seul le chemin pourrit.
+    revérifiées contre la page réelle) ; seul le chemin pourrit. Rendu de clôture (mesuré au
+    grep rejouable) : vingt-cinq lignes balayées, huit restantes — sept corps `[x]` archives
+    dont la ligne `shell.sdd` qui était `[ ]` à la mesure et est devenue archive dans le
+    commit même inscrivant cette tâche (`193e911`), plus le corps de cette tâche,
+    auto-protegé par la clause précédente. Deux gestures consignés hors de la catégorie
+    chemin : la citation périmée de ./src/hbs_json.sdd (phrase retirée de la page par
+    `d82f29a`) éteinte à l'état produit, et la phrase de gouvernance de ./AGENTS.md reprise à
+    l'attribution clos.
   [x] Documenter le risque d'exécution de commandes de `shell` dans le commentaire
     feature `shell` de ./Cargo.toml : aucune whitelist, aucun timeout, aucun bac à sable,
     l'opt-in cargo est le seul garde-fou (décision actée). Tâche jumelle de « Documenter le

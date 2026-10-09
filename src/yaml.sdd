@@ -20,7 +20,7 @@ References:
     restent verts sans modification ; le onzième,
     @test_yaml_decode_multi_short_string_returns_empty, verrouille le seuil `val.len() <= 5` et meurt
     avec lui (tâche dédiée ci-dessous). ./yaml.rs n'avait aucun test avant la conversion.
-  ../docs/rhai_helpers.md — section 6, même surface `yaml_encode` / `yaml_decode` /
+  ./docs/rhai_helpers.md — section 6, même surface `yaml_encode` / `yaml_decode` /
     `yaml_decode_multi`, désalignée du quirk et donc ressynchronisée sur le comportement réel : un
     élément par document, entrées courtes comprises, document vide ou en commentaires seul rendant
     l'unité.

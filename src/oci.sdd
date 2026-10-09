@@ -44,11 +44,11 @@ References:
     @reqwest 0.12.28 en transitif) ; @tokio 1.48 déclaré, lock 1.53.1. Non optionnels
     consommés par CE groupe : @base64, @chrono (@chrono::Utc::now), @sha256, @flate2,
     @tar, @serde_json, @rhai (feature `serde`). Le mock ne tient qu'à @rhai + @crate.
-  ../docs/rhai_helpers.md — section 11 « Feature `oci` (auto-wired) », table des 5 méthodes
+  ./docs/rhai_helpers.md — section 11 « Feature `oci` (auto-wired) », table des 5 méthodes
     + fonction libre, fidèle aux noms enregistrés. Lignes 51-54 : la phrase qui range `oci`
     dans le trio « http/k8s/s3 » avec promesse de « exact same Rhai type and function
     names » est fausse pour oci et s3 — à corriger (`Tasks`, voir ./s3.sdd).
-  ../docs/mocking.md — section 3 : la docs la plus fidèle de la crate (« No fixtures —
+  ./docs/mocking.md — section 3 : la docs la plus fidèle de la crate (« No fixtures —
     every method returns a fixed canned value », caveat explicite du nom de type divergent,
     table des cinq valeurs constantes) ; mais sa page d'accueil parle de mocks « backed by
     in-memory fixtures » pour les trois doubles — à corriger pour oci (`Tasks`).

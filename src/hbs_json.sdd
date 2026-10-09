@@ -29,11 +29,11 @@ References:
   ./yaml.sdd — référence croisée : ce module appelle @serde_yaml directement avec sa propre
     découpe `---\n` à l'écriture et ne transite jamais par @crate::yaml ; ./yaml.sdd énonce
     déjà la même symétrie depuis l'autre côté.
-  ../docs/handlebars_helpers.md — section 8 : table des six helpers, le `format=` (hors
-    `json_query`, où il est un no-op à documenter),
-    « Empty or null input to any of these returns an empty string » — phrase à réécrire par la
-    tâche de doc, fausse depuis le refus de `find_str_param` — et « `null` if nothing
-    matches » pour les requêtes JMESPath.
+  ./docs/handlebars_helpers.md — section 8 : table des six helpers, le `format=` (hors
+    `json_query`, où il est un no-op documenté comme tel) et « `null` if nothing
+    matches » pour les requêtes JMESPath. La phrase « Empty or null input to any of these
+    returns an empty string », fausse depuis le refus de @fn-find_str_param, a quitté la
+    page par la tâche de doc close de cette spec (d82f29a).
   ./Cargo.toml — la liste de la feature `hbs`,
     `hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:toml"]` :
     @handlebars 6.2.0 avec `string_helpers`, @jmespath 0.5.0 optionnel, @toml 0.8 optionnel ;

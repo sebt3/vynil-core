@@ -43,7 +43,7 @@ References:
   ./hbs.rs — ./engine.rs n'importe RIEN de @crate::hbs ni ./hbs_json.rs : le mot
     `template` des shims désigne une fonction DE MODULE Rhai côté consommateur, sans aucun
     rapport au @crate::hbs::HandleBars::register_template.
-  ../docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
+  ./docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
     section 12 contient une phrase fausse sur reqwest « dependency de base » (à corriger, §`Tasks`).
   ./lib.rs (rustdoc racine) — quickstart `new_bare(vec![...])` + `run_file(&PathBuf)` ;
     les deux mentions corrigées par ./src/lib.sdd (tâches closes) : « Additional,

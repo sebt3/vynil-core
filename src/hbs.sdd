@@ -40,7 +40,7 @@ References:
     selon NOS features ; `uuid_new_v7` y est câblé sur `Uuid::new_v4` (bug de la dépendance,
     uuid 1.24.1 en lock ; 0.17.0 est la dernière version publiée, aucun correctif amont à
     attendre).
-  ../docs/handlebars_helpers.md — tables des helpers par section ; tolérance « non-string →
+  ./docs/handlebars_helpers.md — tables des helpers par section ; tolérance « non-string →
     vide + warn » qui ne couvre pas les trois helpers typés (§`Scenario` et `Tasks`).
 
 Must:

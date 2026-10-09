@@ -37,8 +37,10 @@ Détail complet dans `.specdd/bootstrap.project.md`. Règles clés :
   qu'elle spécifie est inscrite dans les `Tasks:` de la spec propriétaire de ce fichier ;
   l'originale ne garde que sa part en périmètre, nomme sa jumelle, et les deux se cochent dans
   le même commit (une face publique changée ailleurs casse la compilation). Un artefact sans
-  `Owns` (`../docs/`, `./README.md`) n'est pas une zone libre : ses tâches sont bloquées
-  jusqu'à attribution, prérequis ouvert dans `vyvil-core.sdd`.
+  `Owns` n'est pas une zone libre : le remède est l'attribution, jamais la tolérance. Les
+  trois pages de `./docs/` et `./README.md` appartiennent à `docs.sdd` depuis leur
+  attribution ; un artefact redevenu sans propriétaire est un trou à boucher avant toute
+  tâche le visant.
 
 ## Harnais clippy
 

@@ -43,12 +43,12 @@ References:
     commune avec ./oci.sdd) ; lock 0.12.28 (drift de patch mineur, même
     pattern que @rhai 1.20/1.25). @schemars pulled par la feature, consommé pour @schemars::JsonSchema
     des quatre énum @crate::http::obj ; @tokio pour les ponts.
-  ../docs/rhai_helpers.md — table HTTP fidèle sur les formes (`.head` rend map {code, headers},
+  ./docs/rhai_helpers.md — table HTTP fidèle sur les formes (`.head` rend map {code, headers},
     `.post_form` « drops any Content-Type header ») ; MAIS sa phrase centrée (~ligne 228)
     « No Cargo feature gates this (`reqwest` is a base dependency) » est FAUSSE : `http`
     gate le module et @reqwest est optionnel — à corriger (`Tasks`, avec la phrase 51-54
     déjà à corriger par ./s3.sdd et ./oci.sdd).
-  ../docs/mocking.md — section 1 « http_mock » : la docs fidèle — signature exacte de
+  ./docs/mocking.md — section 1 « http_mock » : la docs fidèle — signature exacte de
     @crate::http_mock::httpmock_rhai_register avec fixtures, exemple d'appel gated `http`,
     table nommant explicitement que `.post_form` partage les fixtures POST et
     `.delete_with_body` les DELETE, corps ignorés, clone des fixtures par client.

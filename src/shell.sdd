@@ -37,7 +37,7 @@ References:
   ./hbs.rs — aucun helper Handlebars `shell_*` n'existe : ./hbs.rs n'importe ni n'appelle rien
     de @crate::shell ; ./README.md liste `shell` éteinte, sans dépendance, sans helper
     Handlebars, sans un mot sur les risques d'exécution.
-  ../docs/rhai_helpers.md — section 10 : `shell_run(command: string)` rend un `int` avec flux
+  ./docs/rhai_helpers.md — section 10 : `shell_run(command: string)` rend un `int` avec flux
     hérités, `shell_output(command: string)` rend une `string` et « errors if the exit code is
     non-zero or if anything was written to stderr (even on exit 0) ». La page dit le
     `sh` littéral (unix seul), le verdict `128 + signal` rendu sur mort par signal et le
@@ -234,7 +234,7 @@ Tasks:
 # Ce qui restait ici hors de ./shell.rs : `shell_output` à la table de ./lib.rs est transféré
 # à ./src/lib.sdd et la description de la feature `shell` à ./vyvil-core.sdd (tâches jumelles,
 # même commit).
-# Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
+# Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
   [ ] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous

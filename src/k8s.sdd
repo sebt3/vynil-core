@@ -16,7 +16,7 @@ Purpose:
     en script : trois enregistreurs distincts (@crate::k8s::k8sgeneric_rhai_register,
     @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register) à rappeler par
     l'hôte. @crate::k8s_mock est le mock le plus fidèle de la crate en SURFACE (aucun nom
-    manquant, contrairement à ./http_mock) ; les différences sont SÉMANTIQUES et documentées (../docs/mocking.md,
+    manquant, contrairement à ./http_mock) ; les différences sont SÉMANTIQUES et documentées (./docs/mocking.md,
     décision actée : le mock ne change pas) : kind sensible à la casse là où le vrai est
     insensible et pluriel, `list` figé au snapshot de construction, `get_meta` renvoyant l'objet
     complet, `exist` toujours vrai, `created` recevant une vue fusionnée que `patch` ne remplit
@@ -53,11 +53,11 @@ References:
     feature `k8s` (à vérifier à la compilation, `s3` le garde) ; @tokio est déclaré avec la
     feature `time` explicite, `tokio::time::timeout` étant utilisé directement au lieu de
     dépendre de l'unification de features de @kube (décision actée). Aucun @cfg interne : les deux fichiers s'éteignent/allument en bloc.
-  ../docs/rhai_helpers.md — section k8s : la doc ment sur `new_global` (« the resource's
+  ./docs/rhai_helpers.md — section k8s : la doc ment sur `new_global` (« the resource's
     actual scope » — le code rend all-namespaces pour les ressources namespaced, voir `Must`) ;
     `get_deamonset` (typo) y est documentée telle quelle : le doc assume, le contrat freeze ; le
     nom script `get_cluster_version` (méthode Rust `get_api_version`) y est à documenter.
-  ../docs/mocking.md — section k8s_mock : table fidèle sur les noms ; silencieuse sur les
+  ./docs/mocking.md — section k8s_mock : table fidèle sur les noms ; silencieuse sur les
     différences sémantiques (kind exact/sensible à la casse du mock, snapshot du `list`,
     `get_meta` objet complet, `created` vs `mocks`, ns rempli par `apply` seul) — à documenter
     sous forme de tableau « différences connues » (`Tasks`).

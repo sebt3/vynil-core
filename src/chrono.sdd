@@ -17,7 +17,7 @@ References:
     @crate::chrono::chrono_rhai_register et l'appelle sans condition locale : l'enregistrement
     est donc fait à chaque engine construit puisque ./engine.rs ne compile que sous la feature
     `rhai`.
-  ../docs/rhai_helpers.md — la doc des helpers Rhai présente la même surface `date_now` +
+  ./docs/rhai_helpers.md — la doc des helpers Rhai présente la même surface `date_now` +
     `format` et renvoie à la page strftime de @chrono pour la grille reconnue.
 
 Must:

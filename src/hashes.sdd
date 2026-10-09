@@ -34,7 +34,7 @@ References:
     rendu et `bcrypt_hash` appelle @crate::hashes::bcrypt_hash, tous deux avalant l'erreur en
     chaîne vide après un `warn`. Ce contrat Handlebars vivra dans la spec de ./hbs.rs ; ./hbs.rs
     consomme ./hashes.rs, jamais l'inverse.
-  ../docs/rhai_helpers.md — face script documentée : `crc32_hash` sous `rhai` seul, `bcrypt_hash`,
+  ./docs/rhai_helpers.md — face script documentée : `crc32_hash` sous `rhai` seul, `bcrypt_hash`,
     `new_argon` et la méthode `.hash` sous `rhai` + `crypto`, avec le quirk « le sel de
     @crate::hashes::Argon est fixé à `new_argon()` », conforme au code.
   ./Cargo.toml — `crypto = ["dep:openssl", "dep:argon2", "dep:bcrypt"]` ; `crc32fast` n'en fait
@@ -227,7 +227,7 @@ Handles:
     @crate::hashes::Argon::hash et @crate::hashes::bcrypt_hash produisent des hachés valides
     (bcrypt padde le vide de son octet nul interne).
   Sel figé à la construction — une instance @crate::hashes::Argon appelée dix fois rejoue le
-    même sel et rend la même chaîne pour le même mot de passe ; ../docs/rhai_helpers.md le
+    même sel et rend la même chaîne pour le même mot de passe ; ./docs/rhai_helpers.md le
     documente déjà et le `&mut self` de @crate::hashes::Argon::rhai_hash n'y change rien.
   Mots de passe de `72` octets et plus pour bcrypt — refusés en @crate::Error::BcryptError
     (@bcrypt::BcryptError::Truncation) par @bcrypt::non_truncating_hash, qui compte l'octet de
@@ -249,7 +249,7 @@ Handles:
     ./engine.rs ; `crypto` + `rhai` : jeu complet via @Script::new_bare ou les deux registres.
 
 Tasks:
-# Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
+# Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
   [x] Rendre parlante la branche d'encodage du sel, décidée par le développeur principal (« les

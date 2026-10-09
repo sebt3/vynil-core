@@ -38,7 +38,7 @@ References:
     `to_string(v)` rend `1.3.0` — seule observabilité mutante verrouillée côté script), tous sur
     @Script::new_bare via l'auxiliaire de test `make_script`. ./tests/ aligne dix binaires
     @crate::client_name, aucun sur le semver.
-  ./hbs.rs — grep `semver` nul dans ./hbs.rs comme dans ../docs/handlebars_helpers.md : il
+  ./hbs.rs — grep `semver` nul dans ./hbs.rs comme dans ./docs/handlebars_helpers.md : il
     n'existe aucun helper Handlebars `to_semver`, `from_semver` ou `semver_*`. Ce module n'a pas
     de pendant Handlebars et n'importe jamais @crate::hbs ; ./hbs.rs, s'il en créait un jour,
     en serait l'unique contrat, dans sa propre spec.
@@ -309,7 +309,7 @@ Handles:
     type.
 
 Tasks:
-# Les parts ../docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
+# Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
   [ ] Convertir en tests Rust passants chaque Scenario de cette spec qui n'en a pas encore, dans

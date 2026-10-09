@@ -29,7 +29,7 @@ References:
     @crate::key::gen_private_key avec un paramètre `bits` optionnel par défaut `4096` et
     avale l'erreur en chaîne vide après un `warn` ; ce contrat Handlebars vivra dans la spec
     de ./hbs.rs, ./hbs.rs consommant ce module et jamais l'inverse.
-  ../docs/rhai_helpers.md — les deux surcharges de script y sont déjà documentées : `rsa` à
+  ./docs/rhai_helpers.md — les deux surcharges de script y sont déjà documentées : `rsa` à
     `4096` par défaut, taille ignorée pour `ed25519`.
 
 Must:

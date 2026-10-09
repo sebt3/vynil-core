@@ -28,7 +28,7 @@ References:
     en-tête (ligne 5, énumération des modules feature-gated) ; @crate::engine::Script::new_bare
     n'appelle jamais @crate::s3::s3_rhai_register. ./hbs.rs ne référence pas non plus le
     module : aucun helper Handlebars `s3_*` n'existe.
-  ../docs/rhai_helpers.md — section 14 : snippet de branchement
+  ./docs/rhai_helpers.md — section 14 : snippet de branchement
     `#[cfg(feature = "s3")] vynil_core::s3::s3_rhai_register(&mut script.engine);` ; table des
     deux helpers avec « All parameters are `string` », s3_get_yaml en 7 paramètres→dynamic et
     s3_list_keys en 6→tableau de chaînes ; sémantique des chaînes vides (access_key vide =
