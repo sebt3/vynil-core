@@ -489,8 +489,21 @@ Tasks:
     `tokio` avec `time` (décision actée — déjà déclaré ainsi, consigné sans geste). Tâche
     jumelle de « Retirer `dep:futures` de la feature `k8s` » de ./vyvil-core.sdd, à cocher
     dans le même commit.
-  [ ] StatefulSet : corriger la spec (`unwrap_or(1)`, déjà le code) et son Scenario.
-  [ ] Enregistrer explicitement `update_k8s_crd_cache` (no-op) dans `k8s_mock_rhai_register`.
+  [x] StatefulSet : corriger la spec (`unwrap_or(1)`, déjà le code) et son Scenario.
+    Close au record — les trois faces étaient alignées avant cette reprise : le code
+    compare `spec.replicas.unwrap_or(1) == available_replicas.unwrap_or(0)` (l. 1516
+    mesuré), le `Must` l. 239-240 le nomme (« replicas absent compte 1, comme le défaut
+    Kubernetes » rendu à la clôture du lot waits), le Scenario l. 644-646 rend le verdict
+    cohérent (absent = 1 ≠ 0 → FAUX → Elapsed). Le verrou de jeu (face `wait_available`
+    sans `.spec.replicas`) reste à la tâche de conversion — le verrou unitaire direct de
+    cette comparaison n'y est pas nommé, l'inventaire l'emporte.
+  [x] Enregistrer explicitement `update_k8s_crd_cache` (no-op) dans `k8s_mock_rhai_register`.
+    Close au record — rendu et verrouillé avant cette reprise : enregistrement explicite
+    `engine.register_fn("update_k8s_crd_cache", || {})` avec commentaire nommant le
+    chevauchement du macro-réel (l. 798-813 mesuré), test `update_k8s_crd_cache_is_noop_in_mock`
+    en face, page `mocking.md` l. 144 fidèle (« Overridden to a no-op … »). Le macro réel
+    enregistre la vraie `update_cache` (registre vrai, l. 1882) — le mock la remplace,
+    c'est exactement ce que la tâche prescrivait.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   panics d'infrastructure (contexte non câblé, discovery initiale), macros `register_k8s_*`
