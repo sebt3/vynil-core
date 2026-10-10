@@ -172,7 +172,7 @@ pub enum Error {
     #[error("{0} query failed: {1}")]
     MethodFailed(String, u16, String),
 
-    /// `RestClient::obj_*` was called with an unsupported method enum variant.
+    /// Raised by a `K8sGeneric` handle whose resource was not resolved.
     #[error("Unsupported method")]
     UnsupportedMethod,
 

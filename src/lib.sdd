@@ -221,6 +221,12 @@ Handles:
     @core::convert::From dérivés par thiserror (7 non gated, 13 gated).
 
 Tasks:
+  [x] Reprendre la doc de @variant-Error::UnsupportedMethod (l. 175) : elle dit
+    « `RestClient::obj_*` was called with an unsupported method enum variant » — périmée depuis
+    la tâche `obj_*` de ./src/http.sdd (les `match` sont devenus exhaustifs, ./http.rs ne
+    construit plus jamais la variante) ; elle reste construite par les 11 sites de handles
+    non résolus de ./src/k8s.rs. Rendre la phrase à l'état produit, sans changer la variante.
+    Jumelle de la tâche `obj_*` de ./src/http.sdd, à cocher dans le même commit.
   [x] Convertir les Scenario sans test en tests passants. ./lib.rs porte six tests
     @fn-error_chain (chaîne pleine trois niveaux, effondrement du doublon verbatim, feuille
     seule, absence de faux positif sur cause distincte, terminaison cyclique bornée, plafond de

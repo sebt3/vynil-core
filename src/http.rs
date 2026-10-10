@@ -3,7 +3,7 @@
 //! Requires the `http` feature (which implies `rhai`). All requests use the global
 //! client identity from [`crate::set_client_name`] as `User-Agent`.
 
-use crate::{Error, Error::UnsupportedMethod, RhaiRes, rhai_err};
+use crate::{Error, RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Certificate, Client, Response};
 use rhai::{Dynamic, Engine, Map};
@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use serde_yaml;
 use tracing::{debug, warn};
+
+/// Request timeout applied to every client built by [`RestClient::get_client`] and by
+/// [`http_get_yaml`]: 5 minutes, deliberately NOT configurable (settled decision — a knob
+/// will come from a real need).
+const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
 /// Read verb accepted by [`RestClient::obj_read`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
@@ -117,8 +122,11 @@ impl RestClient {
         self.headers_reset();
     }
 
-    /// Appends a header sent on every request (chainable; repeated names are kept).
+    /// Adds a header sent on every request (chainable). A name already present is replaced
+    /// WITHOUT REGARD TO CASE — HTTP header names are case-insensitive, the last value and the
+    /// last case win. Multi-valued headers are not supported (the rhai map has unique keys).
     pub fn add_header(&mut self, key: &str, value: &str) -> &mut RestClient {
+        self.headers.retain(|k, _| !k.eq_ignore_ascii_case(key));
         self.headers
             .insert(key.to_string().into(), value.to_string().into());
         self
@@ -130,13 +138,13 @@ impl RestClient {
         self.add_header(key.as_str(), value.as_str());
     }
 
-    /// Adds a JSON `Content-Type` unless one is already set (chainable).
+    /// Adds a JSON `Content-Type` unless one is already set, WITHOUT REGARD TO CASE
+    /// (chainable).
     pub fn add_header_json_content(&mut self) -> &mut RestClient {
         if self
             .headers
-            .clone()
-            .into_iter()
-            .any(|(c, _)| c == *"Content-Type")
+            .keys()
+            .any(|c| c.eq_ignore_ascii_case("Content-Type"))
         {
             self
         } else {
@@ -144,13 +152,10 @@ impl RestClient {
         }
     }
 
-    /// Adds a JSON `Accept` unless one is already set (chainable); logs current headers at debug
-    /// level.
+    /// Adds a JSON `Accept` unless one is already set, WITHOUT REGARD TO CASE (chainable).
+    /// No header value is ever logged (an `Authorization` never belongs in a log, even at debug).
     pub fn add_header_json_accept(&mut self) -> &mut RestClient {
-        for (key, val) in self.headers.clone() {
-            debug!("RestClient.header: {:} {:}", key, val);
-        }
-        if self.headers.clone().into_iter().any(|(c, _)| c == *"Accept") {
+        if self.headers.keys().any(|c| c.eq_ignore_ascii_case("Accept")) {
             self
         } else {
             self.add_header("Accept", "application/json")
@@ -173,22 +178,29 @@ impl RestClient {
         self.add_header("Authorization", format!("Basic {hash}").as_str());
     }
 
+    /// Rebuilds a [`reqwest::Client`] for a single request: `User-Agent` =
+    /// [`crate::get_client_name`], timeout = [`DEFAULT_TIMEOUT`], optional rustls CA / mTLS
+    /// identity. Any build failure is logged `warn!("CLIENT: {e:?}")` HERE — hence for every
+    /// verb — before being wrapped in [`Error::ReqwestError`] by the `http_*` callers.
     fn get_client(&mut self) -> std::result::Result<Client, reqwest::Error> {
-        let five_sec = std::time::Duration::from_mins(5);
+        let log_build_err = |e: reqwest::Error| {
+            warn!("CLIENT: {e:?}");
+            e
+        };
         let mut builder = Client::builder()
             .user_agent(crate::get_client_name())
-            .timeout(five_sec);
+            .timeout(DEFAULT_TIMEOUT);
         if let Some(ca) = &self.server_ca {
-            let ca_cert = Certificate::from_pem(ca.as_bytes())?;
+            let ca_cert = Certificate::from_pem(ca.as_bytes()).map_err(log_build_err)?;
             builder = builder.add_root_certificate(ca_cert).use_rustls_tls();
         }
         if let (Some(key), Some(cert)) = (&self.client_key, &self.client_cert) {
             let cli_cert = format!("{key}\n{cert}");
             builder = builder
-                .identity(reqwest::Identity::from_pem(cli_cert.as_bytes())?)
+                .identity(reqwest::Identity::from_pem(cli_cert.as_bytes()).map_err(log_build_err)?)
                 .use_rustls_tls();
         }
-        builder.build()
+        builder.build().map_err(log_build_err)
     }
 
     /// Sends a `GET` to `base/path` with the configured headers (blocks via `crate::rt::block_on`, see `rt.sdd`).
@@ -209,12 +221,7 @@ impl RestClient {
                 crate::rt::block_on(async move { req.send().await })
                     .and_then(|r| r.map_err(Error::ReqwestError))
             }
-            Err(e) => {
-                if e.is_builder() {
-                    warn!("CLIENT: {e:?}");
-                }
-                Err(Error::ReqwestError(e))
-            }
+            Err(e) => Err(Error::ReqwestError(e)),
         }
     }
 
@@ -270,7 +277,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -285,21 +292,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -327,28 +326,23 @@ impl RestClient {
                 crate::rt::block_on(async move { req.send().await })
                     .and_then(|r| r.map_err(Error::ReqwestError))
             }
-            Err(e) => {
-                if e.is_builder() {
-                    warn!("CLIENT: {e:?}");
-                }
-                Err(Error::ReqwestError(e))
-            }
+            Err(e) => Err(Error::ReqwestError(e)),
         }
     }
 
-    /// Returns the response headers of `path` as `(name, value)` pairs (the request is actually
-    /// a `GET`, not a `HEAD`).
+    /// Returns the response headers of `path` as `(name, value)` pairs — a real `HEAD` is sent
+    /// (the body is never fetched; settled decision: the "economical GET" was never wanted).
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ReqwestError`] if the request fails, [`Error::MethodFailed`] on a
-    /// non-success status.
+    /// Returns [`Error::ReqwestError`] if the request fails, [`Error::MethodFailed`] (label
+    /// `Head`) on a non-success status.
     pub fn header_head(&mut self, path: &str) -> crate::Result<Vec<(String, String)>> {
-        let response = self.http_get(path)?;
+        let response = self.http_head(path)?;
         if !response.status().is_success() {
             let status = response.status();
             return Err(Error::MethodFailed(
-                "Get".to_string(),
+                "Head".to_string(),
                 status.as_u16(),
                 format!(
                     "The server returned the error: {} {}",
@@ -382,7 +376,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 let headers = result
                     .headers()
@@ -486,7 +480,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -501,21 +495,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -610,7 +596,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -625,21 +611,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -734,7 +712,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -749,21 +727,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -786,7 +756,7 @@ impl RestClient {
             Ok(client) => {
                 let mut req = client.post(format!("{}/{}", self.baseurl, path)).form(params);
                 for (key, val) in self.headers.clone() {
-                    if key.as_str() != "Content-Type" {
+                    if !key.eq_ignore_ascii_case("Content-Type") {
                         req = req.header(key.to_string(), val.to_string());
                     }
                 }
@@ -797,25 +767,31 @@ impl RestClient {
         }
     }
 
-    /// Form `POST` for Rhai: map entries become urlencoded params (values via `to_string`);
+    /// Form `POST` for Rhai: map entries become urlencoded params (scalar values via `Display`;
+    /// a composite map/array value is refused with `form field '<clé>' must be a scalar`);
     /// returns the same map shape as [`Self::rhai_get`].
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if the request fails (full cause chain via [`crate::error_chain`])
-    /// or the response body cannot be read.
+    /// Returns a Rhai error on a composite form value, if the request fails (full cause chain
+    /// via [`crate::error_chain`]) or the response body cannot be read.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn rhai_post_form(&mut self, path: String, val: Map) -> RhaiRes<Map> {
-        let params: Vec<(String, String)> = val
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
+        let mut params: Vec<(String, String)> = Vec::with_capacity(val.len());
+        for (k, v) in val {
+            if v.is_map() || v.is_array() {
+                return Err(rhai_err(Error::Other(format!(
+                    "form field '{k}' must be a scalar"
+                ))));
+            }
+            params.push((k.to_string(), v.to_string()));
+        }
         let mut ret = Map::new();
         match self.http_post_form(path.as_str(), &params) {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -830,21 +806,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -930,7 +898,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -945,21 +913,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -973,8 +933,8 @@ impl RestClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsupportedMethod`] for a method other than [`ReadMethod::Get`], and
-    /// forwards [`Self::json_get`] errors.
+    /// Forwards [`Self::json_get`] errors. The match on [`ReadMethod`] is exhaustive;
+    /// `Error::UnsupportedMethod` is no longer built here (settled decision).
     #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_read(&mut self, method: ReadMethod, path: &str, key: &str) -> crate::Result<Value> {
         let full_path = if key.is_empty() {
@@ -982,10 +942,8 @@ impl RestClient {
         } else {
             format!("{path}/{key}")
         };
-        if method == ReadMethod::Get {
-            self.json_get(&full_path)
-        } else {
-            Err(UnsupportedMethod)
+        match method {
+            ReadMethod::Get => self.json_get(&full_path),
         }
     }
 
@@ -993,16 +951,14 @@ impl RestClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsupportedMethod`] for a method other than Post/Put, and forwards the
-    /// [`Self::json_post`] / [`Self::json_put`] errors.
+    /// Forwards the [`Self::json_post`] / [`Self::json_put`] errors. The match on
+    /// [`CreateMethod`] is exhaustive; `Error::UnsupportedMethod` is no longer built here
+    /// (settled decision).
     #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_create(&mut self, method: CreateMethod, path: &str, input: &Value) -> crate::Result<Value> {
-        if method == CreateMethod::Post {
-            self.json_post(path, input)
-        } else if method == CreateMethod::Put {
-            self.json_put(path, input)
-        } else {
-            Err(UnsupportedMethod)
+        match method {
+            CreateMethod::Post => self.json_post(path, input),
+            CreateMethod::Put => self.json_put(path, input),
         }
     }
 
@@ -1011,8 +967,8 @@ impl RestClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsupportedMethod`] for an unknown method value, and forwards the
-    /// patch/put/post JSON errors.
+    /// Forwards the patch/put/post JSON errors. The match on [`UpdateMethod`] is exhaustive;
+    /// `Error::UnsupportedMethod` is no longer built here (settled decision).
     #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_update(
         &mut self,
@@ -1029,16 +985,11 @@ impl RestClient {
         } else {
             format!("{path}/{key}")
         };
-        if method == UpdateMethod::Patch {
-            self.json_patch(&full_path, input)
-        } else if method == UpdateMethod::Put {
-            self.json_put(&full_path, input)
-        } else if method == UpdateMethod::Post {
-            self.json_post(&full_path, input)
-        } else if method == UpdateMethod::None {
-            Ok(input.clone())
-        } else {
-            Err(UnsupportedMethod)
+        match method {
+            UpdateMethod::Patch => self.json_patch(&full_path, input),
+            UpdateMethod::Put => self.json_put(&full_path, input),
+            UpdateMethod::Post => self.json_post(&full_path, input),
+            UpdateMethod::None => Ok(input.clone()),
         }
     }
 
@@ -1046,8 +997,8 @@ impl RestClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsupportedMethod`] for a method other than [`DeleteMethod::Delete`], and
-    /// forwards [`Self::json_delete`] errors.
+    /// Forwards [`Self::json_delete`] errors. The match on [`DeleteMethod`] is exhaustive;
+    /// `Error::UnsupportedMethod` is no longer built here (settled decision).
     #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_delete(&mut self, method: DeleteMethod, path: &str, key: &str) -> crate::Result<Value> {
         let full_path = if key.is_empty() {
@@ -1055,10 +1006,8 @@ impl RestClient {
         } else {
             format!("{path}/{key}")
         };
-        if method == DeleteMethod::Delete {
-            self.json_delete(&full_path)
-        } else {
-            Err(UnsupportedMethod)
+        match method {
+            DeleteMethod::Delete => self.json_delete(&full_path),
         }
     }
 
@@ -1152,7 +1101,7 @@ impl RestClient {
             Ok(result) => {
                 ret.insert(
                     "code".to_string().into(),
-                    Dynamic::from_int(result.status().as_u16().to_string().parse::<i64>().unwrap_or(0)),
+                    Dynamic::from_int(i64::from(result.status().as_u16())),
                 );
                 crate::rt::block_on(async {
                     let headers = result
@@ -1167,21 +1116,13 @@ impl RestClient {
                         .collect::<Vec<(String, String)>>();
                     let text = match result.text().await {
                         Ok(t) => t,
-                        Err(e) => {
-                            ret.insert(
-                                "body".to_string().into(),
-                                Dynamic::from(format!("Error reading response body: {e}")),
-                            );
-                            ret.insert("json".to_string().into(), Dynamic::from(json!({})));
-                            ret.insert("headers".to_string().into(), Dynamic::from(headers));
-                            return Err(format!("Error reading response body: {e}").into());
-                        }
+                        Err(e) => return Err(format!("Error reading response body: {e}").into()),
                     };
                     ret.insert(
                         "json".to_string().into(),
                         serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
                     );
-                    ret.insert("headers".to_string().into(), Dynamic::from(headers.clone()));
+                    ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
                     Ok(ret)
                 })
@@ -1195,8 +1136,8 @@ impl RestClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsupportedMethod`] for a method other than [`DeleteMethod::Delete`], and
-    /// forwards [`Self::json_delete_with_body`] errors.
+    /// Forwards [`Self::json_delete_with_body`] errors. The match on [`DeleteMethod`] is
+    /// exhaustive; `Error::UnsupportedMethod` is no longer built here (settled decision).
     #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
     pub fn obj_delete_with_body(
         &mut self,
@@ -1204,10 +1145,8 @@ impl RestClient {
         path: &str,
         input: &Value,
     ) -> crate::Result<Value> {
-        if method == DeleteMethod::Delete {
-            self.json_delete_with_body(path, input)
-        } else {
-            Err(UnsupportedMethod)
+        match method {
+            DeleteMethod::Delete => self.json_delete_with_body(path, input),
         }
     }
 }
@@ -1231,42 +1170,46 @@ pub fn headers_has(headers: Vec<(String, String)>, name: String) -> bool {
     headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(&name))
 }
 
-/// GETs `url`, optionally authenticated (`bearer` / `basic` `credential`), and returns the YAML
-/// body as a Rhai value.
+/// GETs `url`, optionally authenticated (`auth_type` `""` for an anonymous request, `bearer`
+/// or `basic`, WITHOUT REGARD TO CASE; any other value is rejected), and returns the YAML body
+/// as a Rhai value. The client is fresh for each call, with the global client identity
+/// ([`crate::get_client_name`]) as `User-Agent` and a 5-minute timeout (private constant
+/// `DEFAULT_TIMEOUT`).
 ///
 /// # Errors
 ///
-/// Returns [`Error::Other`] on an invalid auth header, a client builder failure or a non-success
-/// status (`SCAN-HTTP-001`), [`Error::ReqwestError`] on request/body-read failure, and
-/// [`Error::YamlError`] / [`Error::SerializationError`] when the body is not valid YAML/JSON.
+/// Returns [`Error::Other`] on an unknown `auth_type` (`unknown auth_type '<v>'`), an invalid
+/// auth header, a client builder failure or a non-success status (`HTTP-GET-YAML-001`),
+/// [`Error::ReqwestError`] on request/body-read failure, and [`Error::YamlError`] /
+/// [`Error::SerializationError`] when the body is not valid YAML/JSON.
 pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> RhaiRes<Dynamic> {
     crate::rt::block_on(async move {
         let mut headers = reqwest::header::HeaderMap::new();
-        match auth_type.as_str() {
-            "bearer" => {
-                let value = format!("Bearer {credential}")
-                    .parse()
-                    .map_err(|e| Error::Other(format!("invalid bearer credential: {e}")))?;
-                headers.insert(reqwest::header::AUTHORIZATION, value);
-            }
-            "basic" => {
-                let encoded = STANDARD.encode(&credential);
-                let value = format!("Basic {encoded}")
-                    .parse()
-                    .map_err(|e| Error::Other(format!("invalid basic credential: {e}")))?;
-                headers.insert(reqwest::header::AUTHORIZATION, value);
-            }
-            _ => {}
+        if auth_type.eq_ignore_ascii_case("bearer") {
+            let value = format!("Bearer {credential}")
+                .parse()
+                .map_err(|e| Error::Other(format!("invalid bearer credential: {e}")))?;
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        } else if auth_type.eq_ignore_ascii_case("basic") {
+            let encoded = STANDARD.encode(&credential);
+            let value = format!("Basic {encoded}")
+                .parse()
+                .map_err(|e| Error::Other(format!("invalid basic credential: {e}")))?;
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        } else if !auth_type.is_empty() {
+            // plus de requête anonyme silencieuse (décision actée)
+            return Err(Error::Other(format!("unknown auth_type '{auth_type}'")));
         }
         let client = reqwest::Client::builder()
+            .user_agent(crate::get_client_name())
             .default_headers(headers)
-            .timeout(std::time::Duration::from_mins(5))
+            .timeout(DEFAULT_TIMEOUT)
             .build()
             .map_err(|e| Error::Other(e.to_string()))?;
         let response = client.get(&url).send().await.map_err(Error::ReqwestError)?;
         if !response.status().is_success() {
             return Err(Error::Other(format!(
-                "SCAN-HTTP-001: HTTP {} for {}",
+                "HTTP-GET-YAML-001: HTTP {} for {}",
                 response.status(),
                 url
             )));
@@ -1281,8 +1224,9 @@ pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> Rhai
     .map_err(rhai_err)
 }
 
-/// Registers `RestClient` (`new_http_client`/`new_client`), the HTTP verbs and the header
-/// helpers (`http_get_yaml`, `headers_get`, `headers_has`) on a Rhai engine.
+/// Registers `RestClient` (`new_http_client`/`new_client`), the HTTP verbs (each with its
+/// `http_`-prefixed alias, `head`/`http_head` included — 29 names) and the header helpers
+/// (`http_get_yaml`, `headers_get`, `headers_has`) on a Rhai engine.
 pub fn http_rhai_register(engine: &mut Engine) {
     engine
         .register_type_with_name::<RestClient>("RestClient")
@@ -1297,6 +1241,7 @@ pub fn http_rhai_register(engine: &mut Engine) {
         .register_fn("add_header_bearer", RestClient::add_header_bearer)
         .register_fn("add_header_basic", RestClient::add_header_basic)
         .register_fn("head", RestClient::rhai_head)
+        .register_fn("http_head", RestClient::rhai_head)
         .register_fn("get", RestClient::rhai_get)
         .register_fn("http_get", RestClient::rhai_get)
         .register_fn("delete", RestClient::rhai_delete)
@@ -1319,6 +1264,13 @@ pub fn http_rhai_register(engine: &mut Engine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{Arc, Mutex},
+    };
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
@@ -1350,6 +1302,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_http_get_yaml_ok() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/index.yaml"))
@@ -1367,8 +1320,11 @@ mod tests {
         assert!(d.is_map(), "expected map Dynamic");
     }
 
+    /// Code renommé (décision actée) : « SCAN » est un concept de vynil, non de cette crate —
+    /// l'erreur porte `HTTP-GET-YAML-001: HTTP {status} for {url}`.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_http_get_yaml_404() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/missing.yaml"))
@@ -1384,13 +1340,14 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{:?}", result.unwrap_err());
         assert!(
-            err.contains("SCAN-HTTP-001"),
-            "error should contain SCAN-HTTP-001: {err}"
+            err.contains("HTTP-GET-YAML-001"),
+            "error should contain HTTP-GET-YAML-001: {err}"
         );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_http_get_yaml_bearer() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/index.yaml"))
@@ -1409,6 +1366,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_http_get_yaml_basic() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/index.yaml"))
@@ -1515,5 +1473,679 @@ mod tests {
             received.is_empty(),
             "le futur interne ne doit pas être exécuté, reçu : {received:?}"
         );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Verrous des six tâches actées (`http.sdd`, Tasks) : A add_header casse,
+    // B DEFAULT_TIMEOUT + log CLIENT, C rhai_* et politiques JSON, D http_get_yaml,
+    // E obj_*, F header_head/http_head.
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── A. add_header / idempotence / skip, insensibles à la casse ──────────
+
+    // Scenario « add_header remplace sans tenir compte de la casse » : `X-A` puis `x-a` →
+    // UNE entrée dans la map (dernière valeur, dernière casse), UNE seule paire sur le fil.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_header_replaces_name_case_insensitively_and_sends_one_pair() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/h"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        client.add_header("X-A", "1");
+        client.add_header("x-a", "2");
+        assert_eq!(
+            client.headers.len(),
+            1,
+            "un nom présent dans une autre casse doit être remplacé, jamais dupliqué"
+        );
+        client.body_get("h").expect("200 attendu");
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        let values: Vec<&str> = received[0]
+            .headers
+            .get_all("x-a")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["2"],
+            "UNE seule paire `x-a: 2` part (dernière valeur, dernière casse)"
+        );
+    }
+
+    // Scenario « add_header … » (second given) : `content-type` manuel puis `add_header_json` →
+    // l'idempotence ignorant la casse laisse UN seul Content-Type partir (`text/plain`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_header_json_idempotent_case_insensitively_keeps_manual_content_type() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ct"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        client.add_header("content-type", "text/plain");
+        client.add_header_json();
+        client.body_get("ct").expect("200 attendu");
+        let received = server.received_requests().await.unwrap();
+        let values: Vec<&str> = received[0]
+            .headers
+            .get_all("content-type")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(values, vec!["text/plain"], "UN seul en-tête Content-Type part");
+    }
+
+    // Scenario « post_form encode et ne saute que le Content-Type exact » (given minuscule) :
+    // `content-type` en minuscules SAUTÉ de même — un seul Content-Type sur la requête, le form
+    // posé par reqwest, corps urlencoded `a=1`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_form_skips_content_type_case_insensitively() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/f"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        client.add_header("content-type", "text/xml");
+        let mut form = Map::new();
+        form.insert("a".into(), Dynamic::from(1));
+        client.rhai_post_form("f".to_string(), form).expect("200 attendu");
+        let received = server.received_requests().await.unwrap();
+        let values: Vec<&str> = received[0]
+            .headers
+            .get_all("content-type")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["application/x-www-form-urlencoded"],
+            "un seul Content-Type sur la requête — le manuel est sauté, sans tenir compte de la casse"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&received[0].body),
+            "a=1",
+            "valeur scalaire rendue par Display"
+        );
+    }
+
+    // ── B. constante DEFAULT_TIMEOUT + log `CLIENT:` déplacé dans get_client ──
+
+    // Must (décision actée) : « une erreur de build est loggée `warn!("CLIENT: {e:?}")` DANS
+    // `get_client` — donc pour tous les verbes ». `http_delete` est un verbe dont la branche
+    // d'erreur ne logguait rien avant le déplacement ; le PEM invalide ne rate qu'ici, à la
+    // construction du client, et ressort enveloppé en `Error::ReqwestError`.
+    #[test]
+    fn get_client_build_failure_warns_client_for_every_verb() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let captured: Arc<Mutex<Vec<String>>> = Arc::default();
+        let subscriber =
+            tracing_subscriber::registry::Registry::default().with(MessageCapture(Arc::clone(&captured)));
+        let result = tracing::subscriber::with_default(subscriber, || {
+            let mut client = RestClient::new("http://127.0.0.1:1");
+            client.set_server_ca("not-a-pem");
+            client.http_delete("x")
+        });
+        assert!(
+            matches!(result, Err(crate::Error::ReqwestError(_))),
+            "PEM invalide attendu enveloppé en Error::ReqwestError"
+        );
+        let warns = captured.lock().unwrap();
+        assert!(
+            warns.iter().any(|w| w.starts_with("CLIENT:")),
+            "l'erreur de construction doit warn!(\"CLIENT: …\") dans get_client, pour tous les \
+             verbes ; capturé : {warns:?}"
+        );
+    }
+
+    // ── C. gabarit rhai_* figé + deux politiques JSON ───────────────────────
+
+    // Scenario « rhai_get ne pleure jamais un statut » : 404 + corps non-JSON → `Ok(map)` seule,
+    // `code` i64 (rendu par `i64::from`, sans aller-retour par chaîne), `json` map vide
+    // silencieuse. (Le sous-assert « en-tête non-UTF-8 en chaîne vide » n'est pas verrouillable
+    // ici : @wiremock 0.6 ne sert pas de valeur d'en-tête invalide en UTF-8 — le Scenario le
+    // conditionne lui-même, repli consigné au rapport.)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rhai_get_serves_404_non_json_as_ok_map() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("pas-du-json"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .rhai_get("x".to_string())
+            .expect("un 404 ne devient jamais une erreur côté script");
+        let code = out.get("code").expect("code présent");
+        assert!(code.is_int(), "code doit être un i64");
+        assert_eq!(code.as_int().unwrap(), 404);
+        assert_eq!(
+            out.get("body")
+                .expect("body présent")
+                .clone()
+                .into_string()
+                .unwrap(),
+            "pas-du-json"
+        );
+        let json: Value = out.get("json").expect("json présent").clone().cast();
+        assert_eq!(
+            json,
+            json!({}),
+            "corps invalide → json = repli `unwrap_or(json!({{}}))` SILENCIEUX, aucune erreur \
+             (forme exacte du `Must` ; type du repli consigné au rapport)"
+        );
+    }
+
+    // « statut jamais erreur » figé aussi sur un verbe à corps : un 500 rend `Ok(map)`, pas
+    // d'erreur (seule l'erreur transport ou la lecture de corps échoue — `Must not`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rhai_post_serves_500_as_ok_map() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/y"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("oops"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .rhai_post("y".to_string(), Dynamic::from("brut"))
+            .expect("un 500 ne devient jamais une erreur côté script");
+        assert_eq!(out.get("code").expect("code présent").as_int().unwrap(), 500);
+        assert_eq!(
+            out.get("body")
+                .expect("body présent")
+                .clone()
+                .into_string()
+                .unwrap(),
+            "oops"
+        );
+    }
+
+    // Must (décision actée) : échec de `reqwest::Response::text` → « Erreur seule avec le texte
+    // `Error reading response body: {e}`, sans insertion préalable de `body` de bourrage ».
+    // Un serveur brut annonce `content-length: 100` et coupe le corps à 5 octets : `send` passe,
+    // la lecture rate. Multi-thread : les deux ponts partagent le runtime vivant (limite hors
+    // runtime consignée plus haut).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rhai_get_body_read_failure_is_error_only() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let addr = truncated_body_server();
+        let mut client = RestClient::new(format!("http://{addr}").as_str());
+        let err = client
+            .rhai_get("x".to_string())
+            .expect_err("corps tronqué : erreur seule attendue");
+        assert!(
+            err.to_string().contains("Error reading response body"),
+            "texte Error reading response body: … attendu, obtenu : {err}"
+        );
+    }
+
+    // Must (décision actée) : « une valeur composite (map, tableau) refusée en
+    // `Error::Other` `form field '<clé>' must be a scalar` » — avant toute connexion (le port
+    // fermé ne doit pas rendre une erreur de transport à la place).
+    #[test]
+    fn rhai_post_form_rejects_composite_values_before_connecting() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        let mut form = Map::new();
+        let mut inner = Map::new();
+        inner.insert("b".into(), Dynamic::from(1));
+        form.insert("a".into(), Dynamic::from(inner));
+        let err = client
+            .rhai_post_form("x".to_string(), form)
+            .expect_err("une valeur dict doit être refusée");
+        assert!(
+            err.to_string().contains("form field 'a' must be a scalar"),
+            "chaîne exacte attendue, obtenu : {err}"
+        );
+        let mut form = Map::new();
+        form.insert("t".into(), Dynamic::from(vec![Dynamic::from(1)]));
+        let err = client
+            .rhai_post_form("x".to_string(), form)
+            .expect_err("une valeur liste doit être refusée");
+        assert!(
+            err.to_string().contains("form field 't' must be a scalar"),
+            "chaîne exacte attendue, obtenu : {err}"
+        );
+    }
+
+    // Must (DEUX politiques JSON, décisions figées) : `json_get`/`json_post`/`json_patch`
+    // STRICTES (corps non-JSON → `Error::JsonError`) ; `json_delete`/`json_delete_with_body`
+    // ENROBANTES (corps non-JSON rendu `{"body": <texte>}`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_json_policies_strict_get_post_patch_vs_wrapping_deletes() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        for (verb, p) in [
+            ("GET", "/t"),
+            ("POST", "/t"),
+            ("PATCH", "/t"),
+            ("DELETE", "/t"),
+            ("DELETE", "/w"),
+        ] {
+            Mock::given(method(verb))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_string("du texte"))
+                .mount(&server)
+                .await;
+        }
+        let mut client = RestClient::new(server.uri().as_str());
+        let err = client
+            .json_get("t")
+            .expect_err("politique stricte : le corps non-JSON rate");
+        assert!(
+            matches!(err, crate::Error::JsonError(_)),
+            "JsonError attendu, obtenu : {err:?}"
+        );
+        let err = client
+            .json_post("t", &json!({"a": 1}))
+            .expect_err("politique stricte : le corps non-JSON rate");
+        assert!(
+            matches!(err, crate::Error::JsonError(_)),
+            "JsonError attendu, obtenu : {err:?}"
+        );
+        let err = client
+            .json_patch("t", &json!({"a": 1}))
+            .expect_err("politique stricte : le corps non-JSON rate");
+        assert!(
+            matches!(err, crate::Error::JsonError(_)),
+            "JsonError attendu, obtenu : {err:?}"
+        );
+        let out = client
+            .json_delete("t")
+            .expect("delete enrobant : jamais d'erreur JSON");
+        assert_eq!(out, json!({"body": "du texte"}));
+        let out = client
+            .json_delete_with_body("w", &json!({"a": 1}))
+            .expect("delete-with-body enrobant : jamais d'erreur JSON");
+        assert_eq!(out, json!({"body": "du texte"}));
+    }
+
+    // ── D. http_get_yaml : auth insensible à la casse, UA, code renommé ─────
+
+    // Scenario « http_get_yaml parle bearer, basic, et scanne » (given capitalisé) :
+    // `Basic` / `BEARER` en n'importe quelle casse posent l'en-tête `Authorization`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_http_get_yaml_auth_type_is_case_insensitive() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/index.yaml"))
+            .and(header("authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("key: value\n"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/index.yaml"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("key: value\n"))
+            .mount(&server)
+            .await;
+        let result = http_get_yaml(
+            format!("{}/index.yaml", server.uri()),
+            "Basic".to_string(),
+            "user:pass".to_string(),
+        );
+        assert!(
+            result.is_ok(),
+            "Basic capitalisé doit poser l'en-tête : {result:?}"
+        );
+        let result = http_get_yaml(
+            format!("{}/index.yaml", server.uri()),
+            "BEARER".to_string(),
+            "tok".to_string(),
+        );
+        assert!(
+            result.is_ok(),
+            "BEARER capitalisé doit poser l'en-tête : {result:?}"
+        );
+    }
+
+    // Must (décision actée) : « toute autre valeur → `Error::Other` `unknown auth_type '<v>'`
+    // (plus de requête anonyme silencieuse) » — avant toute connexion.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_http_get_yaml_unknown_auth_type_rejected_before_connecting() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/index.yaml"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("key: value\n"))
+            .mount(&server)
+            .await;
+        let result = http_get_yaml(
+            format!("{}/index.yaml", server.uri()),
+            "digest".to_string(),
+            "x".to_string(),
+        );
+        let err = result.expect_err("digest ne doit plus passer en anonyme silencieux");
+        assert!(
+            format!("{err:?}").contains("unknown auth_type 'digest'"),
+            "texte unknown auth_type 'digest' attendu, obtenu : {err}"
+        );
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            received.is_empty(),
+            "aucune requête ne part pour un auth_type inconnu"
+        );
+    }
+
+    // Scenario (« l'UA capturé est get_client_name ») : le client tout neuf de la libre envoie
+    // le nom client en User-Agent, comme `RestClient::get_client`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_http_get_yaml_sends_client_name_as_user_agent() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/index.yaml"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("key: value\n"))
+            .mount(&server)
+            .await;
+        let out = http_get_yaml(
+            format!("{}/index.yaml", server.uri()),
+            String::new(),
+            String::new(),
+        )
+        .expect("requête anonyme attendue");
+        assert!(out.is_map(), "le YAML doit passer le Dynamic");
+        let received = server.received_requests().await.unwrap();
+        let ua = received[0]
+            .headers
+            .get("user-agent")
+            .expect("un User-Agent doit partir");
+        assert_eq!(ua.to_str().unwrap(), "vynil-core-tests");
+    }
+
+    // ── E. obj_* — la face Rust durable (kuberest en dépend) ────────────────
+
+    // Must (obj_read) : chemin complet = `path` puis `/<key>` si key non vide ; le JSON rendu
+    // est celui de l'étage `json_get`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_read_gets_key_suffixed_path() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/things/k1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"name": "k1"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/things"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"list": true})))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .obj_read(ReadMethod::Get, "things", "k1")
+            .expect("GET sur `things/k1` attendu");
+        assert_eq!(out, json!({"name": "k1"}));
+        let out = client
+            .obj_read(ReadMethod::Get, "things", "")
+            .expect("key vide : aucun suffixe");
+        assert_eq!(out, json!({"list": true}));
+    }
+
+    // Must (obj_create) : `CreateMethod::Post` → POST, `CreateMethod::Put` → PUT, sur le chemin
+    // de collection.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_create_posts_and_puts_to_collection_path() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/things"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"created": "post"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/things"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"created": "put"})))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .obj_create(CreateMethod::Post, "things", &json!({"n": 1}))
+            .expect("POST attendu");
+        assert_eq!(out, json!({"created": "post"}));
+        let out = client
+            .obj_create(CreateMethod::Put, "things", &json!({"n": 1}))
+            .expect("PUT attendu");
+        assert_eq!(out, json!({"created": "put"}));
+    }
+
+    // Scenario « obj_update répond sans serveur quand None » : client sur port ÉTEINT,
+    // `Ok(input.clone())` AUCUNE connexion.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_update_none_echoes_input_without_request() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        let input = json!({"echo": "me"});
+        let out = client
+            .obj_update(UpdateMethod::None, "p", "k", &input, false)
+            .expect("None doit échoer sans aucune connexion (port éteint à côté)");
+        assert_eq!(out, input.clone());
+    }
+
+    // Scenario (given `use_slash` vrai) : l'URL visée est `p/k/` — slash final supplémente.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_update_use_slash_targets_trailing_slash_path() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/p/k/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": 1})))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .obj_update(UpdateMethod::Put, "p", "k", &json!({"v": 1}), true)
+            .expect("PUT sur `p/k/` attendu");
+        assert_eq!(out, json!({"ok": 1}));
+    }
+
+    // Must (obj_delete) : DELETE sur `path`/`<key>` ; le corps non-JSON serait enrobé
+    // (json_delete enrobant), ici le JSON rendu passe tel quel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_delete_targets_key_suffixed_path() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/things/k1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"deleted": true})))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .obj_delete(DeleteMethod::Delete, "things", "k1")
+            .expect("DELETE sur `things/k1` attendu");
+        assert_eq!(out, json!({"deleted": true}));
+    }
+
+    // Must (obj_delete_with_body) : DELETE portant l'input sérialisé en JSON dans le corps.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_delete_with_body_sends_serialized_input() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/dw"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": 1})))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client
+            .obj_delete_with_body(DeleteMethod::Delete, "dw", &json!({"a": 1}))
+            .expect("DELETE avec corps attendu");
+        assert_eq!(out, json!({"ok": 1}));
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&received[0].body), r#"{"a":1}"#);
+    }
+
+    // ── F. header_head en vrai HEAD + alias script `http_head` ──────────────
+
+    // Must (décision actée) : `header_head` ÉMET UN VRAI HEAD (le GET « par économie » n'a
+    // jamais été voulu) et rend les paires sans lire le corps.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn header_head_sends_a_real_head() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).insert_header("x-total-pages", "3"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let pairs = client.header_head("x").expect("un vrai HEAD doit passer");
+        assert!(
+            pairs.iter().any(|(k, v)| k == "x-total-pages" && v == "3"),
+            "les paires d'en-têtes sont rendues : {pairs:?}"
+        );
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(
+            received[0].method.as_str(),
+            "HEAD",
+            "c'est le verbe HEAD réel qui doit partir"
+        );
+    }
+
+    // Must (label figé) : non-2xx sur `header_head` → `Error::MethodFailed` de label exactement
+    // `Head`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn header_head_non_success_label_is_head() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/y"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        match client.header_head("y") {
+            Err(crate::Error::MethodFailed(label, code, _)) => {
+                assert_eq!(label, "Head", "label figé : Head");
+                assert_eq!(code, 500);
+            }
+            other => panic!("Error::MethodFailed(Head, 500, …) attendu, rendu : {other:?}"),
+        }
+    }
+
+    // Scenario « les quatre verbes… » / « le registre des 29 noms » : l'alias `http_head` est
+    // enregistré, jumeau de `head`, et rend la map {code, headers} SEULE.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_head_script_alias_is_registered_and_mute() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).insert_header("x-total-pages", "3"))
+            .mount(&server)
+            .await;
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let base = server.uri();
+        let out = engine
+            .eval::<Dynamic>(&format!(
+                "let c = new_http_client(\"{base}\"); c.http_head(\"x\")"
+            ))
+            .expect("l'alias http_head est l'un des 29 noms");
+        let map = out.cast::<Map>();
+        assert_eq!(
+            map.len(),
+            2,
+            "rhai_head ne fabrique QUE {{code, headers}}, rendu : {map:?}"
+        );
+        assert_eq!(map.get("code").expect("code présent").as_int().unwrap(), 200);
+        assert!(map.contains_key("headers"));
+        let twin = engine
+            .eval::<Dynamic>(&format!("let c = new_http_client(\"{base}\"); c.head(\"x\")"))
+            .expect("le jumeau head est connu");
+        assert_eq!(
+            twin.cast::<Map>()
+                .get("code")
+                .expect("code présent")
+                .as_int()
+                .unwrap(),
+            200
+        );
+    }
+
+    // Scenario « le registre des 29 noms » (second given) : `header_head`, `body_get`,
+    // `json_get`, `obj_read`, `add_header_json_content` restent TOUS inconnus en script.
+    #[test]
+    fn private_rust_faces_stay_unknown_in_script() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        for (name, call) in [
+            ("header_head", "c.header_head(\"x\")"),
+            ("body_get", "c.body_get(\"x\")"),
+            ("json_get", "c.json_get(\"x\")"),
+            ("obj_read", "c.obj_read(\"things\", \"\")"),
+            ("add_header_json_content", "c.add_header_json_content()"),
+        ] {
+            let out = engine.eval::<Dynamic>(&format!(
+                "let c = new_http_client(\"http://127.0.0.1:1\"); {call}"
+            ));
+            let err = out.expect_err("cette face Rust doit rester inconnue en script");
+            assert!(
+                err.to_string().contains(name),
+                "FunctionNotFound {name} attendu : {err}"
+            );
+        }
+    }
+
+    // Serveur HTTP brut qui répond UNE requête avec un corps tronqué : `content-length: 100`
+    // annoncé, 5 octets émis, connexion fermée après vidange — `send` passe, `text()` rate
+    // (fin prématurée). Seule la face `rhai_*` lit le corps.
+    fn truncated_body_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0_u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 100\r\n\r\nshort",
+                );
+                let _ = stream.flush();
+                // laisser partir le corps tronqué côté client avant de couper la connexion
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+        addr
+    }
+
+    // Couche de capture minimale (même patron que le verrou des warns de `hbs.rs`) : ne retient
+    // que le texte formaté du champ `message`, confinée au fil du test par
+    // `tracing::subscriber::with_default`.
+    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for MessageCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = MessageOnly(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().extend(visitor.0);
+        }
+    }
+
+    struct MessageOnly(Vec<String>);
+
+    impl Visit for MessageOnly {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
     }
 }

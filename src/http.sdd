@@ -88,7 +88,7 @@ Must:
     @crate::http::RestClient::add_header_basic pose Basic + base64 STANDARD de
     `username:password`.
   Rebâtir un @reqwest::Client PAR REQUÊTE dans @crate::http::RestClient::get_client (privé,
-    28 ponts dans le fichier) : @reqwest::ClientBuilder::user_agent de
+    32 ponts dans le fichier depuis la migration — 28 couples avant) : @reqwest::ClientBuilder::user_agent de
     @crate::get_client_name (PANIC contractuelle si unset — ./client_name.sdd),
     @reqwest::ClientBuilder::timeout de la constante nommée `DEFAULT_TIMEOUT` (5 minutes, non
     configurable — décision actée, une configuration viendra d'un besoin réel) ;
@@ -229,7 +229,8 @@ Depends on:
     SANS désactiver default-tls → native-tls aussi dans le graphe (à unifier sur rustls, tâche de
     faisabilité). Le comportement réseau réel
     (redirects, pool, timeouts fins) appartient à la dépendance.
-  tokio — via `crate::rt::block_on` (voir ./rt.sdd) sous les 28 ponts, partagé avec ./s3.sdd et
+  tokio — via `crate::rt::block_on` (voir ./rt.sdd) sous les 32 ponts (28 avant migration),
+    partagé avec ./s3.sdd et
     ./oci.sdd ; features `macros`+`rt-multi-thread`.
   serde_json / serde_yaml / base64 — non optionnels : parsing/enrobage JSON, double passe de
     @crate::http::http_get_yaml, base64 STANDARD des deux basic.
@@ -351,37 +352,57 @@ Handles:
     lecture.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants. Aujourd'hui ./http.rs : 8 tests inline
-    (rhai_get_on_connection_failure ligne 1351 avec @wiremock-like server local,
-    @crate::http::http_get_yaml ok/404/bearer/basic lignes 1375-1449, headers_get
-    case-insensitive/missing-unit et headers_has lignes 1451+) — RIEN d'autre : aucun test
-    pour les builders TLS, l'idempotence des setters, le 404-delete, les deux politiques
-    JSON, sept des huit `rhai_*`, les `obj_*`, @crate::http::RestClient::header_head, la surface des 28
-    noms, ni un seul des ponts @tokio hors runtime ; ./http_mock.rs : ZÉRO test (pas même
-    first-match ni le texte d'erreur). Les Scenario réseau de bas de fichier se verrouillent
-    en @wiremock.
+  [ ] Convertir les Scenario en tests passants. ./http.rs portait 11 tests inline à HEAD
+    (215 sous la porte `http` — la baseline que ce fichier annonçait « 8 » et « 199 » était
+    fausse, mesuré) ; le lot A-F y a ajouté 22 verrous (aujourd'hui 33 inline, 237 sous
+    `http`) : casse de `add_header`, idempotence des setters, skip de `post_form`, log
+    `CLIENT:` par tous les verbes, erreurs des `rhai_*`, politiques JSON, statut jamais
+    erreur, `auth_type` et User-Agent de `http_get_yaml`, face wiremock des `obj_*`, vrai
+    HEAD et alias `http_head`. Reste SANS VERROU par la porte script : les builders TLS
+    (identité, CA multiples), le 404-delete de `body_delete`, les Scenarios réseau de bas
+    de fichier (redirects, timeouts fins), le Then complet du Scenario `http_get_yaml` 404
+    (seul le code du label est figé, pas `HTTP 404 Not Found for <url>` en entier) ; et
+    ./http_mock.rs : ZÉRO test (pas même first-match ni le texte d'erreur — les Scenario
+    mock/co-enregistrement attendent là). Les Scenario réseau se verrouillent en @wiremock.
 
-  [ ] `add_header` insensible à la casse (remplace toute entrée de même nom), idempotence
+  [x] `add_header` insensible à la casse (remplace toute entrée de même nom), idempotence
     `Content-Type`/`Accept` et skip de `post_form` insensibles à la casse, suppression de la
     boucle de log de `add_header_json_accept`, rustdoc corrigée (décisions actées).
-  [ ] Renommer `five_sec` en constante `DEFAULT_TIMEOUT` (5 min, non configurable) ; log
+    # Fait de verrouillage mesuré par le validator : « la dernière casse gagne » ne peut
+    # l'être sur le FIL (http::HeaderName normalise en minuscules) ; le test verrouille la
+    # rétention (une seule paire sur le fil) et la valeur gagnante, pas la casse sur le fil.
+  [x] Renommer `five_sec` en constante `DEFAULT_TIMEOUT` (5 min, non configurable) ; log
     `CLIENT:` déplacé dans `get_client`. La part « tous les `http_*` rendent `crate::Result`
     avec `Error::ReqwestError`, get/head compris » est rendue par la tâche de migration
     `crate::rt::block_on` de cette spec (les deux `http_get`/`http_head` n'avaient aucun
     constructeur public pour un `reqwest::Error` brut — `crate::Result` était la seule forme
     sans panique, et c'est la forme que l'`Exposes` et le `Must not` de cette spec nomment
     déjà) ; ce qui reste ouvert est le renommage et le déplacement du log.
-  [ ] `rhai_*` : `code` par `i64::from`, échec de lecture du corps = erreur seule ;
+  [x] `rhai_*` : `code` par `i64::from`, échec de lecture du corps = erreur seule ;
     `post_form` refuse les valeurs composites ; figer par test le contrat « statut jamais
     erreur » et les deux politiques JSON (décisions actées).
-  [ ] `http_get_yaml` : `auth_type` `""`/`bearer`/`basic` insensible à la casse, erreur
+    # Question (mesurée au validation 2026-10-10, à trancher) : le repli `json` quand le
+    # corps n'est pas du JSON valide est `Dynamic::from(json!({}))` — rhai 1.25.1 n'a PAS de
+    # `From<serde_json::Value> for Dynamic`, le Value est stocké OPAQUE (le test vert
+    # `.cast::<Value>() == json!({})` le prouve ; une map rhai ferait paniquer ce cast). Le
+    # `Must` (`unwrap_or(json!({}))`) est donc vrai ; le Scenario « `json` = `#{}` » et le
+    # `Returns` « valeur rhai ou map vide » sont FAUX sur le repli (asymétrie
+    # valide=map native / repli=Value opaque). Options : (a) amender Scenario et `Returns` à
+    # l'opaque ; (b) changer le repli en map rhai vide (changement de comportement côté
+    # script). Le code d'aujourd'hui rend le `Must`, pas le Scenario.
+  [x] `http_get_yaml` : `auth_type` `""`/`bearer`/`basic` insensible à la casse, erreur
     `unknown auth_type` sinon ; User-Agent = `client_name` ; code renommé
     `HTTP-GET-YAML-001` (décisions actées) ; adapter les 4 tests inline.
-  [ ] `obj_*` : `match` exhaustifs sans branche `_`, ne plus construire
+  [x] `obj_*` : `match` exhaustifs sans branche `_`, ne plus construire
     `Error::UnsupportedMethod` ; tester `obj_*` sur un faux serveur (kuberest en dépend).
-  [ ] `header_head` en vrai HEAD (label `Head`) et alias script `http_head` (29 noms ;
+    Tâche jumelle de « Reprendre la doc de @variant-Error::UnsupportedMethod » de
+    ./lib.sdd, cochée dans le même commit (la doc de la variante décrivait `obj_*` comme
+    constructeur ; il ne l'est plus — les 11 sites k8s nommés dans la reprise).
+  [x] `header_head` en vrai HEAD (label `Head`) et alias script `http_head` (29 noms ;
     décisions actées).
-  [ ] Remplacer les 28 ponts tokio par `crate::rt::block_on` (voir ./rt.sdd, décision
+  [ ] Remplacer les ponts tokio (28 couples d'avant-migration, 32 sites
+    `crate::rt::block_on` mesurés après, les deux get/head absorbés inclus) par
+    `crate::rt::block_on` (voir ./rt.sdd, décision
     actée) ; tester `body_post` hors runtime et sur `current_thread`.
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
