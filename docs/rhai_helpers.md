@@ -370,20 +370,27 @@ group/version/kind and scope.
 | `<K8sObject>.wait_status(prop: string, timeout: int)` | `()` | Waits until `status.<prop>` is boolean `true` |
 | `<K8sObject>.wait_status_prop(prop: string, timeout: int)` | `()` | Waits until `status.<prop>` merely exists (non-null) |
 | `<K8sObject>.wait_status_string(prop: string, value: string, timeout: int)` | `()` | Waits until `status.<prop> == value` |
-| `<K8sObject>.wait_for(predicate: Fn, timeout: int)` | `()` | Re-evaluates `predicate` on every watch event until it returns `true` or `timeout` seconds pass. `predicate` gets the object as a map (`o.metadata` / `o.spec` / `o.status` / …, same shape as `<K8sGeneric>.get`) so it can test arbitrarily nested fields — e.g. `\|o\| o.status.ceph.versions.overall.len() == 1 && o.status.ceph.health != "HEALTH_ERR"`. If `predicate` raises, the watch runs to its natural end but the first predicate error then wins — it fails the wait whether the condition later held, timed out, or the watch broke |
+| `<K8sObject>.wait_for(predicate: Fn, timeout: int)` | `()` | Re-evaluates `predicate` on every watch event until it returns `true` or `timeout` seconds pass. `predicate` gets the object as a map (`o.metadata` / `o.spec` / `o.status` / …, same shape as `<K8sGeneric>.get`) so it can test arbitrarily nested fields — e.g. `\|o\| o.status.ceph.versions.overall.len() == 1 && o.status.ceph.health != "HEALTH_ERR"`. A `predicate` raise is not fatal: the wait continues, and a later event returning `true` succeeds with the exception forgotten; only at timeout is the **last** predicate exception returned, in place of a misleading `Elapsed wait error` |
 
 All `wait_*` methods take `timeout` in **seconds**; a negative value is clamped to `0` and the
 timeout fires immediately (never an argument error). Each wait opens a `kube` watch on the object,
-re-checks its condition on every watch event, and returns `()` once the condition holds; a global
-timeout or a broken watch surfaces as a Rhai error, and neither is retried today. `wait_deleted`
+re-checks its condition on every watch event, and returns `()` once the condition holds; transient
+watch errors are retried with backoff while the global timeout still runs, and the timeout itself
+or a definitive watch error surfaces as a Rhai error (see below). `wait_deleted`
 waits until the object's `uid` is observed as deleted; on a handle with no `uid` it fails
 immediately, before any timeout, with `cannot wait for deletion of <name>: uid is missing`.
 
-Retrying transient watch failures (HTTP 429/5xx, timeouts, connection drops, expired `410 Gone`)
-with exponential backoff, failing fast on definitive ones (401/403/404, invalid request) and on an
-object deleted mid-wait (`object <name> was deleted while waiting`), and making `wait_for`
-predicate errors non-fatal (the wait continues and a later satisfying event wins; only the last
-predicate error is reported, and only at timeout) are decided and pending implementation.
+All `wait_*` methods share one private retry helper (decision on record, now implemented).
+Transient watch failures (HTTP 429, any 5xx, request timeouts, connection drops, expired
+`410 Gone` — the watch restarts from a fresh list, `resourceVersion` refreshed by `kube`) are
+retried with exponential backoff until the global timeout expires, which then surfaces as
+`Elapsed wait error: …`. Definitive failures (401, 403, 404, invalid request) fail immediately
+as a `K8s wait error: …`. An object deleted mid-wait (a `Deleted` watch event, or absence after
+the object had been seen) fails immediately with `object <name> was deleted while waiting` —
+except for `wait_deleted`, for which that is the success condition. `wait_for` predicate errors
+are non-fatal: the wait continues, and a later event satisfying the predicate succeeds with the
+exception forgotten; only at timeout is the **last** predicate exception returned, in place of a
+misleading `Elapsed`.
 
 `wait_for` under the mock (tests / `agent package test`) does not poll: it evaluates `predicate` once against the seeded object and errors if it returns `false` — seed the object in its converged state, or assert the failure explicitly.
 

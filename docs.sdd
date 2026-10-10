@@ -81,6 +81,16 @@ Scenario: un comportement vu de l'utilisateur n'est nulle part documenté
     taisaient le refus des mots de passe de `72` octets et passent pour incomplètes
 
 Tasks:
+  [x] Rendre au livré les trois passages wait de ./docs/rhai_helpers.md (reçu de
+    ./src/k8s.sdd) : la ligne de table `wait_for` (« the first predicate error then wins —
+    it fails the wait whether the condition later held, timed out, or the watch broke »),
+    le paragraphe (« a global timeout or a broken watch surfaces as a Rhai error, and
+    neither is retried today ») et la marque « decided and pending implementation » —
+    rendus avec le helper `wait_object` (retry à backoff des transitoires sous le timeout
+    global, définitives immédiates, `object <name> was deleted while waiting` fail-fast
+    sauf `wait_deleted`, dernière exception du predicate rendue au timeout seul).
+    Tâche jumelle de « Écrire le helper de wait unique » de ./src/k8s.sdd, cochée dans le
+    même commit. Voyage vérifié par le validator, phrase à phrase contre l'implémentation.
   [x] Clore la règle bilingue — arbitrage du développeur principal, consignés mots pour mots :
     « quand j'ai parlé bilinguisme, je pensais aux docs de vynil et pas celles de vynil-core. Le
     but ici n'est pas de changer les docs. » L'intention appartenait au dépôt parent ; les pages

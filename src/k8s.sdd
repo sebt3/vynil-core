@@ -180,9 +180,10 @@ Must:
     (@kube::runtime::wait::conditions::is_deleted de l'uid — uid absent → erreur chaîne locale
     `cannot wait for deletion of {:}: uid is missing`), `wait_for` (FnPtr évalué à CHAQUE
     evenement du watch sur l'objet complet converti).
-  Faire passer TOUTES les waits (les sept de @crate::k8s::K8sObject et les quatre workloads)
+  Faire passer TOUTES les waits (les six de @crate::k8s::K8sObject et les quatre workloads)
     par UN helper privé unique (décision actée) qui classe les erreurs : erreur TRANSITOIRE du
-    watch (HTTP 429, 5xx, timeout, coupure de connexion, `410 Gone` de version périmée) →
+    watch (HTTP `408`, 429, 5xx, timeout, coupure de connexion, `410 Gone` de version
+    périmée) →
     réessai avec backoff exponentiel tant que le timeout global n'est pas écoulé ; erreur
     DÉFINITIVE (401, 403, 404 du type de ressource, requête invalide) → échec immédiat en
     @variant-Error::KubeWaitError ; objet SUPPRIMÉ pendant l'attente (événement `Deleted` ou
@@ -387,8 +388,12 @@ Raises:
     @variant-Error::UnsupportedMethod : méthode sur
     handle non-résolu (11 sites) ; @variant-Error::RawHTTP : @http::Request builder de `K8sRaw` ;
     @variant-Error::Elapsed (dépassement) et @variant-Error::KubeWaitError (watch cassé) sur les waits.
-  Erreurs à chaîne locale (Rhai uniquement, @crate::rhai_err_str) : l'unique chaîne fabriquée
-    du vrai `cannot wait for deletion of {:}: uid is missing` (wait_deleted sans uid) ;
+  Erreurs à chaîne locale (Rhai uniquement) : DEUX chaînes fabriquées du vrai —
+    `cannot wait for deletion of {:}: uid is missing` (wait_deleted sans uid, porté par
+    @crate::rhai_err_str) et `object {name} was deleted while waiting` (helper de wait,
+    porté par @variant-Error::Other puis @crate::rhai_err, affichage préfixée mais la
+    sous-chaîne contractée rendue intacte — verrouillée par test ; `Error` est la propriété
+    de ./lib.sdd, aucune variante ajoutée ici) ;
     côté mock : §mock (Failed to find ×2, Failed
     to extract metadata, wait_for predicate long message).
   PANIQUES contractuelles, acceptées, jamais converties : @core::result::Result::expect
@@ -414,7 +419,7 @@ Handles:
     sont perdus silencieusement (workloads typés, borne documentée).
 
 Tasks:
-  [ ] Convertir les Scenario sans test en tests passants. ./k8s.rs a 40 tests inline (résolution
+  [ ] Convertir les Scenario sans test en tests passants. ./k8s.rs a 53 tests inline (résolution
     APIService agrégé, job_is_completed ×8, prepare_handle ×11, conditions ×15, seam tower-test
     pour le pont et les `rhai_*` de K8sRaw) et ./k8s_mock.rs 8
     (wait_for once + registers compilent + update_cache noop) : couverts par les Scenario ci-dessus
@@ -439,11 +444,29 @@ Tasks:
     # (aucun rouge d'abord possible sans seam) — placement tranché par le primaire.
   [x] Unifier « Job terminé » : `job_is_completed` = condition `Complete=True` OU `completionTime`
     présent, retirer `succeeded > 0` seul ; adapter les 5 tests inline (décision actée).
-  [ ] Écrire le helper de wait unique : retry avec backoff sur erreur transitoire du watch
+  [x] Écrire le helper de wait unique : retry avec backoff sur erreur transitoire du watch
     (429, 5xx, timeout, coupure, `410`), échec immédiat sur erreur définitive (401, 403, 404,
     requête invalide) et sur objet supprimé, predicate `wait_for` non fatal avec dernière
-    exception rendue au timeout ; y migrer les onze waits ; tests sur un client
-    `tower-test` (déjà en dev-dependencies) — décision actée.
+    exception rendue au timeout ; y migrer les waits ; tests sur un client
+    `tower-test` (déjà en dev-dependencies) — décision actée. Rendu : helper privé
+    `wait_object` composé sur @kube::runtime::wait::await_condition en boucle propre (le
+    type `Stream` n'est pas appelable sans `futures` en scope et @kube ne le ré-exporte
+    pas — mesure ; la page de @kube::runtime::wait dit « apply your own backoff by not
+    polling » et `watch_object` mappe `Deleted` et l'absence après vue en `Ok(None)`, le
+    motif exact du contrat — un @core::cell::Cell « vu » distingue l'absence d'avant la
+    suppression). Classement mesuré : codes {408, 410, 429} ∪ 5xx transitoires, transport
+    transitoire, `WatchError(Status)` (l'event ERROR du watch, voie du `410`) classé au
+    code, reste définitif. Le `410` : la machine d'état @kube re-liste ET l'erreur
+    resurface — verdict transitoire, reprise sur LIST fraîche (intégration verrouillée) ;
+    l'EOF de watch est un re-watch silencieux de la lib, verrouillé tel quel. Les DIX
+    waits migrent (le « onze » du décompte comptait `delete`, méthode non-wait — six
+    `K8sObject` + quatre workloads mesurés) ; grep : un seul `await_condition` (dans le
+    helper), `time::sleep` confiné au helper (`Must not` « hors des waits » tenu).
+    Treize tests de seam @tower-test (7 vus rouges d'abord, 6 characterization assumés,
+    un ajouté après le run rouge) ; suite de waits ≈ 2,5 s (backoff initial 100 ms,
+    constantes hors contrat). Le voyage de `docs/rhai_helpers.md` (marque « pending
+    implementation » et deux passages contradictoires rendus au livré) est inscrit en
+    face : tâche jumelle de ./docs.sdd, cochée dans le même commit.
   [ ] Migrer les 33 ponts `block_in_place` de ./k8s.rs vers `crate::rt::block_on` (voir
     ./rt.sdd) ; le gate de `rt` est déjà `any(http, oci, s3, k8s)` depuis sa création, rien à y
     changer.

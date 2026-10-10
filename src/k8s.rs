@@ -15,7 +15,7 @@ use k8s_openapi::api::{
     batch::v1::Job,
 };
 use kube::{
-    Client, ResourceExt,
+    Client, Resource, ResourceExt,
     api::{
         Api, DeleteParams, DynamicObject, ListParams, ObjectList, PartialObjectMeta, Patch, PatchParams,
         PostParams,
@@ -95,6 +95,156 @@ fn timeout_duration(timeout: i64) -> std::time::Duration {
 /// décision actée), so a handle falls back to all-namespaces instead of an invalid URL.
 fn normalize_ns(ns: Option<String>) -> Option<String> {
     ns.filter(|s| !s.is_empty())
+}
+
+// ── Helper de wait unique (k8s.sdd `Must` l.183-199, décision actée) ─────────
+//
+// Les dix `await_condition` du module (six de `K8sObject`, quatre workloads) passent
+// désormais par `wait_object` — seul appelant du module (le `Must not` « Réessayer une
+// erreur hors des waits » interdit tout autre retry). Forme mesurée sur kube/kube-runtime
+// 3.1.0 : la fonction libre `watcher::watch` n'existe plus et `watch_object` renvoie un
+// `impl Stream` que le crate ne peut pas dérouler sans `futures` — sortie de la feature
+// `k8s` (tâche Cargo close) et non ré-exportée par `kube`. `await_condition` 3.1 rend
+// pourtant toute la matière du contrat : la PREMIÈRE erreur du watch sous
+// `wait::Error::ProbeFailed(watcher::Error)`, et les événements « `Deleted` ou absence
+// après l'avoir vu » par le `Ok(None)` de `watch_object` (mesuré : `Event::Delete(_)` et
+// `InitDone if !obj_seen` → `None`) que la `Condition` reçoit comme `None`. Le retry est
+// donc une boucle d'appels successifs à `await_condition`, avec le backoff posé par le
+// helper — la lib documente d'ailleurs « You can apply your own backoff by not polling
+// the stream ». Le `410 Gone` est traité en transitoire : mesuré, l'`ERROR` event 410
+// resurface en `WatchError(Status)` ET remet la machine d'état à la re-LISTE (« HTTP
+// GONE, means we have desynced and need to start over and re-list ») — le helper
+// recommence donc sur une liste fraîche, resourceVersion renouvelée par la lib.
+
+/// Backoff exponentiel entre deux tentatives de watch après erreur transitoire. Le
+/// contrat impose la forme (« backoff exponentiel », tant que le timeout global n'est
+/// pas écoulé), pas les constantes — valeurs mesurables par les tests (timeout de test
+/// en secondes, granularité du contrat).
+const WAIT_BACKOFF_INITIAL: std::time::Duration = std::time::Duration::from_millis(100);
+const WAIT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Verdict du classement d'une erreur de watch (k8s.sdd `Must`) : réessai avec backoff
+/// ou échec immédiat.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WatchFailure {
+    Transient,
+    Definitive,
+}
+
+/// Codes HTTP transitoires (k8s.sdd) : `429`, `5xx`, timeout de requête (`408`) et
+/// `410 Gone` de `resourceVersion` périmée.
+fn transient_wait_code(code: u16) -> bool {
+    matches!(code, 408 | 410 | 429) || (500..=599).contains(&code)
+}
+
+/// Classe un `kube::Error` porté par une erreur de watch : statut HTTP par code ;
+/// erreurs de transport (hyper, service tower, lecture du flux d'événements) = coupure
+/// de connexion ou timeout → transitoire ; tout le reste (désérialisation, requête mal
+/// formée…) = famille « requête invalide » → définitive.
+fn transient_kube_wait_error(err: &kube::Error) -> WatchFailure {
+    match err {
+        kube::Error::Api(status) if transient_wait_code(status.code) => WatchFailure::Transient,
+        kube::Error::HyperError(_) | kube::Error::Service(_) | kube::Error::ReadEvents(_) => {
+            WatchFailure::Transient
+        }
+        _ => WatchFailure::Definitive,
+    }
+}
+
+/// Classe l'erreur rendue par `await_condition` (k8s.sdd « classe les erreurs »).
+fn classify_wait_error(err: &kube::runtime::wait::Error) -> WatchFailure {
+    match err {
+        kube::runtime::wait::Error::ProbeFailed(watcher_err) => match watcher_err {
+            kube::runtime::watcher::Error::InitialListFailed(e)
+            | kube::runtime::watcher::Error::WatchStartFailed(e)
+            | kube::runtime::watcher::Error::WatchFailed(e) => transient_kube_wait_error(e),
+            kube::runtime::watcher::Error::WatchError(status) => {
+                if transient_wait_code(status.code) {
+                    WatchFailure::Transient
+                } else {
+                    WatchFailure::Definitive
+                }
+            }
+            // réponse sans resourceVersion : la resource ne supporte pas le watch,
+            // réessayer ne peut rien changer — famille requête invalide.
+            kube::runtime::watcher::Error::NoResourceVersion => WatchFailure::Definitive,
+        },
+    }
+}
+
+/// Attend que `cond` soit satisfaite sur l'objet `name`, timeout global en main propre
+/// (toutes les waits du module quantifient via [`timeout_duration`]). Rend :
+///
+/// * `Ok(())` — condition satisfaite sur un objet du watch, ou (absence) acceptée par la
+///   condition — c'est le succès de `wait_deleted` (`is_deleted` valide `None`) ;
+/// * `Err(Error::Other)` chaîne exacte `object {name} was deleted while waiting` —
+///   événement `Deleted` ou absence APRÈS l'avoir vu ; l'objet pas encore vu reste en
+///   attente (comportement d'avant, hors du contrat de suppression) ;
+/// * `Err(Error::KubeWaitError)` — erreur définitive du watch (401, 403, 404, requête
+///   invalide), immédiate ;
+/// * `Err(Error::Elapsed)` — timeout global écoulé (réessais à backoff exponentiel
+///   autant que le temps reste : 429, 5xx, timeout, coupure, `410`).
+async fn wait_object<T, C>(
+    api: Api<T>,
+    name: &str,
+    timeout: std::time::Duration,
+    cond: C,
+) -> Result<(), Error>
+where
+    T: Clone + std::fmt::Debug + Send + serde::de::DeserializeOwned + Resource + 'static,
+    C: Condition<T>,
+{
+    // L'objet a-t-il été vu au moins une fois : distingue « absence après l'avoir vu »
+    // (suppression → échec) de « pas encore là » (on continue d'attendre).
+    let seen = std::cell::Cell::new(false);
+    // Budget temps restant tenu en Duration (jamais d'addition d'Instant : le
+    // `arithmetic_side_effects` du harnais, et `timeout` peut être un nombre de secondes
+    // énorme après clamp bas seulement — le budget ne déborde jamais, il se soldera en
+    // Elapsed).
+    let mut remaining = timeout;
+    let mut backoff = WAIT_BACKOFF_INITIAL;
+    loop {
+        let attempt = tokio::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            remaining,
+            await_condition(api.clone(), name, |obj: Option<&T>| match obj {
+                Some(_) => {
+                    seen.set(true);
+                    cond.matches_object(obj)
+                }
+                // L'absence satisfait les conditions qui l'acceptent (`wait_deleted`) ;
+                // sinon elle ne clôt la wait comme suppression que si l'objet avait été
+                // vu — sinon ce n'est pas une suppression subie, c'est l'objet attendu
+                // qui n'est pas encore né.
+                None => cond.matches_object(None) || seen.get(),
+            }),
+        )
+        .await;
+        match outcome {
+            Err(elapsed) => return Err(Error::Elapsed(elapsed)),
+            Ok(Ok(Some(_))) => return Ok(()),
+            Ok(Ok(None)) => {
+                if cond.matches_object(None) {
+                    return Ok(());
+                }
+                return Err(Error::Other(format!("object {name} was deleted while waiting")));
+            }
+            Ok(Err(err)) => {
+                if classify_wait_error(&err) == WatchFailure::Definitive {
+                    return Err(Error::KubeWaitError(err));
+                }
+                // Transitoire : backoff borné par le temps restant ; si le délai
+                // d'échéance coupe le sommeil, c'est le timeout global qui a gagné.
+                remaining = remaining.saturating_sub(attempt.elapsed());
+                let slept = tokio::time::Instant::now();
+                if let Err(elapsed) = tokio::time::timeout(remaining, tokio::time::sleep(backoff)).await {
+                    return Err(Error::Elapsed(elapsed));
+                }
+                remaining = remaining.saturating_sub(slept.elapsed());
+                backoff = backoff.saturating_mul(2).min(WAIT_BACKOFF_MAX);
+            }
+        }
+    }
 }
 
 // ── k8sgeneric ───────────────────────────────────────────────────────────────
@@ -208,26 +358,27 @@ impl K8sObject {
 
     /// Waits until this object's uid is observed as deleted, up to `timeout` seconds.
     ///
+    /// A `Deleted` watch event (or the object's absence) is this wait's success, where it
+    /// fails the other waits (see the shared `wait_object` helper, k8s.sdd `Must`).
+    ///
     /// # Errors
     ///
     /// Returns a Rhai error if the object has no uid, if `timeout` elapses ([`Error::Elapsed`])
-    /// or if the watch fails ([`Error::KubeWaitError`]).
+    /// or if the watch fails definitively ([`Error::KubeWaitError`]).
     pub fn rhai_wait_deleted(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         let uid = self
             .obj
             .uid()
             .ok_or_else(|| rhai_err_str(format!("cannot wait for deletion of {name}: uid is missing")))?;
-        crate::rt::block_on(async move {
-            let cond = await_condition(self.api.clone(), &name, conditions::is_deleted(&uid));
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            conditions::is_deleted(&uid),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(|e| rhai_err(Error::KubeWaitError(e)))
-        .map(|_| ())
+        .map_err(rhai_err)
     }
 
     /// This object's metadata rendered as a Rhai value.
@@ -278,21 +429,21 @@ impl K8sObject {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// Transient watch errors (429, 5xx, timeouts, connection drops, `410 Gone`) are
+    /// retried with exponential backoff until the global timeout (shared `wait_object`
+    /// helper, k8s.sdd `Must`).
     pub fn wait_condition(&mut self, condition: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
-        let cond = await_condition(self.api.clone(), &name, Self::is_condition(condition));
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::is_condition(condition),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(Error::KubeWaitError)
-        .map_err(rhai_err)?;
-        Ok(())
+        .map_err(rhai_err)
     }
 
     /// Condition matching when `status.<prop>` is the boolean `true`.
@@ -331,66 +482,60 @@ impl K8sObject {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// See the shared `wait_object` helper (k8s.sdd `Must`) for the retry contract.
     pub fn wait_status(&mut self, prop: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
-        let cond = await_condition(self.api.clone(), &name, Self::is_status(prop));
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::is_status(prop),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(Error::KubeWaitError)
-        .map_err(rhai_err)?;
-        Ok(())
+        .map_err(rhai_err)
     }
 
     /// Waits up to `timeout` seconds for `status.<prop>` to appear (non-null).
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// See the shared `wait_object` helper (k8s.sdd `Must`) for the retry contract.
     pub fn wait_status_prop(&mut self, prop: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
-        let cond = await_condition(self.api.clone(), &name, Self::have_status(prop));
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::have_status(prop),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(Error::KubeWaitError)
-        .map_err(rhai_err)?;
-        Ok(())
+        .map_err(rhai_err)
     }
 
     /// Waits up to `timeout` seconds for `status.<prop>` to equal the string `value`.
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// See the shared `wait_object` helper (k8s.sdd `Must`) for the retry contract.
     pub fn wait_status_string(&mut self, prop: String, value: String, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
         tracing::debug!("wait_status({}) for {} {}", &prop, self.kind, name);
-        let cond = await_condition(self.api.clone(), &name, Self::have_status_value(prop, value));
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::have_status_value(prop, value),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(Error::KubeWaitError)
-        .map_err(rhai_err)?;
-        Ok(())
+        .map_err(rhai_err)
     }
 
     /// Wait until a caller-supplied Rhai predicate returns `true` for this object.
@@ -399,13 +544,17 @@ impl K8sObject {
     /// `status` / …, exactly the shape `<K8sGeneric>.get(name)` returns) and must return a
     /// boolean. It is re-evaluated on every watch event until it returns `true` or `timeout`
     /// seconds elapse. Unlike `wait_status*`, the predicate can inspect arbitrarily nested
-    /// fields (`obj.status.ceph.versions.overall.len() == 1`, …). A predicate that raises an
-    /// error aborts the wait with that error rather than silently counting as `false`.
+    /// fields (`obj.status.ceph.versions.overall.len() == 1`, …). A predicate that raises is
+    /// NOT fatal (k8s.sdd `Must`, décision actée): the exception may be transient (a
+    /// `status` not yet populated), so the wait continues; a later satisfying event succeeds
+    /// and the exception is forgotten. Only when the timeout expires is the LAST predicate
+    /// exception returned, in place of a misleading [`Error::Elapsed`].
     ///
     /// # Errors
     ///
-    /// Returns the predicate's own Rhai error if it raises, otherwise a Rhai error if `timeout`
-    /// elapses ([`Error::Elapsed`]) or the watch fails ([`Error::KubeWaitError`]).
+    /// Returns the predicate's last Rhai error at timeout (if any raised), otherwise a Rhai
+    /// error if `timeout` elapses ([`Error::Elapsed`]), the object is deleted mid-wait, or
+    /// the watch fails definitively ([`Error::KubeWaitError`]).
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn wait_for(
         ctx: rhai::NativeCallContext,
@@ -416,40 +565,35 @@ impl K8sObject {
         let name = obj.obj.name_any();
         let api = obj.api.clone();
         tracing::debug!("wait_for({}) for {} {}", predicate.fn_name(), obj.kind, name);
-        // `await_condition` only lets the closure return `bool`; stash the first predicate
-        // error here so we can surface it instead of a misleading timeout.
+        // `wait_object` only sees booleans; stash the LAST predicate exception here (an
+        // earlier one is overwritten, a satisfying event makes it moot) so the timeout can
+        // surface it instead of a misleading Elapsed (k8s.sdd `Must`, Handles l.411-413).
         let pred_err: std::cell::RefCell<Option<Box<rhai::EvalAltResult>>> = std::cell::RefCell::new(None);
         let cond = |o: Option<&DynamicObject>| -> bool {
             let Some(dynobj) = o else { return false };
             let value = match to_dynamic(dynobj) {
                 Ok(v) => v,
                 Err(e) => {
-                    pred_err.borrow_mut().get_or_insert(e);
+                    *pred_err.borrow_mut() = Some(e);
                     return false;
                 }
             };
             match predicate.call_within_context::<Dynamic>(&ctx, (value,)) {
                 Ok(r) => r.as_bool().unwrap_or(false),
                 Err(e) => {
-                    pred_err.borrow_mut().get_or_insert(e);
+                    *pred_err.borrow_mut() = Some(e);
                     false
                 }
             }
         };
-        let outcome = crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), await_condition(api, &name, cond))
-                .await
-                .map_err(Error::Elapsed)
-        })
-        .and_then(|r| r);
-        if let Some(e) = pred_err.into_inner() {
+        let outcome =
+            crate::rt::block_on(wait_object(api, &name, timeout_duration(timeout), cond)).and_then(|r| r);
+        if matches!(outcome, Err(Error::Elapsed(_)))
+            && let Some(e) = pred_err.into_inner()
+        {
             return Err(e);
         }
-        outcome
-            .map_err(rhai_err)?
-            .map_err(Error::KubeWaitError)
-            .map_err(rhai_err)?;
-        Ok(())
+        outcome.map_err(rhai_err)
     }
 }
 
@@ -1335,20 +1479,20 @@ impl K8sDaemonSet {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// Transient watch errors are retried with backoff (shared `wait_object` helper,
+    /// k8s.sdd `Must`).
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
-        let cond = await_condition(self.api.clone(), &name, Self::is_deamonset_available());
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::is_deamonset_available(),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
-        Ok(())
+        .map_err(rhai_err)
     }
 }
 
@@ -1426,20 +1570,20 @@ impl K8sStatefulSet {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// Transient watch errors are retried with backoff (shared `wait_object` helper,
+    /// k8s.sdd `Must`).
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
-        let cond = await_condition(self.api.clone(), &name, Self::is_sts_available());
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::is_sts_available(),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
-        Ok(())
+        .map_err(rhai_err)
     }
 }
 
@@ -1518,20 +1662,20 @@ impl K8sDeploy {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// Transient watch errors are retried with backoff (shared `wait_object` helper,
+    /// k8s.sdd `Must`).
     pub fn wait_available(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
-        let cond = await_condition(self.api.clone(), &name, Self::is_deploy_available());
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            Self::is_deploy_available(),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
-        Ok(())
+        .map_err(rhai_err)
     }
 }
 
@@ -1595,20 +1739,20 @@ impl K8sJob {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]) or the watch fails
-    /// ([`Error::KubeWaitError`]).
+    /// Returns a Rhai error if `timeout` elapses ([`Error::Elapsed`]), the object is
+    /// deleted mid-wait, or the watch fails definitively ([`Error::KubeWaitError`]).
+    /// Transient watch errors are retried with backoff (shared `wait_object` helper,
+    /// k8s.sdd `Must`).
     pub fn wait_done(&mut self, timeout: i64) -> RhaiRes<()> {
         let name = self.obj.name_any();
-        let cond = await_condition(self.api.clone(), &name, conditions::is_job_completed());
-        crate::rt::block_on(async move {
-            tokio::time::timeout(timeout_duration(timeout), cond)
-                .await
-                .map_err(Error::Elapsed)
-        })
+        crate::rt::block_on(wait_object(
+            self.api.clone(),
+            &name,
+            timeout_duration(timeout),
+            conditions::is_job_completed(),
+        ))
         .and_then(|r| r)
-        .map_err(rhai_err)?
-        .map_err(|e| rhai_err(Error::KubeWaitError(e)))?;
-        Ok(())
+        .map_err(rhai_err)
     }
 }
 
@@ -2347,5 +2491,471 @@ mod tests {
         );
         assert_eq!(rendered["kind"], "APIGroupDiscoveryList");
         assert!(rendered["items"].is_array());
+    }
+
+    // ── Seam `tower-test` des waits (helper unique, k8s.sdd `Must` l.183-199, décision
+    // actée) ────────────────────────────────────────────────────────────────────
+    // Scenarios verrouillés : « waits — erreur transitoire réessayée, objet supprimé
+    // fail-fast », « wait_for — l'exception du predicate n'est pas fatale », « waits —
+    // secondes clamp, Elapsed, KubeWaitError, uid seul message local ».
+    //
+    // Faux API server `tower-test` (même patron que `mocked_generic` : handle et
+    // `tower::Buffer` du client bâtis sur un runtime dédié, l'appel part du fil principal
+    // SANS runtime — voie secours `rt::block_on`). Une tentative de watch = un LIST (le
+    // `watch_object` de kube 3.1 démarre par une liste filtrée sur le nom) puis un WATCH ;
+    // le corps du watch est du JSON à un événement par ligne (mesuré : `LinesCodec` de
+    // `Client::request_events`), et la fin du corps est un EOF que le watcher re-watche EN
+    // SILENCE (mesuré : `None => State::InitListed` dans `watcher.rs`).
+    // Les timeouts de test sont en i64 secondes (granularité du contrat, `Accepts`) : 1 s
+    // en pratique, backoff initial 100 ms.
+
+    fn mocked_object() -> (
+        K8sObject,
+        tower_test::mock::Handle<http::Request<Body>, http::Response<Body>>,
+    ) {
+        let (mock_service, handle) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+        let ar = ApiResource {
+            group: String::new(),
+            version: "v1".to_string(),
+            api_version: "v1".to_string(),
+            kind: "ConfigMap".to_string(),
+            plural: "configmaps".to_string(),
+        };
+        let api: Api<DynamicObject> = Api::namespaced_with(kube::Client::new(mock_service, "ns"), "ns", &ar);
+        let obj: PartialObjectMeta = serde_json::from_value(serde_json::json!({
+            "metadata": { "name": "x", "uid": "uid-1", "resourceVersion": "1" }
+        }))
+        .unwrap();
+        (
+            K8sObject {
+                api,
+                obj,
+                kind: "ConfigMap".to_string(),
+            },
+            handle,
+        )
+    }
+
+    fn http_json(status: u16, body: &str) -> http::Response<Body> {
+        http::Response::builder()
+            .status(status)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.as_bytes().to_vec()))
+            .unwrap()
+    }
+
+    /// Sert les responses dans l'ordre aux requêtes entrantes ; quand la liste est épuisée,
+    /// la prochaine requête reste sans réponse (watch pendant — le timeout global tranche).
+    fn served_wait(
+        responses: Vec<(u16, String)>,
+        call: impl FnOnce(&mut K8sObject) -> RhaiRes<()>,
+    ) -> RhaiRes<()> {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut obj, handle) = server_rt.block_on(async { mocked_object() });
+        let responder = server_rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let mut responses = std::collections::VecDeque::from(responses);
+            loop {
+                let Some((_req, send)) = handle.next_request().await else {
+                    return;
+                };
+                let Some((status, body)) = responses.pop_front() else {
+                    // responses épuisées : la requête suivante reste à jamais sans réponse
+                    // (watch pendant — le timeout global du wait tranche).
+                    loop {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                send.send_response(http_json(status, &body));
+            }
+        });
+        let out = call(&mut obj);
+        responder.abort();
+        out
+    }
+
+    // Scénario : l'objet vu par le LIST initial, puis DELETED pendant le watch.
+    const OBJ_NOT_READY: &str = r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"11"}}"#;
+    const OBJ_READY: &str = r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"11"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}"#;
+
+    fn list_of(item: &'static str) -> String {
+        format!(
+            r#"{{"apiVersion":"v1","kind":"ConfigMapList","metadata":{{"resourceVersion":"10"}},"items":[{item}]}}"#
+        )
+    }
+    fn list_empty() -> String {
+        r#"{"apiVersion":"v1","kind":"ConfigMapList","metadata":{"resourceVersion":"10"},"items":[]}"#
+            .to_string()
+    }
+    fn watch_events(events: &[&'static str]) -> String {
+        format!("{}\n", events.join("\n"))
+    }
+    fn status_body(code: u16, reason: &str) -> String {
+        format!(
+            r#"{{"kind":"Status","apiVersion":"v1","metadata":{{}},"status":"Failure","message":"{reason}","reason":"{reason}","code":{code}}}"#
+        )
+    }
+
+    // ── Verdicts de classement (k8s.sdd `Must` : « classe les erreurs ») ──────
+    // Le classement est verrouillé ici sur les types mesurés de kube-runtime 3.1 :
+    // `wait::Error::ProbeFailed(watcher::Error)`, dont les variantes portent soit un
+    // `kube::Error` (list/watch transportés), soit un `Status` (`WatchEvent::Error` —
+    // c'est par là que tombe le `410 Gone`).
+
+    fn probe(w: kube::runtime::watcher::Error) -> kube::runtime::wait::Error {
+        kube::runtime::wait::Error::ProbeFailed(w)
+    }
+    fn api_status(code: u16) -> kube::Error {
+        kube::Error::Api(Box::new(kube::core::Status {
+            code,
+            ..std::default::Default::default()
+        }))
+    }
+
+    #[test]
+    fn watch_verdicts_transient_and_definitive_classes() {
+        use kube::runtime::watcher::Error as WatcherError;
+        // Transitoires (k8s.sdd : 429, 5xx, timeout, coupure, 410) :
+        for code in [408_u16, 410, 429, 500, 502, 503, 599] {
+            assert_eq!(
+                classify_wait_error(&probe(WatcherError::InitialListFailed(api_status(code)))),
+                WatchFailure::Transient,
+                "HTTP {code} doit être transitoire"
+            );
+        }
+        assert_eq!(
+            classify_wait_error(&probe(WatcherError::WatchStartFailed(api_status(503)))),
+            WatchFailure::Transient,
+            "5xx au démarrage du watch : transitoire"
+        );
+        assert_eq!(
+            classify_wait_error(&probe(WatcherError::WatchFailed(kube::Error::ReadEvents(
+                std::io::Error::other("pipe fermé"),
+            )))),
+            WatchFailure::Transient,
+            "coupure du flux d'événements : transitoire"
+        );
+        assert_eq!(
+            classify_wait_error(&probe(WatcherError::WatchFailed(kube::Error::Service(
+                "connection reset".into(),
+            )))),
+            WatchFailure::Transient,
+            "erreur de service (transport) : transitoire"
+        );
+        assert_eq!(
+            classify_wait_error(&probe(WatcherError::WatchError(Box::new(kube::core::Status {
+                code: 410,
+                ..std::default::Default::default()
+            },)))),
+            WatchFailure::Transient,
+            "410 Gone reçu comme événement ERROR : transitoire (reprise de la resourceVersion par re-liste)"
+        );
+        // Définitives (k8s.sdd : 401, 403, 404, requête invalide) :
+        for code in [400_u16, 401, 403, 404, 409] {
+            assert_eq!(
+                classify_wait_error(&probe(WatcherError::InitialListFailed(api_status(code)))),
+                WatchFailure::Definitive,
+                "HTTP {code} doit être définitive"
+            );
+        }
+        assert_eq!(
+            classify_wait_error(&probe(WatcherError::WatchFailed(kube::Error::SerdeError(
+                serde_json::from_str::<serde_json::Value>("{ pas du json").unwrap_err(),
+            )))),
+            WatchFailure::Definitive,
+            "réponse non désérialisable : famille requête invalide"
+        );
+        assert_eq!(
+            classify_wait_error(&probe(WatcherError::NoResourceVersion)),
+            WatchFailure::Definitive,
+            "resourceVersion absente : la resource ne supporte pas le watch, réessayer ne peut rien"
+        );
+    }
+
+    // ── Scénario « erreur transitoire réessayée » ─────────────────────────────
+
+    // Given un client tower-test dont le watch répond d'abord 429 puis un event
+    // satisfaisant la condition ; When wait_condition("Ready", 30) ; Then la wait réussit
+    // après un réessai avec backoff, sans erreur. (Ici le 429 tombe sur le LIST de la
+    // 1ʳᵉ tentative ; timeout 1 s au lieu de 30 pour la vitesse du test.)
+    #[test]
+    fn wait_condition_retries_429_then_succeeds() {
+        let out = served_wait(
+            vec![
+                (429, status_body(429, "TooManyRequests")),
+                (200, list_of(OBJ_READY)),
+            ],
+            |obj| obj.wait_condition("Ready".to_string(), 1),
+        );
+        assert!(
+            out.is_ok(),
+            "le 429 est transitoire, la wait doit aboutir : {out:?}"
+        );
+    }
+
+    // 410 Gone reçu comme ERROR event en cours de watch : transitoire, et la reprise
+    // (nouvelle liste, resourceVersion renouvelée par la lib) mène au succès.
+    #[test]
+    fn wait_condition_retries_410_gone_then_succeeds() {
+        let gone = watch_events(&[
+            r#"{"type":"ERROR","object":{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"too old","reason":"Gone","code":410}}"#,
+        ]);
+        let out = served_wait(
+            vec![
+                (200, list_of(OBJ_NOT_READY)),
+                (200, gone),
+                (200, list_of(OBJ_READY)),
+            ],
+            |obj| obj.wait_condition("Ready".to_string(), 1),
+        );
+        assert!(
+            out.is_ok(),
+            "le 410 est transitoire, la wait doit aboutir : {out:?}"
+        );
+    }
+
+    // Given un watch qui répond des 5xx jusqu'à l'écoulement du timeout ; Then l'échec
+    // est Error::Elapsed (« Elapsed wait error: … » rendu par rhai_err).
+    #[test]
+    fn wait_condition_5xx_until_timeout_is_elapsed() {
+        let out = served_wait(vec![(503, status_body(503, "ServiceUnavailable")); 30], |obj| {
+            obj.wait_condition("Ready".to_string(), 1)
+        });
+        let err = out.expect_err("les 5xx jusqu'au timeout doivent échouer");
+        assert!(
+            err.to_string().contains("Elapsed wait error"),
+            "le timeout global est Elapsed, obtenu : {err}"
+        );
+    }
+
+    // Given un watch coupé par une erreur de connexion, puis rétabli avant le timeout ;
+    // Then la wait réussit de même. (Mesuré : une fin de corps de watch est un EOF que
+    // le watcher re-watche en SILENCE — `(None, State::InitListed)` — sans article
+    // d'erreur ; le réessai visible est la 2ᵉ requête de watch.)
+    #[test]
+    fn watch_eof_reconnect_then_satisfying_event_succeeds() {
+        let not_ready = watch_events(&[
+            r#"{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"11"}}}"#,
+        ]);
+        let ready = watch_events(&[
+            r#"{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"12"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}}"#,
+        ]);
+        let out = served_wait(
+            vec![(200, list_of(OBJ_NOT_READY)), (200, not_ready), (200, ready)],
+            |obj| obj.wait_condition("Ready".to_string(), 1),
+        );
+        assert!(
+            out.is_ok(),
+            "coupure puis rétablissement avant le timeout : succès sans erreur : {out:?}"
+        );
+    }
+
+    // ── Scénario « erreur définitive : échec immédiat, sans second watch » ────
+
+    // Given un watch qui répond 403 à wait_condition ; Then l'échec est immédiat en
+    // Error::KubeWaitError via rhai_err, sans attendre le timeout ni resservir une requête.
+    #[test]
+    fn wait_condition_403_fails_immediately_without_second_request() {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut obj, handle) = server_rt.block_on(async { mocked_object() });
+        let responder = server_rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let Some((_req, send)) = handle.next_request().await else {
+                return false;
+            };
+            send.send_response(http_json(403, &status_body(403, "Forbidden")));
+            // Verrou du compte de requêtes : aucune 2ᵉ requête dans la foulée.
+            tokio::time::timeout(std::time::Duration::from_millis(200), handle.next_request())
+                .await
+                .is_err()
+        });
+        let out = obj.wait_condition("Ready".to_string(), 1);
+        let quiet = server_rt.block_on(responder).unwrap();
+        let err = out.expect_err("le 403 est définitif");
+        assert!(
+            err.to_string().contains("K8s wait error"),
+            "définitive → KubeWaitError, obtenu : {err}"
+        );
+        assert!(quiet, "aucun second watch après une erreur définitive");
+    }
+
+    // ── Scénario « objet supprimé pendant l'attente » ─────────────────────────
+
+    #[test]
+    fn deleted_mid_wait_fails_fast_with_exact_string() {
+        let deleted = watch_events(&[
+            r#"{"type":"DELETED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"12"}}}"#,
+        ]);
+        let out = served_wait(vec![(200, list_of(OBJ_NOT_READY)), (200, deleted)], |obj| {
+            obj.wait_condition("Ready".to_string(), 1)
+        });
+        let err = out.expect_err("Deleted pendant la wait doit échouer");
+        assert!(
+            err.to_string().contains("object x was deleted while waiting"),
+            "la chaîne exacte doit être rendue, obtenu : {err}"
+        );
+    }
+
+    #[test]
+    fn deleted_counts_as_success_for_wait_deleted() {
+        let deleted = watch_events(&[
+            r#"{"type":"DELETED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"12"}}}"#,
+        ]);
+        let out = served_wait(vec![(200, list_of(OBJ_NOT_READY)), (200, deleted)], |obj| {
+            obj.rhai_wait_deleted(1)
+        });
+        assert!(out.is_ok(), "pour wait_deleted, Deleted est le succès : {out:?}");
+    }
+
+    // ── Scénario « wait_for — l'exception du predicate n'est pas fatale » ─────
+    // Full Rhai : le VRAI K8sObject, enregistré sur un engine nu (wait_for est câblé par
+    // la macro `register_k8s_object` ; pas de LazyLock touché).
+
+    fn wait_for_script(obj: &K8sObject, script: &str) -> RhaiRes<()> {
+        let mut engine = Engine::new();
+        engine
+            .register_type_with_name::<K8sObject>("K8sObject")
+            .register_fn("wait_for", K8sObject::wait_for);
+        let mut scope = rhai::Scope::new();
+        scope.push("o", Dynamic::from(obj.clone()));
+        engine.eval_with_scope::<Dynamic>(&mut scope, script).map(|_| ())
+    }
+
+    // Given un predicate qui lève au 1er event puis retourne vrai au 2ᵉ ; Then la wait
+    // RÉUSSIT : l'exception du 1ᵉʳ event est oubliée.
+    #[test]
+    fn wait_for_predicate_raise_then_satisfy_succeeds() {
+        let events = watch_events(&[
+            r#"{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"11"},"spec":{"n":1}}}"#,
+            r#"{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"12"},"spec":{"n":2}}}"#,
+        ]);
+        let out = served_wait(vec![(200, list_empty()), (200, events)], |obj| {
+            wait_for_script(
+                obj,
+                r#"o.wait_for(|x| { if x.spec.n == 1 { throw "boom1" } x.spec.n == 2 }, 1)"#,
+            )
+        });
+        assert!(
+            out.is_ok(),
+            "un event satisfaisant après une exception doit réussir (exception oubliée) : {out:?}"
+        );
+    }
+
+    // Given un predicate qui lève à chaque event jusqu'au timeout ; Then c'est la
+    // DERNIÈRE exception qui est rendue (deux messages distincts, la dernière gagne),
+    // et non un Elapsed trompeur.
+    #[test]
+    fn wait_for_predicate_last_exception_wins_at_timeout() {
+        let events = watch_events(&[
+            r#"{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"11"},"spec":{"n":1}}}"#,
+            r#"{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","uid":"uid-1","resourceVersion":"12"},"spec":{"n":2}}}"#,
+        ]);
+        let out = served_wait(vec![(200, list_empty()), (200, events)], |obj| {
+            wait_for_script(
+                obj,
+                r#"o.wait_for(|x| { if x.spec.n == 1 { throw "boom1" } throw "boom2" }, 1)"#,
+            )
+        });
+        let err = out.expect_err("le predicate lève jusqu'au timeout");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("boom2"),
+            "la DERNIÈRE exception doit être rendue, obtenu : {msg}"
+        );
+        assert!(
+            !msg.contains("boom1"),
+            "la première exception doit avoir été effacée, obtenu : {msg}"
+        );
+        assert!(
+            !msg.contains("Elapsed wait error"),
+            "pas d'Elapsed trompeur quand une exception existe, obtenu : {msg}"
+        );
+    }
+
+    // ── Quanta et chaînes locales (scénario « waits — secondes clamp… ») ──────
+
+    // Le `-5` seul devient timeout `0 s` immédiat Elapsed (jamais une erreur d'argument).
+    #[test]
+    fn negative_timeout_is_immediate_elapsed() {
+        let out = served_wait(vec![], |obj| obj.wait_condition("Ready".to_string(), -5));
+        let err = out.expect_err("timeout négatif = 0 s = Elapsed immédiat");
+        assert!(
+            err.to_string().contains("Elapsed wait error"),
+            "clamp à 0 s puis Elapsed, obtenu : {err}"
+        );
+    }
+
+    // L'unique chaîne locale du vrai (Rhai) : wait_deleted sans uid échoue AVANT le
+    // timeout, quel que soit le timeout.
+    #[test]
+    fn wait_deleted_without_uid_is_local_string_before_any_timeout() {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut obj = server_rt.block_on(async {
+            let (mock_service, _handle) =
+                tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            let ar = ApiResource {
+                group: String::new(),
+                version: "v1".to_string(),
+                api_version: "v1".to_string(),
+                kind: "ConfigMap".to_string(),
+                plural: "configmaps".to_string(),
+            };
+            K8sObject {
+                api: Api::namespaced_with(kube::Client::new(mock_service, "ns"), "ns", &ar),
+                obj: serde_json::from_value(serde_json::json!({ "metadata": { "name": "gone" } })).unwrap(),
+                kind: "ConfigMap".to_string(),
+            }
+        });
+        let err = obj
+            .rhai_wait_deleted(-5)
+            .expect_err("uid absent → erreur locale, pas de timeout");
+        assert!(
+            err.to_string()
+                .contains("cannot wait for deletion of gone: uid is missing"),
+            "la chaîne locale doit être rendue, obtenu : {err}"
+        );
+    }
+
+    // ── Migration workload : la face typée passe par le même helper ───────────
+    #[test]
+    fn workload_wait_available_satisfied_on_initial_list() {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut dep, handle) = server_rt.block_on(async {
+            let (mock_service, handle) =
+                tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            let api: Api<Deployment> = Api::namespaced(kube::Client::new(mock_service, "ns"), "ns");
+            let obj: Deployment = serde_json::from_value(serde_json::json!({
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": { "name": "d", "resourceVersion": "1" },
+                "status": { "conditions": [{ "type": "Available", "status": "True" }] }
+            }))
+            .unwrap();
+            (K8sDeploy { api, obj }, handle)
+        });
+        let list = r#"{"apiVersion":"apps/v1","kind":"DeploymentList","metadata":{"resourceVersion":"2"},"items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"d","resourceVersion":"1"},"status":{"conditions":[{"type":"Available","status":"True"}]}}]}"#;
+        let responder = server_rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let Some((_req, send)) = handle.next_request().await else {
+                return;
+            };
+            send.send_response(http_json(200, list));
+            std::future::pending::<()>().await;
+        });
+        let out = dep.wait_available(1);
+        responder.abort();
+        assert!(out.is_ok(), "condition satisfaie dès la liste initiale : {out:?}");
     }
 }
