@@ -155,11 +155,11 @@ pub fn oci_mock_rhai_register(engine: &mut Engine)
 
 No fixtures — every method returns a fixed canned value regardless of its arguments.
 
-> **Caveat:** this is the one mock that does **not** reuse the real type name. The real client
-> registers as `Registry`; `oci_mock` registers as `OciRegistryMock`. The constructor function
-> name (`new_registry`) is identical, so scripts that only do
-> `let r = new_registry(reg, user, pass);` and call methods on `r` are unaffected — but any script
-> branching on the type name explicitly would need to account for this.
+> **Caveat:** the mock registers the **same** Rhai type name as the real client —
+> `Registry` — like `http_mock` and `k8s_mock` do for their types: a script that only does
+> `let r = new_registry(reg, user, pass);` and calls methods on `r` sees an indistinguishable
+> type (`type_of(r)` is `"Registry"` in both worlds). Only the Rust struct keeps a distinct
+> name (`OciRegistryMock`).
 
 | Signature | Always returns |
 |---|---|
@@ -168,3 +168,4 @@ No fixtures — every method returns a fixed canned value regardless of its argu
 | `.get_manifest(repository, tag)` | `#{ "annotations": #{} }` |
 | `.push_image(dir, repository, tag, annotations)` | `"sha256:mock-digest-for-testing"` |
 | `.sign_image(repository, tag, digest, key_path)` | `()` (always succeeds, never actually shells out to `cosign`) |
+| `get_auth_from_file(path, registry)` | `#{ "user": "", "pass": "" }` (both arguments ignored, never reads the file) |

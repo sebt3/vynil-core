@@ -126,6 +126,10 @@ Tasks:
     sous la porte `oci` seule que parce que @oci-client tire @reqwest, ce qui n'est pas notre
     contrat (décision du développeur principal, vérification des deux portes par l'agent
     `validator`).
+  [x] Ajouter @httpmock en @dev-dependencies de ./Cargo.toml : les chemins réseau d'./src/oci.rs
+    (faux registre HTTP local, en-tête `Accept` reçu, pagination de `list_tags`, cas cosign
+    absent) se verrouillent par lui. Tâche jumelle de « Tester les chemins réseau par un faux
+    registre HTTP local » de ./src/oci.sdd, à cocher dans le même commit.
   [x] Relever le plancher @handlebars de ./Cargo.toml (« 6.2.0 » → « 6.4 ») : le lock monte
     déjà 6.4.4 et tout est vérifié sur cette version. Tâche jumelle de « Relever le plancher
     `handlebars` de ./Cargo.toml à 6.4 » de ./src/hbs.sdd, à cocher dans le même commit.

@@ -315,25 +315,39 @@ Handles:
     mondes, le dernier enregistré gagne à co-enregistrement — mécanisme laissé à @rhai.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants. Aujourd'hui ./oci.rs : 7 `#[test]` inline
-    (get_auth_from_file valide/absent/introuvable/auth vide lignes 347-386 via
-    `tempfile`, sign_image clé vide no-op ligne 389, sign_image cosign introuvable ligne
-    401 qui ne verrouille que `is_err` — la variante Stdio-vs-Other dépend de la machine)
-    plus 3 `#[tokio::test]` gated `k8s` (lignes 451-531, @tower_test::mock sur
-    resolve_registry_auth Basic/Anonymous), donc JAMAIS sous default, ni `oci` seul, ni
-    `k8s` seul — seulement les deux dernières combinaisons de la batterie AGENTS.md.
-    ./oci_mock.rs : ZÉRO test. Aucun test inline n'exerce push_image, pull_image, les
-    voies de list_tags, get_manifest, verify_tag_in_registry, ni un seul de ces noms via
-    engine. Les Scenario réseau de bas de fichier s'appuient sur un faux registre HTTP
-    local (`httpmock`, dev-dependency), seam décidé.
+  [ ] Convertir les Scenario en tests passants. ./oci.rs portait 7 `#[test]` inline à HEAD
+    (get_auth_from_file ×4 via `tempfile`, sign_image clé vide, cosign introuvable en
+    `is_err` seul, pull hors runtime servi par le runtime temporaire) plus 3
+    `#[tokio::test]` gated `k8s` (@tower_test::mock sur
+    resolve_registry_auth Basic/Anonymous, jamais joués sous `oci` seul) ; ./oci_mock.rs :
+    ZÉRO. Le lot A-D y a ajouté 21 verrous jouables sous `oci` seul (aujourd'hui 26 inline
+    + 7 `#[tokio::test]` dont 4 gated `k8s` — les quatre fils `env_clear`, cosign ×2 et
+    User-Agent ×2, sont des `#[test]` non tokio comptés dans les 26) : digest de push absent AU CARACTÈRE,
+    annotations scalaires (les quatre scalaires → Display, map/tableau refusés), `decoded`
+    sans `:` en `docker config auth is not user:pass`, pagination de `list_tags` servie
+    DESCENDANTE (un tri local rougit — preuve de staging rendue) 2500 tags et plafond
+    `too many tags (> 10000)`, `Accept` des quatre media types du `Must` verrouillé en
+    matchers `when.header` + `assert_hits`, User-Agent câblé et défaut oci-client par
+    FILS `env_clear`, cosign absent par fils (marqueur d'exécution, pas de `is_err` nu), et
+    3 tests de face engine sur le double enregistré `Registry` dont `get_auth_from_file`
+    constant. Reste SANS VERROU : la variante Stdio-vs-Other d'un spawn cosign échouant ni
+    en NotFound ni en erreur chaîne (non reproductible sur cette machine — `Default` pas
+    fabriquable) ; les 4 tests gated `k8s` sur @tower_test::mock que la
+    conversion rapatrie — les trois d'avant plus celui du `decoded` sans `:`, même seam,
+    jamais joués sous `oci` seul : les faces Basic/Anonymous/erreur typée sont pourtant
+    verrouillées, c'est leur seam qui déménage ; les voies pull_image,
+    push_image hors digest manquant, get_manifest et les noms du registre VIA engine côté
+    VRAI client (le double est verrouillé, le vrai ne l'est que par @httpmock sur les faces
+    livrées). Les Scenario réseau de bas de fichier sont en grande partie rendus par le
+    lot ; @httpmock (dev-dependency) reste le seam décidé.
 
-  [ ] Erreur `Other` sur digest de push absent ; erreurs typées harmonisées pour un `auth`
+  [x] Erreur `Other` sur digest de push absent ; erreurs typées harmonisées pour un `auth`
     corrompu dans `resolve_registry_auth` et `get_auth_from_file` (dont `decoded` sans `:`) ;
     annotations scalaires seulement ; `cosign not found in PATH` (décisions actées).
-  [ ] Paginer `list_tags` (pages de 1000, plafond 10 000 tags en erreur) ; passer une liste
+  [x] Paginer `list_tags` (pages de 1000, plafond 10 000 tags en erreur) ; passer une liste
     `accept` explicite à `verify_tag_in_registry` ; câbler le User-Agent depuis
     @crate::client_name quand défini (décisions actées).
-  [ ] Renommer le type Rhai du mock en `Registry`, ajouter `get_auth_from_file` (constante
+  [x] Renommer le type Rhai du mock en `Registry`, ajouter `get_auth_from_file` (constante
     `{user "", pass ""}`) au mock, test d'abord. Sa part documentaire est ailleurs, ./docs/
     n'étant pas de cet `Owns` : « backed by in-memory fixtures » faux pour `oci`, le tier des
     lignes 51-54 et les faces Rust publiques à documenter sont les tâches de ./docs.sdd, avec
@@ -342,7 +356,7 @@ Tasks:
     http ; le helper est spécifié dans ./rt.sdd).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
-  [ ] Tester les chemins réseau par un faux registre HTTP local (`httpmock` en
+  [x] Tester les chemins réseau par un faux registre HTTP local (`httpmock` en
     dev-dependency, décision actée) — dont l'en-tête `Accept` reçu par
     `verify_tag_in_registry` — et le cas cosign absent par un test isolé qui vide le `PATH`.
   [ ] Faisabilité : basculer `oci-client` (`default-features = false`, feature `rustls-tls`)

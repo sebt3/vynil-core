@@ -14,6 +14,26 @@ use rhai::{Dynamic, Engine, ImmutableString, Map};
 use std::{collections::BTreeMap, path::PathBuf};
 use tar::{Archive, Builder};
 
+/// Builds the [`client::ClientConfig`] of the per-call client: `default`, with
+/// the `User-Agent` set to [`crate::get_client_name`] when a client name is
+/// configured (memoized once as a `&'static str`), `oci_client`'s default otherwise.
+fn oci_client_config() -> client::ClientConfig {
+    let mut config = client::ClientConfig::default();
+    if crate::client_name_is_set() {
+        static CLIENT_NAME_USER_AGENT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        config.user_agent =
+            CLIENT_NAME_USER_AGENT.get_or_init(|| Box::leak(crate::get_client_name().into_boxed_str()));
+    }
+    // Les faux registres `httpmock` des tests de ce module servent en HTTP clair
+    // sur 127.0.0.1 ; ce réglage n'existe que sous `cfg(test)`, jamais compilé
+    // en production (tâche « httpmock » de oci.sdd).
+    #[cfg(test)]
+    {
+        config.protocol = oci_client::client::ClientProtocol::Http;
+    }
+    config
+}
+
 /// OCI registry client. Create with [`Registry::new`] and push/pull images.
 #[derive(Clone, Debug)]
 pub struct Registry {
@@ -39,8 +59,10 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error wrapping [`Error::Stdio`] on tar/gzip I/O failures or
-    /// [`Error::OCIDistrib`] when the manifest build or the push fails.
+    /// Returns a Rhai error wrapping [`Error::Stdio`] on tar/gzip I/O failures,
+    /// [`Error::OCIDistrib`] when the manifest build or the push fails, or
+    /// [`Error::Other`] for a composite annotation or a push response whose
+    /// manifest URL carries no `sha256:` digest.
     pub fn push_image(
         &mut self,
         source_dir: String,
@@ -48,10 +70,17 @@ impl Registry {
         tag: String,
         annotations: Map,
     ) -> RhaiRes<ImmutableString> {
-        let client = Client::new(client::ClientConfig::default());
+        let client = Client::new(oci_client_config());
         let reference = Reference::with_tag(self.registry.clone(), repository, tag);
         let mut values: BTreeMap<String, String> = BTreeMap::new();
         for (key, val) in annotations {
+            // Les annotations OCI sont des paires chaîne/chaîne : scalaires
+            // rendus par leur `Display`, composites refusés (oci.sdd).
+            if val.is_map() || val.is_array() {
+                return Err(rhai_err(Error::Other(format!(
+                    "annotation '{key}' must be a scalar"
+                ))));
+            }
             values.insert(key.into(), val.to_string());
         }
         let mut tar_uncompressed = Builder::new(Vec::new());
@@ -101,10 +130,14 @@ impl Registry {
         .map_err(rhai_err)
         .and_then(|r| r.map_err(|e| rhai_err(Error::OCIDistrib(e))))?;
         let manifest_url = push_response.manifest_url;
-        let digest: ImmutableString = if let Some(idx) = manifest_url.rfind("sha256:") {
-            manifest_url[idx..].to_string()
-        } else {
-            manifest_url
+        // Le digest sert à `cosign sign …@digest` : une URL n'est pas un digest.
+        let digest: ImmutableString = match manifest_url.rfind("sha256:") {
+            Some(idx) => manifest_url[idx..].to_string(),
+            None => {
+                return Err(rhai_err(Error::Other(format!(
+                    "push response without a sha256 digest: {manifest_url}"
+                ))));
+            }
         }
         .into();
         Ok(digest)
@@ -115,8 +148,9 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Returns a Rhai error wrapping [`Error::Stdio`] when `cosign` cannot be spawned, or
-    /// [`Error::Other`] when it exits with a non-zero status.
+    /// Returns a Rhai error wrapping [`Error::Other`] `cosign not found in PATH` when the
+    /// `cosign` binary is absent, [`Error::Stdio`] for any other spawn failure, and
+    /// [`Error::Other`] when cosign exits with a non-zero status.
     // signature imposée par l'API Rhai (vyvil-core.sdd)
     #[allow(clippy::needless_pass_by_value)]
     pub fn sign_image(
@@ -133,7 +167,15 @@ impl Registry {
         let status = std::process::Command::new("cosign")
             .args(["sign", "--yes", "--key", &key_path, &image_ref])
             .status()
-            .map_err(|e| rhai_err(Error::Stdio(e)))?;
+            .map_err(|e| {
+                // Binaire absent : message parlant (décision actée, oci.sdd) ;
+                // tout autre échec de spawn reste Stdio.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    rhai_err(Error::Other("cosign not found in PATH".to_string()))
+                } else {
+                    rhai_err(Error::Stdio(e))
+                }
+            })?;
         if status.success() {
             Ok(())
         } else {
@@ -150,7 +192,7 @@ impl Registry {
     /// Returns [`Error::OCIDistrib`] when the pull fails, [`Error::Stdio`] when a layer cannot be
     /// unpacked.
     pub fn pull_image(&mut self, dest_dir: &PathBuf, repository: String, tag: String) -> Result<()> {
-        let client = Client::new(client::ClientConfig::default());
+        let client = Client::new(oci_client_config());
         let reference = Reference::with_tag(self.registry.clone(), repository, tag);
         let data = crate::rt::block_on(async move {
             client
@@ -168,22 +210,36 @@ impl Registry {
         Ok(())
     }
 
-    /// Lists tags (up to 100) of `repository` on this registry.
+    /// Lists ALL the tags of `repository` on this registry, paging to exhaustion
+    /// (pages of 1000, `last` = last tag received) in registry order, unsorted.
     ///
     /// # Errors
     ///
     /// Returns [`Error::OCIParseError`] if the reference is malformed, [`Error::OCIDistrib`] if
-    /// the tag listing fails.
+    /// the tag listing fails, [`Error::Other`] `too many tags (> 10000)` beyond 10 000 tags.
     pub async fn list_tags(&mut self, repository: String) -> Result<Vec<String>> {
-        let client = Client::new(client::ClientConfig::default());
+        let client = Client::new(oci_client_config());
         let image: Reference = format!("{}/{}", self.registry.clone(), repository)
             .parse()
             .map_err(Error::OCIParseError)?;
-        let ret = client
-            .list_tags(&image, &self.auth.clone(), Some(100), None)
-            .await
-            .map_err(Error::OCIDistrib)?;
-        Ok(ret.tags)
+        let mut tags: Vec<String> = Vec::new();
+        let mut last: Option<String> = None;
+        loop {
+            let page = client
+                .list_tags(&image, &self.auth.clone(), Some(1000), last.as_deref())
+                .await
+                .map_err(Error::OCIDistrib)?;
+            let short_page = page.tags.len() < 1000;
+            tags.extend(page.tags);
+            if tags.len() > 10_000 {
+                return Err(Error::Other("too many tags (> 10000)".to_string()));
+            }
+            if short_page {
+                break;
+            }
+            last = tags.last().cloned();
+        }
+        Ok(tags)
     }
 
     /// Rhai binding of [`Self::list_tags`], returning the tags as a Rhai array.
@@ -206,7 +262,7 @@ impl Registry {
     /// Returns a Rhai error wrapping [`Error::OCIDistrib`] when the pull fails, or
     /// [`Error::SerializationError`] when the manifest cannot be converted to a Rhai value.
     pub fn get_manifest(&mut self, repository: String, tag: String) -> RhaiRes<Dynamic> {
-        let client = Client::new(client::ClientConfig::default());
+        let client = Client::new(oci_client_config());
         let image = Reference::with_tag(self.registry.clone(), repository, tag);
         let (manifest, _) =
             crate::rt::block_on(async move { client.pull_manifest(&image, &self.auth.clone()).await })
@@ -223,8 +279,8 @@ impl Registry {
 /// # Errors
 ///
 /// Returns [`Error::KubeError`] when the secret fetch fails, [`Error::SerializationError`] on
-/// invalid docker-config JSON, [`Error::Base64DecodeError`] or [`Error::UTF8`] on a malformed
-/// `auth` field.
+/// invalid docker-config JSON and, for a malformed `auth`, [`Error::Base64DecodeError`],
+/// [`Error::UTF8`] or [`Error::Other`] `docker config auth is not user:pass` — never a fallback.
 #[cfg(feature = "k8s")]
 pub async fn resolve_registry_auth(
     secret_name: &str,
@@ -253,7 +309,9 @@ pub async fn resolve_registry_auth(
     if parts.len() == 2 {
         Ok(RegistryAuth::Basic(parts[0].to_string(), parts[1].to_string()))
     } else {
-        Ok(RegistryAuth::Anonymous)
+        // « Pas d'identifiant » est normal (replis anonymes ci-dessus) ;
+        // « identifiant corrompu » se signale (décision actée, oci.sdd).
+        Err(Error::Other("docker config auth is not user:pass".to_string()))
     }
 }
 
@@ -269,9 +327,18 @@ pub async fn verify_tag_in_registry(
     tag: &str,
     auth: RegistryAuth,
 ) -> Result<bool> {
-    let oci = Client::new(client::ClientConfig::default());
+    // `Accept` explicite : les quatre media types de manifest (OCI manifest,
+    // OCI index, Docker v2 manifest, Docker manifest list) — un `Accept` vide
+    // dépend du registre (décision actée, oci.sdd).
+    const ACCEPT_MANIFESTS: [&str; 4] = [
+        manifest::OCI_IMAGE_MEDIA_TYPE,
+        manifest::OCI_IMAGE_INDEX_MEDIA_TYPE,
+        manifest::IMAGE_MANIFEST_MEDIA_TYPE,
+        manifest::IMAGE_MANIFEST_LIST_MEDIA_TYPE,
+    ];
+    let oci = Client::new(oci_client_config());
     let reference = Reference::with_tag(registry.to_string(), image.to_string(), tag.to_string());
-    match oci.pull_manifest_raw(&reference, &auth, &[]).await {
+    match oci.pull_manifest_raw(&reference, &auth, &ACCEPT_MANIFESTS).await {
         Ok(_) => Ok(true),
         Err(oci_client::errors::OciDistributionError::RegistryError { envelope, .. })
             if envelope.errors.iter().any(|e| {
@@ -290,12 +357,14 @@ pub async fn verify_tag_in_registry(
 }
 
 /// Reads a docker-config `path` and returns `{user, pass}` decoded from the `auth` entry of
-/// `registry`; empty strings when the registry or the entry is absent.
+/// `registry`; empty strings when the registry or the entry is absent (or its `auth` empty).
 ///
 /// # Errors
 ///
-/// Returns a Rhai error wrapping [`Error::Stdio`] if the file cannot be read, or
-/// [`Error::SerializationError`] if it is not valid JSON.
+/// Returns a Rhai error wrapping [`Error::Stdio`] if the file cannot be read,
+/// [`Error::SerializationError`] if it is not valid JSON and, for a malformed `auth`,
+/// [`Error::Base64DecodeError`], [`Error::UTF8`] or [`Error::Other`] `docker config auth is
+/// not user:pass` — the same typed errors as [`resolve_registry_auth`], never a fallback.
 // signature imposée par l'API Rhai (vyvil-core.sdd)
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_auth_from_file(path: String, registry: String) -> RhaiRes<Dynamic> {
@@ -303,13 +372,27 @@ pub fn get_auth_from_file(path: String, registry: String) -> RhaiRes<Dynamic> {
     let json: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| rhai_err(Error::SerializationError(e)))?;
     let auth_b64 = json["auths"][&registry]["auth"].as_str().unwrap_or_default();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(auth_b64)
-        .unwrap_or_default();
-    let user_pass = String::from_utf8(decoded).unwrap_or_default();
-    let mut parts = user_pass.splitn(2, ':');
-    let user = parts.next().unwrap_or_default().to_string();
-    let pass = parts.next().unwrap_or_default().to_string();
+    // Une entrée absente ou un `auth` vide sont normaux : couple de chaînes vides.
+    let decoded = if auth_b64.is_empty() {
+        String::new()
+    } else {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(auth_b64)
+            .map_err(|e| rhai_err(Error::Base64DecodeError(e)))?;
+        String::from_utf8(bytes).map_err(|e| rhai_err(Error::UTF8(e)))?
+    };
+    // Un décodé non vide sans deux-points est une donnée corrompue : erreur
+    // typée, jamais un repli (harmonisé avec `resolve_registry_auth`, oci.sdd).
+    let (user, pass) = if decoded.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let mut parts = decoded.splitn(2, ':');
+        let user = parts.next().unwrap_or_default().to_string();
+        let pass = parts
+            .next()
+            .ok_or_else(|| rhai_err(Error::Other("docker config auth is not user:pass".to_string())))?;
+        (user, pass.to_string())
+    };
     let mut map = Map::new();
     map.insert("user".into(), user.into());
     map.insert("pass".into(), pass.into());
@@ -438,6 +521,792 @@ mod tests {
         }
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenarios des tâches « erreurs typées harmonisées », « pagination
+    // list_tags + accept + User-Agent », « mock Registry » et « faux registre
+    // httpmock » de oci.sdd. Faux registre HTTP local servi en HTTP clair sur
+    // 127.0.0.1 (le pont de test de `oci_client_config` force le protocole).
+    // ══════════════════════════════════════════════════════════════════════
+
+    use httpmock::{
+        Method::PATCH,
+        Mock,
+        prelude::{GET, HttpMockRequest, MockServer, POST, PUT},
+    };
+
+    fn tag_name(i: usize) -> String {
+        format!("tag-{i:05}")
+    }
+
+    /// Le serveur n'admet `last` que porté par la requête ; la première page
+    /// se distingue donc par son ABSENCE (faute de priorité de mocks, le
+    /// premier mock créé gagne — les mocks doivent être disjoints).
+    fn request_without_last_param(req: &HttpMockRequest) -> bool {
+        req.query_params
+            .as_ref()
+            .is_none_or(|q| !q.iter().any(|(k, _)| k == "last"))
+    }
+
+    /// Faux registre à `total` tags, servis par pages de 1000 (`last` = der-
+    /// nier tag rendu), comme le contrat `list_tags` les enverra. Pages et
+    /// contenus en ordre DESCENDANT (`tag-02499` en tête) : l'ordre rendu
+    /// n'est PAS un ordre trié, donc un `sort` local dans `list_tags`
+    /// rougit les tests qui comparent au vecteur attendu.
+    fn serve_tag_pages(server: &MockServer, repo: &str, total: usize) {
+        let path = format!("/v2/{repo}/tags/list");
+        let mut page_end = total;
+        let mut last: Option<String> = None;
+        loop {
+            let page_start = page_end.saturating_sub(1000);
+            let tags: Vec<String> = (page_start..page_end).rev().map(tag_name).collect();
+            match last.take() {
+                None => server.mock(|when, then| {
+                    when.method(GET)
+                        .path(path.as_str())
+                        .query_param("n", "1000")
+                        .matches(request_without_last_param);
+                    then.status(200)
+                        .json_body(serde_json::json!({ "name": repo, "tags": tags }));
+                }),
+                Some(last) => server.mock(|when, then| {
+                    when.method(GET).path(path.as_str()).query_param("last", last);
+                    then.status(200)
+                        .json_body(serde_json::json!({ "name": repo, "tags": tags }));
+                }),
+            };
+            if page_start == 0 {
+                break;
+            }
+            last = Some(tag_name(page_start));
+            page_end = page_start;
+        }
+    }
+
+    #[test]
+    fn list_tags_malformed_reference_is_parse_error_before_network() {
+        // Scénario « valide son seul chemin » : une espace rend OCIParseError
+        // AVANT tout réseau — aucun serveur mocké : atteindre le réseau rendrait
+        // une autre variante (ou un hang), jamis OCIParseError.
+        let mut reg = Registry::new("bad registry".into(), String::new(), String::new());
+        match crate::rt::block_on(reg.list_tags("repo/img".into())).and_then(|r| r) {
+            Err(crate::Error::OCIParseError(_)) => {}
+            other => panic!("Error::OCIParseError attendu, rendu : {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_tags_pages_to_exhaustion_in_registry_order() {
+        // Scénario « 2500 tags servis par pages de 1000 » — rhai_list_tags est
+        // le pont appelé par les scripts ; runtime multi-thread exigé par le pont.
+        let server = MockServer::start_async().await;
+        serve_tag_pages(&server, "repo/img", 2500);
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        let array = reg
+            .rhai_list_tags("repo/img".into())
+            .expect("le listing doit réussir")
+            .cast::<Vec<Dynamic>>();
+        let got: Vec<String> = array
+            .iter()
+            .filter_map(|d| d.clone().into_string().ok())
+            .collect();
+        let expected: Vec<String> = (0..2500).rev().map(tag_name).collect();
+        assert_eq!(got.len(), 2500, "les 2500 tags, pas tronqués");
+        // Ordre du registre, non trié : le service est descendant, le premier
+        // élément rendu est `tag-02499`, le dernier `tag-00000` — un tri local
+        // dans `list_tags` rendrait l'ascendant et rougirait cette égalité.
+        assert_eq!(got, expected, "l'ordre servi, sans tri local");
+    }
+
+    #[tokio::test]
+    async fn list_tags_above_ten_thousand_tags_refuses_with_exact_text() {
+        // Scénario « plus de 10 000 tags » : Error::Other `too many tags (> 10000)`.
+        let server = MockServer::start_async().await;
+        serve_tag_pages(&server, "repo/img", 10001);
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        match reg.list_tags("repo/img".into()).await {
+            Err(crate::Error::Other(msg)) => assert_eq!(
+                msg, "too many tags (> 10000)",
+                "texte exact du Must, rendu : {msg}"
+            ),
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_tag_in_registry_sends_accept_with_the_four_manifest_media_types() {
+        // Scénario « le faux registre reçoit un en-tête Accept listant les
+        // quatre media types » — verrou par matcher exact : sans l'en-tête
+        // attendu, la requête ne matche pas, le mock ne compte pas, le test
+        // rougit (repli 404 → `false` réfuté par l'assert).
+        let server = MockServer::start();
+        let expected_accept = [
+            manifest::OCI_IMAGE_MEDIA_TYPE,
+            manifest::OCI_IMAGE_INDEX_MEDIA_TYPE,
+            manifest::IMAGE_MANIFEST_MEDIA_TYPE,
+            manifest::IMAGE_MANIFEST_LIST_MEDIA_TYPE,
+        ]
+        .join(", ");
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v2/repo/img/manifests/1.0")
+                .header("Accept", expected_accept);
+            then.status(200).json_body(serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": manifest::OCI_IMAGE_MEDIA_TYPE,
+                "config": {
+                    "mediaType": manifest::IMAGE_CONFIG_MEDIA_TYPE,
+                    "digest": "sha256:cafe",
+                    "size": 1
+                },
+                "layers": []
+            }));
+        });
+        let registry = format!("127.0.0.1:{}", server.port());
+        let found = crate::rt::block_on(verify_tag_in_registry(
+            &registry,
+            "repo/img",
+            "1.0",
+            OciRegistryAuth::Anonymous,
+        ))
+        .expect("le pont doit servir")
+        .expect("le registre répond 200");
+        assert!(found, "manifeste existant → `true`");
+        m.assert_hits(1);
+    }
+
+    #[test]
+    fn verify_tag_in_registry_unknown_tag_is_false_without_error() {
+        // Triptyque « existe / absent / panne » : envelope MANIFEST_UNKNOWN → false.
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(GET).path("/v2/repo/img/manifests/1.0");
+            then.status(404).json_body(serde_json::json!({
+                "errors": [{ "code": "MANIFEST_UNKNOWN", "message": "manifest unknown" }]
+            }));
+        });
+        let registry = format!("127.0.0.1:{}", server.port());
+        let found = crate::rt::block_on(verify_tag_in_registry(
+            &registry,
+            "repo/img",
+            "1.0",
+            OciRegistryAuth::Anonymous,
+        ))
+        .expect("le pont doit servir");
+        match found {
+            Ok(false) => {}
+            other => panic!("`false` sans erreur attendu, rendu : {other:?}"),
+        }
+        m.assert_hits(1);
+    }
+
+    #[test]
+    fn verify_tag_in_registry_plain_404_is_false_without_error() {
+        // ServerError 404 (corps hors envelope OCI) → false, même contrat.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/repo/img/manifests/1.0");
+            then.status(404).body("no such tag");
+        });
+        let registry = format!("127.0.0.1:{}", server.port());
+        let found = crate::rt::block_on(verify_tag_in_registry(
+            &registry,
+            "repo/img",
+            "1.0",
+            OciRegistryAuth::Anonymous,
+        ))
+        .expect("le pont doit servir");
+        match found {
+            Ok(false) => {}
+            other => panic!("`false` sans erreur attendu, rendu : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_tag_in_registry_500_is_an_oci_distrib_error() {
+        // Le troisième cas « panne » ne ment pas : remontée typée, pas de faux booléen.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/repo/img/manifests/1.0");
+            then.status(500).body("boom");
+        });
+        let registry = format!("127.0.0.1:{}", server.port());
+        let result = crate::rt::block_on(verify_tag_in_registry(
+            &registry,
+            "repo/img",
+            "1.0",
+            OciRegistryAuth::Anonymous,
+        ))
+        .expect("le pont doit servir");
+        match result {
+            // Le verrou porte sur le 500 SERVI par le faux registre, pas sur
+            // une erreur de connexion (qui serait une autre OCIDistrib).
+            Err(crate::Error::OCIDistrib(e)) => assert!(
+                e.to_string().contains("500"),
+                "le 500 du registre attendu dans l'erreur, obtenu : {e}"
+            ),
+            other => panic!("Error::OCIDistrib attendue, rendu : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_manifest_passes_every_json_key_through_the_double_pass() {
+        // Scénario « get_manifest rend tout » : schemaVersion, mediaType,
+        // config, layers, annotations traversent la double passe serde_json.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/repo/img/manifests/1.0");
+            then.status(200).json_body(serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": manifest::OCI_IMAGE_MEDIA_TYPE,
+                "config": {
+                    "mediaType": manifest::IMAGE_CONFIG_MEDIA_TYPE,
+                    "digest": "sha256:cafe",
+                    "size": 1
+                },
+                "layers": [{
+                    "mediaType": manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
+                    "digest": "sha256:f00d",
+                    "size": 2
+                }],
+                "annotations": { "owner": "vynil" }
+            }));
+        });
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        let value = reg
+            .get_manifest("repo/img".into(), "1.0".into())
+            .expect("le manifeste doit rendre");
+        let map = value.cast::<Map>();
+        for key in ["schemaVersion", "mediaType", "config", "layers", "annotations"] {
+            assert!(
+                map.contains_key(key),
+                "la clé {key} doit traverser la double passe"
+            );
+        }
+        let owner = map
+            .get("annotations")
+            .cloned()
+            .and_then(Dynamic::try_cast::<Map>)
+            .and_then(|m| m.get("owner").cloned())
+            .and_then(|d| d.into_string().ok())
+            .unwrap_or_default();
+        assert_eq!(owner, "vynil", "la richesse JSON du manifeste doit passer");
+    }
+
+    // ── push_image : couche unique, digest tronqué, refus sans digest ──
+
+    fn two_file_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"alpha").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/b.txt"), b"beta").unwrap();
+        dir
+    }
+
+    const BLOB_SESSION: &str = "/v2/repo/img/blobs/uploads/session";
+
+    fn json_body_of(req: &HttpMockRequest) -> Option<serde_json::Value> {
+        let body = req.body.as_ref()?;
+        if body.first() != Some(&b'{') {
+            return None;
+        }
+        serde_json::from_slice(body).ok()
+    }
+
+    /// Corps du blob de config : le contrat du `ConfigFile` figé (`os` Linux,
+    /// architecture None sérialisée en chaîne vide, rootfs `layers` à l'unique
+    /// `diff_id` `sha256:`+64 hex, `working_dir` `/`, history UNE entrée `vynil`).
+    fn config_body_locks_the_push_contract(req: &HttpMockRequest) -> bool {
+        let Some(v) = json_body_of(req) else {
+            return false;
+        };
+        let diff_ok = v["rootfs"]["diff_ids"].as_array().is_some_and(|a| {
+            a.len() == 1
+                && a[0]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("sha256:") && s.len() == 7 + 64)
+        });
+        v["architecture"] == serde_json::json!("")
+            && v["os"] == serde_json::json!("linux")
+            && v["rootfs"]["type"] == serde_json::json!("layers")
+            && diff_ok
+            && v["config"]["WorkingDir"] == serde_json::json!("/")
+            && v["history"].as_array().is_some_and(|h| h.len() == 1)
+            && v["history"][0]["created_by"] == serde_json::json!("vynil")
+            && v["history"][0]["comment"] == serde_json::json!("vynil.build")
+            && v["history"][0]["empty_layer"] == serde_json::json!(false)
+    }
+
+    fn body_is_gzip(req: &HttpMockRequest) -> bool {
+        req.body.as_ref().is_some_and(|b| b.starts_with(&[0x1f, 0x8b]))
+    }
+
+    /// `Some(annotations vides)` passé, jamais `None` : la clé `annotations`
+    /// doit EXISTER et être un objet vide dans le manifeste reçu.
+    fn manifest_locks_empty_annotations(req: &HttpMockRequest) -> bool {
+        let Some(v) = json_body_of(req) else {
+            return false;
+        };
+        v["schemaVersion"] == serde_json::json!(2)
+            && v["mediaType"] == serde_json::json!(manifest::OCI_IMAGE_MEDIA_TYPE)
+            && v["layers"].as_array().is_some_and(|l| {
+                l.len() == 1 && l[0]["mediaType"] == serde_json::json!(manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE)
+            })
+            && v.get("annotations").is_some_and(|a| *a == serde_json::json!({}))
+    }
+
+    /// Annotations scalaires converties par leur `Display` (chaîne, entier,
+    /// flottant, booléen → chaînes dans le manifeste reçu).
+    fn manifest_locks_scalar_annotations(req: &HttpMockRequest) -> bool {
+        let Some(v) = json_body_of(req) else {
+            return false;
+        };
+        v["mediaType"] == serde_json::json!(manifest::OCI_IMAGE_MEDIA_TYPE)
+            && v.get("annotations").is_some_and(|a| {
+                *a == serde_json::json!({ "env": "prod", "n": "42", "ok": "true", "f": "1.5" })
+            })
+    }
+
+    /// Flux chunked complet : POST (202) → PATCH par blob (202) → PUT (201),
+    /// puis PUT du manifeste (201) dont le `Location` dicte le `manifest_url`.
+    /// Les deux mocks PATCH sont disjoints (corps JSON de config vs corps gzip)
+    /// car le premier mock créé gagne.
+    fn serve_push_flow<'a>(
+        server: &'a MockServer,
+        manifest_location: &str,
+        manifest_matcher: fn(&HttpMockRequest) -> bool,
+    ) -> (Mock<'a>, Mock<'a>) {
+        server.mock(|when, then| {
+            when.method(POST).path("/v2/repo/img/blobs/uploads/");
+            then.status(202).header("Location", BLOB_SESSION);
+        });
+        let config_mock = server.mock(|when, then| {
+            when.method(PATCH)
+                .path(BLOB_SESSION)
+                .matches(config_body_locks_the_push_contract);
+            then.status(202).header("Location", BLOB_SESSION);
+        });
+        server.mock(|when, then| {
+            when.method(PATCH).path(BLOB_SESSION).matches(body_is_gzip);
+            then.status(202).header("Location", BLOB_SESSION);
+        });
+        server.mock(|when, then| {
+            when.method(PUT).path(BLOB_SESSION);
+            then.status(201)
+                .header("Location", "/v2/repo/img/blobs/uploads/done");
+        });
+        let location = manifest_location.to_string();
+        let manifest_mock = server.mock(move |when, then| {
+            when.method(PUT)
+                .path("/v2/repo/img/manifests/1.0")
+                .matches(manifest_matcher);
+            then.status(201).header("Location", location);
+        });
+        (config_mock, manifest_mock)
+    }
+
+    #[test]
+    fn push_image_builds_the_single_layer_and_returns_the_last_sha256_slice() {
+        // Scénario « push construit la couche unique et rend le sha256 tronqué » :
+        // tranche depuis le DERNIER porteur de `sha256:` de la manifest_url.
+        let dir = two_file_dir();
+        let server = MockServer::start();
+        let (config_mock, manifest_mock) = serve_push_flow(
+            &server,
+            "/v2/repo/img/manifests/sha256:aaa?sig=sha256:bbbb",
+            manifest_locks_empty_annotations,
+        );
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        let digest = reg
+            .push_image(
+                dir.path().to_string_lossy().into_owned(),
+                "repo/img".into(),
+                "1.0".into(),
+                Map::new(),
+            )
+            .expect("le push doit réussir contre le faux registre");
+        assert_eq!(
+            digest.as_str(),
+            "sha256:bbbb",
+            "tranche depuis le dernier porteur"
+        );
+        config_mock.assert();
+        manifest_mock.assert();
+    }
+
+    #[test]
+    fn push_image_converts_scalar_annotations_by_display() {
+        let dir = two_file_dir();
+        let server = MockServer::start();
+        let (_config_mock, manifest_mock) = serve_push_flow(
+            &server,
+            "/v2/repo/img/manifests/sha256:cccc",
+            manifest_locks_scalar_annotations,
+        );
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        let mut annotations = Map::new();
+        annotations.insert("env".into(), "prod".into());
+        annotations.insert("n".into(), Dynamic::from(42_i64));
+        annotations.insert("ok".into(), Dynamic::from(true));
+        annotations.insert("f".into(), Dynamic::from(1.5_f64));
+        let digest = reg
+            .push_image(
+                dir.path().to_string_lossy().into_owned(),
+                "repo/img".into(),
+                "1.0".into(),
+                annotations,
+            )
+            .expect("le push doit réussir avec annotations scalaires");
+        assert_eq!(digest.as_str(), "sha256:cccc");
+        manifest_mock.assert();
+    }
+
+    #[test]
+    fn push_image_without_digest_in_response_is_other_error() {
+        // Décision actée : sans sous-chaîne `sha256:`, erreur Other citant
+        // l'URL — jamais l'URL rendue comme si c'était un digest.
+        let dir = two_file_dir();
+        let server = MockServer::start();
+        let (_config_mock, _manifest_mock) = serve_push_flow(
+            &server,
+            "/v2/repo/img/manifests/1.0",
+            manifest_locks_empty_annotations,
+        );
+        let registry = format!("127.0.0.1:{}", server.port());
+        let mut reg = Registry::new(registry.clone(), String::new(), String::new());
+        let err = reg
+            .push_image(
+                dir.path().to_string_lossy().into_owned(),
+                "repo/img".into(),
+                "1.0".into(),
+                Map::new(),
+            )
+            .expect_err("une manifest_url sans `sha256:` doit échouer");
+        let text = err.to_string();
+        assert!(
+            text.contains(&format!(
+                "push response without a sha256 digest: http://{registry}/v2/repo/img/manifests/1.0"
+            )),
+            "texte exact attendu, obtenu : {text}"
+        );
+    }
+
+    #[test]
+    fn push_image_composite_annotation_is_refused_before_network() {
+        // Les annotations OCI sont des paires chaîne/chaîne : `#{...}` et
+        // tableaux refusés AVANT tout réseau (et avant le tar, verrouillé par
+        // le `source_dir` inexistant qui rendrait Stdio sinon).
+        for label in ["map", "array"] {
+            let composite = if label == "map" {
+                let mut inner = Map::new();
+                inner.insert("b".into(), Dynamic::from(1_i64));
+                Dynamic::from_map(inner)
+            } else {
+                Dynamic::from_array(vec![Dynamic::from(1_i64)])
+            };
+            let mut annotations = Map::new();
+            annotations.insert("meta".into(), composite);
+            let mut reg = Registry::new("127.0.0.1:1".into(), String::new(), String::new());
+            let err = reg
+                .push_image(
+                    "/nonexistent-src-for-this-test".into(),
+                    "repo/img".into(),
+                    "1.0".into(),
+                    annotations,
+                )
+                .expect_err("une annotation composite doit être refusée");
+            let text = err.to_string();
+            assert!(
+                text.contains("annotation 'meta' must be a scalar"),
+                "erreur d'annotation {label} attendue, obtenu : {text}"
+            );
+        }
+    }
+
+    // ── get_auth_from_file : erreurs typées harmonisées ──
+
+    #[test]
+    fn get_auth_from_file_invalid_base64_is_a_typed_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        write_docker_config(&path, "docker.io", "!!!not base64!!!");
+        let err = get_auth_from_file(path.to_string_lossy().into_owned(), "docker.io".into())
+            .expect_err("un `auth` base64 invalide est une erreur, jamais un repli");
+        let text = err.to_string();
+        assert!(
+            text.contains("Base64 decode error"),
+            "Base64DecodeError attendue, obtenu : {text}"
+        );
+    }
+
+    #[test]
+    fn get_auth_from_file_non_utf8_is_a_typed_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        // `//4=` = base64 STANDARD des octets [0xff, 0xfe] — décodable, non UTF-8.
+        write_docker_config(&path, "docker.io", "//4=");
+        let err = get_auth_from_file(path.to_string_lossy().into_owned(), "docker.io".into())
+            .expect_err("un décodé non UTF-8 est une erreur, jamais un repli");
+        let text = err.to_string();
+        assert!(
+            text.contains("UTF8 error"),
+            "Error::UTF8 attendue, obtenu : {text}"
+        );
+    }
+
+    #[test]
+    fn get_auth_from_file_without_colon_is_a_typed_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        write_docker_config(&path, "docker.io", "dXNlcnBhc3M="); // b64("userpass")
+        let err = get_auth_from_file(path.to_string_lossy().into_owned(), "docker.io".into())
+            .expect_err("un décodé sans deux-points est une erreur, jamais un repli");
+        let text = err.to_string();
+        assert!(
+            text.contains("docker config auth is not user:pass"),
+            "texte exact attendu, obtenu : {text}"
+        );
+    }
+
+    #[test]
+    fn get_auth_from_file_invalid_json_is_a_serialization_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, b"not json at all").unwrap();
+        let err = get_auth_from_file(path.to_string_lossy().into_owned(), "docker.io".into())
+            .expect_err("un JSON invalide est une erreur typée");
+        let text = err.to_string();
+        assert!(
+            text.contains("SerializationError"),
+            "SerializationError attendue, obtenu : {text}"
+        );
+    }
+
+    // ── cosign : cas isolés par fils (le `PATH` du processus de test est partagé) ──
+
+    const CHILD_ASSERTED: &str = "VYVIL_CHILD_ASSERTED";
+
+    #[test]
+    fn sign_image_cosign_absent_speaks_clearly_in_an_empty_path() {
+        // `env::set_var`/`remove_var` sont `unsafe` en édition 2024 et hors
+        // d'atteinte sous `unsafe_code = forbid` — le patron tenu dans la crate
+        // est le FILS `Command` (`env_clear` + `current_exe` + marqueur, voir
+        // `test_get_env_non_utf8_value_is_error` de ./engine.rs) : sûr, sans
+        // course, et hermétique au PATH de la machine.
+        const MARKER: &str = "VYVIL_OCI_COSIGN_ABSENT_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let mut reg = Registry::new("r.io".into(), "u".into(), "p".into());
+            let err = reg
+                .sign_image(
+                    "repo/img".into(),
+                    "1.0.0".into(),
+                    "sha256:abc".into(),
+                    "/nonexistent/key.pem".into(),
+                )
+                .expect_err("cosign absent du PATH vide doit échouer");
+            let text = err.to_string();
+            assert!(
+                text.contains("cosign not found in PATH"),
+                "message parlant attendu, obtenu : {text}"
+            );
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("oci::tests::sign_image_cosign_absent_speaks_clearly_in_an_empty_path")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env_clear()
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success() && stdout.contains(CHILD_ASSERTED),
+            "le fils doit avoir exécuté ses assertions : statut {:?}, stdout {stdout}",
+            out.status
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_image_cosign_nonzero_exit_carries_the_exact_refusal_text() {
+        // Scénario « cosign AVEC clé invalide » : un faux cosign qui sort 3,
+        // PATH pointé dessus par le fils (patron sûr, même forme que ci-dessus).
+        const MARKER: &str = "VYVIL_OCI_FAKE_COSIGN_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let mut reg = Registry::new("r.io".into(), "u".into(), "p".into());
+            let err = reg
+                .sign_image(
+                    "repo/img".into(),
+                    "1.0.0".into(),
+                    "sha256:abc".into(),
+                    "/nonexistent/key.pem".into(),
+                )
+                .expect_err("cosign qui sort non nul doit échouer");
+            let text = err.to_string();
+            assert!(
+                text.contains("cosign sign failed for r.io/repo/img:1.0.0@sha256:abc"),
+                "texte exact attendu, obtenu : {text}"
+            );
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cosign");
+        std::fs::write(&script, "#!/bin/sh\nexit 3\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("oci::tests::sign_image_cosign_nonzero_exit_carries_the_exact_refusal_text")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env_clear()
+            .env("PATH", dir.path())
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success() && stdout.contains(CHILD_ASSERTED),
+            "le fils doit avoir exécuté ses assertions : statut {:?}, stdout {stdout}",
+            out.status
+        );
+    }
+
+    // ── User-Agent câblé depuis `crate::get_client_name` (client_name global,
+    // premier appelant gagnant dans le binaire : verrouillé par FILS, état frais) ──
+
+    fn ua_is_oci_client_default(req: &HttpMockRequest) -> bool {
+        req.headers.as_ref().is_some_and(|hs| {
+            hs.iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && v.starts_with("oci-client/"))
+        })
+    }
+
+    #[test]
+    fn user_agent_is_the_client_name_when_set() {
+        const MARKER: &str = "VYVIL_OCI_UA_SET_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            crate::set_client_name(|| "vynil-core-ua-child".to_string());
+            crate::rt::block_on(async {
+                let server = MockServer::start_async().await;
+                let m = server
+                    .mock_async(|when, then| {
+                        when.method(GET)
+                            .path("/v2/repo/img/manifests/1.0")
+                            .header("User-Agent", "vynil-core-ua-child");
+                        then.status(200).body("{}");
+                    })
+                    .await;
+                let found = verify_tag_in_registry(
+                    &format!("127.0.0.1:{}", server.port()),
+                    "repo/img",
+                    "1.0",
+                    OciRegistryAuth::Anonymous,
+                )
+                .await
+                .expect("le registre répond");
+                assert!(found, "l'User-Agent envoyé n'est pas le client name");
+                m.assert_hits_async(1).await;
+            })
+            .expect("le pont doit servir");
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("oci::tests::user_agent_is_the_client_name_when_set")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success() && stdout.contains(CHILD_ASSERTED),
+            "le fils doit avoir exécuté ses assertions : statut {:?}, stdout {stdout}",
+            out.status
+        );
+    }
+
+    #[test]
+    fn user_agent_defaults_to_oci_client_when_client_name_unset() {
+        const MARKER: &str = "VYVIL_OCI_UA_UNSET_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            // Aucun `set_client_name` dans ce fils : le User-Agent doit rester
+            // le défaut d'oci_client (`oci-client/<version>`), jamais un panic
+            // — le trafic OCI ne panique jamais faute d'identité client.
+            crate::rt::block_on(async {
+                let server = MockServer::start_async().await;
+                let m = server
+                    .mock_async(|when, then| {
+                        when.method(GET)
+                            .path("/v2/repo/img/manifests/1.0")
+                            .matches(ua_is_oci_client_default);
+                        then.status(200).body("{}");
+                    })
+                    .await;
+                let found = verify_tag_in_registry(
+                    &format!("127.0.0.1:{}", server.port()),
+                    "repo/img",
+                    "1.0",
+                    OciRegistryAuth::Anonymous,
+                )
+                .await
+                .expect("le registre répond");
+                assert!(found, "l'User-Agent envoyé n'est pas le défaut d'oci_client");
+                m.assert_hits_async(1).await;
+            })
+            .expect("le pont doit servir");
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("oci::tests::user_agent_defaults_to_oci_client_when_client_name_unset")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success() && stdout.contains(CHILD_ASSERTED),
+            "le fils doit avoir exécuté ses assertions : statut {:?}, stdout {stdout}",
+            out.status
+        );
+    }
+
+    // ── face engine du vrai registre (Scenario « new_registry câble le vrai ») ──
+
+    #[test]
+    fn oci_rhai_register_exposes_the_registry_type_to_scripts() {
+        let mut engine = Engine::new();
+        oci_rhai_register(&mut engine);
+        let name: String = engine.eval(r#"type_of(new_registry("reg", "u", "p"))"#).unwrap();
+        assert_eq!(name, "Registry", "le vrai type s'enregistre sous « Registry »");
+    }
+
     #[cfg(feature = "k8s")]
     mod k8s_tests {
         use super::*;
@@ -556,6 +1425,43 @@ mod tests {
                 .unwrap();
 
             assert!(matches!(auth, RegistryAuth::Anonymous));
+            spawned.await.unwrap();
+        }
+
+        // Décision actée (oci.sdd, harmonisation des deux sources) : « pas
+        // d'identifiant » est normal (repli Anonymous), « identifiant corrompu »
+        // se signale — un décodé sans deux-points est une erreur typée, JAMAIS
+        // un repli. Les trois verrous ci-dessus (Basic, secret 404, registry
+        // absente) portent l'absence et restent tels quels.
+        #[tokio::test]
+        async fn test_resolve_registry_auth_decoded_without_colon_is_a_typed_error() {
+            let auth_b64 = "dXNlcnBhc3M="; // b64("userpass") — décodable, sans deux-points
+            let body = make_secret_json("registry.example.com", auth_b64);
+
+            let (mock_service, handle) = mock::pair::<Request<Body>, Response<Body>>();
+            let spawned = tokio::spawn(async move {
+                let mut handle = pin!(handle);
+                let (_req, send) = handle.next_request().await.expect("service not called");
+                send.send_response(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                );
+            });
+
+            let client = kube::Client::new(mock_service, "vynil-system");
+            let result =
+                resolve_registry_auth("my-secret", "registry.example.com", client, "vynil-system").await;
+
+            match result {
+                Err(crate::Error::Other(msg)) => assert_eq!(
+                    msg, "docker config auth is not user:pass",
+                    "texte exact du Must, rendu : {msg}"
+                ),
+                other => panic!("Error::Other attendu, rendu : {other:?}"),
+            }
             spawned.await.unwrap();
         }
     }

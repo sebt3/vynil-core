@@ -237,9 +237,9 @@ These faces are adopted as durable API (decision on record):
 | Function | Needs | Returns |
 |---|---|---|
 | `Registry::pull_image(dest_dir, repository, tag)` | `oci` | `crate::Result<()>` — pulls and unpacks the image's gzip layers under `dest_dir`; plain `Result`, not a Rhai error type |
-| `Registry::list_tags(repository)` — `async` | `oci` | `crate::Result<Vec<String>>` — up to `100` tags in a single page today (a truncated list is not an error); paging to exhaustion with a refusal above `10000` is decided and pending implementation |
+| `Registry::list_tags(repository)` — `async` | `oci` | `crate::Result<Vec<String>>` — all the tags of the repository, paged to exhaustion in pages of `1000` (`last` = last tag received), in registry order, unsorted; more than `10000` tags is refused with `Error::Other` |
 | `verify_tag_in_registry(registry, image, tag, auth)` — `async` | `oci` | `crate::Result<bool>` — `true` when the manifest exists, `false` on a not-found answer, `Err` on anything else |
-| `resolve_registry_auth(secret_name, registry, client, ns)` — `async` | `oci` **and** `k8s` | `crate::Result<OciRegistryAuth>` — reads a dockerconfigjson `Secret` through a caller-supplied `kube::Client`; any missing entry → `Anonymous`, invalid base64 / non-UTF-8 / invalid JSON → a typed error; a decoded value without a `:` still falls back to `Anonymous` today — the typed error for that case is decided and pending implementation |
+| `resolve_registry_auth(secret_name, registry, client, ns)` — `async` | `oci` **and** `k8s` | `crate::Result<OciRegistryAuth>` — reads a dockerconfigjson `Secret` through a caller-supplied `kube::Client`; any missing entry → `Anonymous`; malformed data (invalid base64 / non-UTF-8 / a decoded value without a `:`) → a typed error, never a fallback |
 
 `OciRegistryAuth` is `oci_client::secrets::RegistryAuth`, re-exported by `vynil_core::oci`.
 
