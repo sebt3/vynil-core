@@ -62,14 +62,25 @@ fn core_common_rhai_register(engine: &mut Engine) {
                 std::thread::sleep(std::time::Duration::from_secs(seconds));
             }
         })
-        .register_fn("get_env", |var: ImmutableString| -> String {
-            std::env::var(var.to_string()).unwrap_or_default()
+        .register_fn("get_env", |var: ImmutableString| -> RhaiRes<ImmutableString> {
+            match std::env::var_os(var.to_string()) {
+                // variable absente → chaîne vide (les défauts sont un cas d'usage)
+                None => Ok(String::new().into()),
+                // présente mais non UTF-8 → erreur explicite, jamais le repli silencieux
+                Some(value) => value.into_string().map(Into::into).map_err(|_| {
+                    rhai_err(Error::Other(format!(
+                        "get_env received a non-UTF-8 value for variable {var:?}"
+                    )))
+                }),
+            }
         })
         .register_fn("to_decimal", |val: ImmutableString| -> RhaiRes<u32> {
-            Ok(u32::from_str_radix(val.as_str(), 8).unwrap_or_else(|_| {
-                tracing::warn!("to_decimal received a non-valid parameter: {:?}", val);
-                0
-            }))
+            // toute chaîne non octale est une erreur, jamais un `0` indiscernable du `0` légitime
+            u32::from_str_radix(val.as_str(), 8).map_err(|_| {
+                rhai_err(Error::Other(format!(
+                    "to_decimal received a non-valid parameter: {val:?}"
+                )))
+            })
         })
         .register_fn(
             "base64_decode",
@@ -139,7 +150,17 @@ fn fs_rhai_register(engine: &mut Engine) {
             let mut res = rhai::Array::new();
             for entry in std::fs::read_dir(name).map_err(|e| rhai_err(Error::Stdio(e)))? {
                 let entry = entry.map_err(|e| rhai_err(Error::Stdio(e)))?;
-                res.push(entry.path().to_str().unwrap_or_default().into());
+                // UTF-8 strict comme `file_read` : un chemin non UTF-8 rend Error::UTF8,
+                // jamais une chaîne vide glissée dans le tableau.
+                res.push(
+                    entry
+                        .path()
+                        .into_os_string()
+                        .into_string()
+                        .or_else(|os| String::from_utf8(os.into_encoded_bytes()))
+                        .map_err(|e| rhai_err(Error::UTF8(e)))?
+                        .into(),
+                );
             }
             Ok(res)
         })
@@ -159,8 +180,17 @@ pub struct Script {
     pub ctx: Scope<'static>,
 }
 impl Script {
-    /// Create a new engine with generic helpers registered and `resolver_path` added to the
-    /// module resolver. `resolver_path` is a list of directories searched by `import` statements.
+    /// Create a new engine with generic helpers registered and the module resolver REPLACED
+    /// (not extended — no default resolver to fall back on) by one [`FileModuleResolver`] per
+    /// entry of `resolver_path`, in vector order, inside a [`ModuleResolversCollection`].
+    ///
+    /// An empty `resolver_path` is fail-closed by contract: the collection stays empty, so
+    /// every `import` from a script fails with a module-not-found error — no implicit disk
+    /// access without an explicit directory from the consumer. The injected
+    /// `import_run`/`import_template` shims catch that error and skip silently (a debug log
+    /// only), so scripts going through the shims never fail on absent modules; a direct
+    /// `import` outside them does fail. Evaluating plain helper calls (below) needs no
+    /// resolver at all.
     ///
     /// ```rust
     /// let mut s = vynil_core::engine::Script::new_bare(vec![]);
@@ -210,8 +240,10 @@ impl Script {
     /// global module), which keeps this function verbose.
     #[allow(clippy::too_many_lines)] // shims Rhai `import_run`/`import_template` volontairement en un seul bloc (vyvil-core.sdd)
     pub fn add_common(&mut self) {
-        self.add_code("fn assert(cond, mess) {if (!cond){throw mess}}");
-        self.add_code(
+        // `add_common` n'a pas de canal d'erreur (engine.sdd) : un échec de shim est le
+        // `tracing::error!` que `add_code` émet lui-même, d'où le `Result` abandonné.
+        let _ = self.add_code("fn assert(cond, mess) {if (!cond){throw mess}}");
+        let _ = self.add_code(
             "fn import_run(name, instance, context, args) {\n\
             try {\n\
                 import name as imp;\n\
@@ -227,7 +259,7 @@ impl Script {
             }\n\
         }",
         );
-        self.add_code(
+        let _ = self.add_code(
             "fn import_template(name, instance, context, args) {\n\
             try {\n\
                 import name as imp;\n\
@@ -252,7 +284,7 @@ impl Script {
             }\n\
         }",
         );
-        self.add_code(
+        let _ = self.add_code(
             "fn import_run(name, instance, context) {\n\
             try {\n\
                 import name as imp;\n\
@@ -268,7 +300,7 @@ impl Script {
             }\n\
         }",
         );
-        self.add_code(
+        let _ = self.add_code(
             "fn import_template(name, instance, context) {\n\
             try {\n\
                 import name as imp;\n\
@@ -293,7 +325,7 @@ impl Script {
             }\n\
         }",
         );
-        self.add_code(
+        let _ = self.add_code(
             "fn import_run(name, args) {\n\
             try {\n\
                 import name as imp;\n\
@@ -309,7 +341,7 @@ impl Script {
             }\n\
         }",
         );
-        self.add_code(
+        let _ = self.add_code(
             "fn import_template(name, args) {\n\
             try {\n\
                 import name as imp;\n\
@@ -337,19 +369,30 @@ impl Script {
     }
 
     /// Compile `code` and register its public functions as global Rhai modules.
-    /// Errors are logged via `tracing::error!` and otherwise ignored.
-    pub fn add_code(&mut self, code: &str) {
+    ///
+    /// The module is evaluated on a CLONE of the current scope (a frozen snapshot, by
+    /// contract): a later [`Script::set_dynamic`] does not feed modules already globalised.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RhaiError`] when compilation or module evaluation fails; the failed
+    /// operation is also logged via `tracing::error!` with a `Compiling`/`Evaluating` label
+    /// naming the step that actually failed.
+    pub fn add_code(&mut self, code: &str) -> Result<()> {
         match self.engine.compile(code) {
             Ok(ast) => match Module::eval_ast_as_new(self.ctx.clone(), &ast, &self.engine) {
                 Ok(module) => {
                     self.engine.register_global_module(module.into());
+                    Ok(())
                 }
                 Err(e) => {
-                    tracing::error!("Parsing {code} failed with: {e:}");
+                    tracing::error!("Evaluating {code} failed with : {e:}");
+                    Err(RhaiError(e))
                 }
             },
             Err(e) => {
-                tracing::error!("Loading {code} failed with: {e:}");
+                tracing::error!("Compiling {code} failed with : {e:}");
+                Err(RhaiError(e.into()))
             }
         }
     }
@@ -458,9 +501,83 @@ impl Script {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
     fn make_script() -> Script {
         Script::new_bare(vec![])
+    }
+
+    // ── Harnais de capture des faits `tracing` (même patron que le verrou de src/hbs.rs) ──
+    // Couche de capture minimale, confinée au fil courant via `with_default` (jamais
+    // `set_global_default`) : ne retient que le texte formaté du champ `message`, pour
+    // assertionner texte et nombre des `tracing::error!` contractés par `engine.sdd`.
+    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for MessageCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = MessageOnly(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().extend(visitor.0);
+        }
+    }
+
+    struct MessageOnly(Vec<String>);
+
+    impl Visit for MessageOnly {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    /// Évalue `run` sur `script` sous le subscriber de capture confiné au fil courant et
+    /// retourne sa sortie avec les textes d'événement capturés, dans l'ordre d'émission.
+    fn capture_logs<T>(script: &mut Script, run: impl FnOnce(&mut Script) -> T) -> (T, Vec<String>) {
+        let captured: Arc<Mutex<Vec<String>>> = Arc::default();
+        let subscriber =
+            tracing_subscriber::registry::Registry::default().with(MessageCapture(Arc::clone(&captured)));
+        let out = tracing::subscriber::with_default(subscriber, || run(script));
+        (out, captured.lock().unwrap().clone())
+    }
+
+    // ── Fixture des shims d'import : un répertoire de résolution avec trois modules Rhai ──
+    /// Écrit sous la face publique `new_bare(vec![dir])` un répertoire contenant :
+    /// - `full.rhai` : `run` et `template` aux trois arités (valeurs constantes figeant
+    ///   l'arité appelée),
+    /// - `runonly.rhai` : `run` seulement (face fallback de `import_template`),
+    /// - `bad.rhai` : `run` qui `throw "interne"` (face relance de l'erreur interne).
+    fn resolver_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("full.rhai"),
+            r#"
+fn run(instance, context, args) { return "run/3"; }
+fn run(instance, context) { return "run/2"; }
+fn run(args) { return "run/1"; }
+fn template(instance, context, args) { return "tpl/3"; }
+fn template(instance, context) { return "tpl/2"; }
+fn template(args) { return "tpl/1"; }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("runonly.rhai"),
+            r#"
+fn run(instance, context, args) { return "fallback/3"; }
+fn run(instance, context) { return "fallback/2"; }
+fn run(args) { return "fallback/1"; }
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("bad.rhai"),
+            r#"fn run(instance, context, args) { throw "interne"; }"#,
+        )
+        .unwrap();
+        dir
     }
 
     // ── yaml_decode / yaml_encode ─────────────────────────────────────────────
@@ -689,5 +806,324 @@ mod tests {
         let start = std::time::Instant::now();
         assert!(s.eval("sleep(1)").is_ok());
         assert!(start.elapsed() >= std::time::Duration::from_millis(900));
+    }
+
+    // ── get_env : absente reste chaîne vide, non-UTF-8 rend une erreur (Scenario utilitaires) ──
+
+    #[test]
+    fn test_get_env_absent_variable_returns_empty_string() {
+        let mut s = make_script();
+        let result = s.eval(r#"get_env("VYVIL_ABSOLUTE_ABSENT_7F3C")"#).unwrap();
+        assert_eq!(result.to_string(), "");
+    }
+
+    /// Contrat `get_env` : une variable PRÉSENTE mais non UTF-8 rend une erreur (jamais la
+    /// chaîne vide, indiscernable de l'absence). La variable doit exister dans le processus
+    /// sans passer par `std::env::set_var` — `unsafe` en édition 2024, hors d'atteinte sous
+    /// `unsafe_code = "forbid"` — donc le père la réinjecte via `Command::env` (safe, accepte
+    /// une `&OsStr` d'octets invalides) dans un
+    /// fils qui rejoue ce seul test ; le marqueur `VYVIL_CHILD_ASSERTED` sur stdout prouve
+    /// que le fils a bien exécuté ses assertions (et non filtré zéro test).
+    #[cfg(unix)]
+    #[test]
+    fn test_get_env_non_utf8_value_is_error() {
+        use std::os::unix::ffi::OsStrExt;
+        const VAR: &str = "VYVIL_ENGINE_TEST_NOT_UTF8";
+        const MARKER: &str = "VYVIL_ENGINE_TEST_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let mut s = make_script();
+            let r = s.eval(&format!("get_env(\"{VAR}\")"));
+            let text = format!("{}", r.unwrap_err());
+            assert!(
+                text.contains("get_env received a non-UTF-8 value"),
+                "expected the typed non-UTF-8 error, got {text}"
+            );
+            println!("VYVIL_CHILD_ASSERTED");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("engine::tests::test_get_env_non_utf8_value_is_error")
+            .arg("--nocapture")
+            .env(MARKER, "1")
+            .env(VAR, std::ffi::OsStr::from_bytes(&[0xff_u8]))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success() && stdout.contains("VYVIL_CHILD_ASSERTED"),
+            "the child must have run its assertions and succeeded: status {:?}, stdout {stdout}",
+            out.status
+        );
+    }
+
+    // ── to_decimal : toute chaîne non octale rend une erreur (jamais un 0 indiscernable) ──
+
+    #[test]
+    fn test_to_decimal_non_octal_is_error_and_zero_still_zero() {
+        let mut s = make_script();
+        let err = s.eval(r#"to_decimal("8")"#).unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "expected RhaiError, got {err:?}"
+        );
+        assert!(
+            format!("{err}").contains("to_decimal received a non-valid parameter"),
+            "expected the module's wording in the error, got {err}"
+        );
+        assert_eq!(s.eval(r#"to_decimal("0")"#).unwrap().cast::<u32>(), 0);
+    }
+
+    // ── read_dir sous `fs` : UTF-8 strict comme `file_read` (jamais de chaîne vide glissée) ──
+
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_read_dir_lists_full_paths_of_utf8_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "y").unwrap();
+        let mut s = make_script();
+        let entries = s
+            .eval(&format!("read_dir(\"{}\")", dir.path().display()))
+            .unwrap()
+            .cast::<rhai::Array>();
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            assert!(
+                entry
+                    .to_string()
+                    .starts_with(&dir.path().to_string_lossy().into_owned()),
+                "each entry must be the full path, got {entry}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "fs", unix))]
+    #[test]
+    fn test_read_dir_non_utf8_entry_is_explicit_utf8_error() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::File::create(dir.path().join(std::ffi::OsStr::from_bytes(&[0xff_u8]))).unwrap();
+        std::fs::write(dir.path().join("ok.txt"), "x").unwrap();
+        let mut s = make_script();
+        let err = s
+            .eval(&format!("read_dir(\"{}\")", dir.path().display()))
+            .unwrap_err();
+        let text = format!("{err}");
+        assert!(
+            text.contains("UTF8 error"),
+            "expected the Error::UTF8 wording, got {text}"
+        );
+    }
+
+    // ── Les sept shims de `add_common` (face publique, Scenario add_code et shims) ──
+
+    /// Shim 1/7 — `assert(cond, mess)` à l'unique arité 2 : jette la VALEUR `mess` telle
+    /// quelle (pas forcée en chaîne), et une arité 1 est fonction-inconnue (rhai 1.25
+    /// n'embarque pas d'`assert` natif).
+    #[test]
+    fn test_assert_shim_throws_value_and_locks_arity_two() {
+        let mut s = make_script();
+        let err = s.eval(r#"assert(false, "boom")"#).unwrap_err();
+        assert!(
+            format!("{err}").contains("boom"),
+            "thrown value must carry the message, got {err}"
+        );
+        assert_eq!(
+            s.eval(r"let out = 0; try { assert(false, 42); } catch (e) { out = e; } out")
+                .unwrap()
+                .cast::<i64>(),
+            42,
+            "the catch must see the thrown value as-is, not stringified"
+        );
+        assert!(s.eval(r#"assert(true, "ok")"#).is_ok());
+        assert!(
+            s.eval("assert(true)").is_err(),
+            "single-arg assert must be an unknown function"
+        );
+    }
+
+    /// Shim 2/7 — `import_run(name, instance, context, args)` rend la valeur d'`imp::run`
+    /// telle quelle.
+    #[test]
+    fn test_import_run_arity4_returns_module_run_value() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let result = s.eval(r#"import_run("full", #{}, #{}, [])"#).unwrap();
+        assert_eq!(result.to_string(), "run/3");
+    }
+
+    /// Shim 3/7 — `import_run(name, instance, context)` → `imp::run(instance, context)`.
+    #[test]
+    fn test_import_run_arity3_returns_module_run_value() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let result = s.eval(r#"import_run("full", #{}, #{})"#).unwrap();
+        assert_eq!(result.to_string(), "run/2");
+    }
+
+    /// Shim 4/7 — `import_run(name, args)` → `imp::run(args)`.
+    #[test]
+    fn test_import_run_arity2_returns_module_run_value() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let result = s.eval(r#"import_run("full", [])"#).unwrap();
+        assert_eq!(result.to_string(), "run/1");
+    }
+
+    /// Shim 5/7 — `import_template(name, instance, context, args)` → `imp::template(...)`
+    /// d'abord.
+    #[test]
+    fn test_import_template_arity4_returns_template_value() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let result = s.eval(r#"import_template("full", #{}, #{}, [])"#).unwrap();
+        assert_eq!(result.to_string(), "tpl/3");
+    }
+
+    /// Shim 6/7 — `import_template(name, instance, context)` → `imp::template(instance, context)`.
+    #[test]
+    fn test_import_template_arity3_returns_template_value() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let result = s.eval(r#"import_template("full", #{}, #{})"#).unwrap();
+        assert_eq!(result.to_string(), "tpl/2");
+    }
+
+    /// Shim 7/7 — `import_template(name, args)` → `imp::template(args)`.
+    #[test]
+    fn test_import_template_arity2_returns_template_value() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let result = s.eval(r#"import_template("full", [])"#).unwrap();
+        assert_eq!(result.to_string(), "tpl/1");
+    }
+
+    /// Face fallback de `import_template` (les trois arités) : module pourvu de `run` mais
+    /// sans `template` → `ErrorFunctionNotFound` rattrapé, re-import puis `imp::run(...)`
+    /// aux mêmes arguments — c'est la valeur de `run` qui sort.
+    #[test]
+    fn test_import_template_falls_back_to_run_when_template_missing() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        assert_eq!(
+            s.eval(r#"import_template("runonly", #{}, #{}, [])"#)
+                .unwrap()
+                .to_string(),
+            "fallback/3"
+        );
+        assert_eq!(
+            s.eval(r#"import_template("runonly", #{}, #{})"#)
+                .unwrap()
+                .to_string(),
+            "fallback/2"
+        );
+        assert_eq!(
+            s.eval(r#"import_template("runonly", [])"#).unwrap().to_string(),
+            "fallback/1"
+        );
+    }
+
+    /// Scenario « resolver vide ferme les imports et les shims masquent » : sur
+    /// `new_bare(vec![])`, `import_run`/`import_template` ne produisent JAMAIS d'erreur
+    /// (skip silencieux), tandis qu'un `import` direct hors shim échoue en `RhaiError`.
+    #[test]
+    fn test_empty_resolver_shim_skips_and_direct_import_fails() {
+        let mut s = make_script();
+        assert!(s.eval(r#"import_run("absent", #{}, #{}, [])"#).is_ok());
+        assert!(s.eval(r#"import_template("absent", #{}, #{}, [])"#).is_ok());
+        assert!(s.eval(r#"import_run("absent", [])"#).is_ok());
+        let err = s.eval(r#"import "absent" as x; x::run(1)"#).unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "direct import must fail in RhaiError, got {err:?}"
+        );
+    }
+
+    /// Le skip ne couvre QUE `ErrorModuleNotFound`/`ErrorFunctionNotFound` : un module dont
+    /// `run` lance lui-même voit son erreur relancée (`throw`) et remonte en `RhaiError`.
+    #[test]
+    fn test_shim_rethrows_module_internal_error() {
+        let dir = resolver_dir();
+        let mut s = Script::new_bare(vec![dir.path().to_string_lossy().into_owned()]);
+        let err = s.eval(r#"import_run("bad", #{}, #{}, [])"#).unwrap_err();
+        assert!(
+            format!("{err}").contains("interne"),
+            "internal error must be rethrown, got {err}"
+        );
+    }
+
+    // ── add_code : erreurs rendues avec le libellé de l'opération réellement en échec ──
+
+    /// Code syntaxiquement invalide → `Error::RhaiError` rendu ET `tracing::error!`
+    /// « Compiling ... failed with : ... » (pas « Evaluating » — libellés corrigés) ; le
+    /// Script évalue normalement ensuite.
+    #[test]
+    fn test_add_code_compile_failure_is_rhai_error_logged_compiling() {
+        let mut s = make_script();
+        let (res, logs) = capture_logs(&mut s, |sc| sc.add_code("fn broken( {"));
+        let err = res.unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "expected RhaiError, got {err:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|l| l.starts_with("Compiling ") && l.contains(" failed with : ")),
+            "expected a « Compiling ... failed with : » error, got {logs:?}"
+        );
+        assert!(
+            !logs.iter().any(|l| l.starts_with("Evaluating ")),
+            "the evaluating label must not appear on a compile failure, got {logs:?}"
+        );
+        assert_eq!(
+            s.eval("1 + 1").unwrap().cast::<i64>(),
+            2,
+            "the script must keep evaluating"
+        );
+    }
+
+    /// Code qui compile mais dont l'évaluation du module lève → `Error::RhaiError` rendu et
+    /// libellé « Evaluating ... failed with : ... ».
+    #[test]
+    fn test_add_code_eval_failure_is_rhai_error_logged_evaluating() {
+        let mut s = make_script();
+        let (res, logs) = capture_logs(&mut s, |sc| sc.add_code("throw \"eval-boom\""));
+        let err = res.unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "expected RhaiError, got {err:?}"
+        );
+        assert!(
+            logs.iter()
+                .any(|l| l.starts_with("Evaluating ") && l.contains(" failed with : ")),
+            "expected a « Evaluating ... failed with : » error, got {logs:?}"
+        );
+        assert!(
+            !logs.iter().any(|l| l.starts_with("Compiling ")),
+            "the compiling label must not appear on an eval failure, got {logs:?}"
+        );
+    }
+
+    /// Rappel manuel d'`add_common` : les sept shims se recompilent et se réenregistrent
+    /// sans erreur (aucun `tracing::error!`), et restent utilisables ensuite.
+    #[test]
+    fn test_add_common_recall_recompiles_shims_without_error() {
+        let mut s = make_script();
+        let ((), logs) = capture_logs(&mut s, Script::add_common);
+        assert!(
+            logs.is_empty(),
+            "an add_common recall must emit no error log, got {logs:?}"
+        );
+        assert_eq!(
+            s.eval(r"let out = 0; try { assert(false, 7); } catch (e) { out = e; } out")
+                .unwrap()
+                .cast::<i64>(),
+            7,
+            "the assert shim must still work after a recall"
+        );
+        assert!(
+            s.eval(r#"import_run("absent", #{}, #{}, [])"#).is_ok(),
+            "the import_run shim must still work after a recall"
+        );
     }
 }

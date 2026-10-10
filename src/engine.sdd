@@ -39,12 +39,14 @@ References:
     ./glob.sdd, ./shell.sdd, ./s3.sdd — le détail de chaque nom enregistré est la spec du
     module appelé ./engine.rs se borne à l'appel et à l'ordre. Le quirk @crate::yaml de
     `yaml_decode_multi` (entrée texte de cinq caractères ou moins rend un tableau vide)
-    est observable ici et verrouillé par le test de la ligne 563.
+    n'existe plus : le seuil de cinq caractères est mort à la clôture de ./yaml.sdd et le
+    test de ./engine.rs qui le verrouillait est mort avec lui (grep du nom à zéro, mesuré).
   ./hbs.rs — ./engine.rs n'importe RIEN de @crate::hbs ni ./hbs_json.rs : le mot
     `template` des shims désigne une fonction DE MODULE Rhai côté consommateur, sans aucun
     rapport au @crate::hbs::HandleBars::register_template.
   ./docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
-    section 12 contient une phrase fausse sur reqwest « dependency de base » (à corriger, §`Tasks`).
+    section 12 portait une phrase fausse sur reqwest « dependency de base » : retirée à la
+    clôture de ./docs.sdd.
   ./lib.rs (rustdoc racine) — quickstart `new_bare(vec![...])` + `run_file(&PathBuf)` ;
     les deux mentions corrigées par ./src/lib.sdd (tâches closes) : « Additional,
     feature-gated » cède à « Also available under `rhai` alone » pour yaml/semver/glob/
@@ -56,7 +58,7 @@ Must:
     @rhai de la ligne 25-29 sont tous sous `#[cfg(feature = "rhai")]` au niveau module ;
     les features qui impliquent `rhai` (`k8s`, `oci`, `s3`, `http`, `hbs-scripting`)
     exposent donc le module transitivement.
-  Appliquer dans @crate::engine::Script::new_bare l'ordre EXACT (lignes 172-204) :
+  Appliquer dans @crate::engine::Script::new_bare l'ordre EXACT (l. 201-235) :
     @rhai::Engine::new + @rhai::Scope::new vides ; construction d'une
     @rhai::module_resolvers::ModuleResolversCollection contenant un
     @rhai::module_resolvers::FileModuleResolver::new_with_path par élément de `resolver_path`
@@ -71,7 +73,7 @@ Must:
     @crate::glob::glob_rhai_register ; @crate::oci::oci_rhai_register sous `oci` ;
     @crate::shell::shell_rhai_register sous `shell` ; @crate::engine::Script::add_common en
     DERNIER (les shims Rhai appellent `log_debug` posé avant eux).
-  Enregistrer les seize noms communs toujours présents sous `rhai` (lignes 50-114), dont
+  Enregistrer les seize noms communs toujours présents     sous `rhai` (fonction PRIVÉE @crate::engine::core_common_rhai_register, l. 50-125), dont
     les sémantiques figées : `sha256` rend le digest hex de @sha256::digest ; `log_debug`/
     `log_info`/`log_warn`/`log_error` appellent la macro @tracing du nom et rendent l'unité ;
     `url_encode` est @crate::engine::url_encode, percent-encode @url::form_urlencoded dont
@@ -91,7 +93,7 @@ Must:
     echappés (JSON imbriqué d'un cran) ; `basename`/`dirname` appliquent
     @std::path::Path::file_name et @std::path::Path::parent, tout `None` et tout non-UTF-8
     rendant la chaîne vide.
-  Enregistrer sous `fs` (fonction PRIVÉE @crate::engine::fs_rhai_register, lignes 120-148 —
+  Enregistrer sous `fs` (fonction PRIVÉE @crate::engine::fs_rhai_register, l. 131-169 —
     aucun équivalent public pour recâbler `fs` sur un engine tiers) : `file_read` en
     @std::fs::read_to_string donc UTF-8 strict ; `file_write` en @std::fs::write donc
     écrasement intégral et création du fichier mais AUCUNE création des dossiers parents ;
@@ -102,7 +104,7 @@ Must:
     erreur. Toutes les erreurs d'E/S passent par @crate::rhai_err de @variant-Error::Stdio
     (préfixe `Stdio error `) ; le chemin non UTF-8 de `read_dir` porte @variant-Error::UTF8.
   Injecter dans @crate::engine::Script::add_common exactement sept blocs de code RHAÏ (pas
-    du Rust) via @crate::engine::Script::add_code (lignes 212-337) : `assert(cond, mess)` à
+    du Rust) via @crate::engine::Script::add_code appelé par @crate::engine::Script::add_common (l. 242-369, un seul bloc, les textes Rhai inlinés) : `assert(cond, mess)` à
     l'unique arité 2 qui `throw mess` — la VALEUR `mess` est jetée telle quelle, pas forcée
     en chaîne ; `import_run` aux arités 4, 3 et 2 — `name, instance, context, args`,
     `name, instance, context`, `name, args` — qui `import name as imp` puis appellent
@@ -136,7 +138,7 @@ Must:
     les modules déjà globalisés, un antérieur les féconde à l'enregistrement ; puis
     @rhai::Engine::register_global_module. Ce snapshot est intentionnel (décision actée) : un
     module est évalué une fois, indépendamment de l'état courant du scope, donc reproductible.
-  Poser @crate::engine::Script::set_dynamic (lignes 362-374) sans canal d'erreur :
+  Poser @crate::engine::Script::set_dynamic (l. 405-417) sans canal d'erreur :
     aller-retour @serde_json::to_string puis `from_str::<@rhai::Dynamic>` ; au succès
     @rhai::Scope::set_or_push (remplace l'homonyme existant sinon l'ajoute) ; à l'échec
     @tracing::error! « cannot convert {name} ... » et scope intact — la méthode ne panique
@@ -151,7 +153,7 @@ Must:
     @crate::engine::Script::eval_map_json rendent @variant-Error::RhaiError par simple
     `map_err` — contrairement aux erreurs internes des helpers passées par
     @crate::rhai_err ; l'affichage final `Rhai script error: {0}` vient de @Error racine.
-  Ordonner les gardes de @crate::engine::Script::run_file (lignes 382-398) : d'abord
+  Ordonner les gardes de @crate::engine::Script::run_file (l. 425-441) : d'abord
     @std::path::Path::is_file — chemin absent OU repertoire →
     @variant-Error::MissingScript(file.clone()) ; ensuite @std::ffi::OsStr::to_str du
     chemin — non-UTF-8 → @variant-Error::Other de suffixe `: path is not valid UTF-8` ; puis @rhai::Engine::compile_file et
@@ -166,12 +168,13 @@ Must:
     @base64 STANDARD, échec → @variant-Error::Base64DecodeError puis non-UTF-8 →
     @variant-Error::UTF8) et @crate::engine::url_encode (`#[must_use] pub fn`, forme URL
     identique au nom script). Ces deux items NE SONT documentés nulle part hors du module.
-  Maintenir la discipline de harnais : un seul @core::default::Default#allow en production,
-    l. 211 `#[allow(clippy::too_many_lines)]` avec commentaire citant ./vyvil-core.sdd ;
-    `#[must_use]` l. 45 et 170 ; aucun `unwrap`/`expect`/`panic!`/`todo!`/
-    `unimplemented!`/`dbg!`/`println!` de production — les replis non lints sont les
-    `unwrap_or_else`/`unwrap_or_default`/`unwrap_or` des lignes 69, 101, 103, 109, 111, 142 ;
-    les tests vivent sous l'exemption racine `#![cfg_attr(test, allow(...))]`.
+  Maintenir la discipline de harnais : un seul `#[allow]` de production, l. 241
+    `#[allow(clippy::too_many_lines)]` avec commentaire citant ./vyvil-core.sdd ;
+    `#[must_use]` l. 45 et 200 ; aucun `unwrap`/`expect`/`panic!`/`todo!`/
+    `unimplemented!`/`dbg!`/`println!` de production — les replis non lints sont les quatre
+    `unwrap_or`/`unwrap_or_default` de `basename`/`dirname` (lignes 112, 114, 120, 122) :
+    `to_decimal`, `get_env` et `read_dir` n'ont plus de repli depuis la tâche des trois voies
+    douces ; les tests vivent sous l'exemption racine `#![cfg_attr(test, allow(...))]`.
 
 Must not:
   Cabler même features activées un enregistreur `http`, `k8s` (les trois), `s3` ou un
@@ -218,7 +221,7 @@ Exposes:
   @crate::engine::Script::new_bare — `#[must_use] pub fn` prenant un
     @std::vec::Vec<@std::string::String> de répertoires et rendant @crate::engine::Script,
     porte `rhai`, porteur
-    d'un doctest verrou (lignes 165-169 : `sha256("hello")` hex exact) tournant sous
+    d'un doctest verrou (l. 195-199 : `sha256("hello")` hex exact) tournant sous
     `cargo test` aux features par défaut.
   @crate::engine::Script::add_common — `pub fn add_common(&mut self)` : rappelable, ne rend
     rien, ne propage jamais rien.
@@ -285,11 +288,15 @@ Raises:
     erreurs textuelles portant le Display @Error via @crate::rhai_err ; les sept noms de
     shims ne remontent QUE les erreurs relancées (`throw`), jamais les deux codes skipés ;
     `sleep(3600)` dort une heure sans plafond ni erreur — contrat de `sleep`, pas un échec ;
-    `to_decimal("8")` et tout non-octal, `get_env` d'une variable non UTF-8 et `read_dir` d'un
-    chemin non UTF-8 échouent en erreur textuelle — ligne descriptive qui énonce la CIBLE de la
-    tâche `[ ]` « `to_decimal` en erreur pour toute chaîne non octale » et non l'état : mesuré
-    aujourd'hui les trois sont doux (`to_decimal("8")` rend `Ok(0)` après warn). La phrase se
-    reprendra à l'état produit à l'exécution de cette tâche.
+    `to_decimal("8")` et tout non-octal rendent l'erreur textuelle `to_decimal received a
+    non-valid parameter: {val:?}` (@variant-Error::Other porté par @crate::rhai_err, affichage
+    script `Rhai script error: to_decimal received a non-valid parameter: "8"`) ; `get_env`
+    d'une variable PRÉSENTE non UTF-8 rend `get_env received a non-UTF-8 value for variable
+    {var:?}` (@variant-Error::Other idem — l'ABSENTE reste `""`, contrat intact) ; `read_dir`
+    d'un chemin non UTF-8 rend @variant-Error::UTF8 (`UTF8 error {0}`, affichage
+    `UTF8 error {…}` sous l'enveloppe @crate::rhai_err). Les trois textes sont ceux tranchés à
+    l'exécution de la tâche, à la lignée des messages du module ; le `warn!` doux de
+    `to_decimal` n'existe plus.
 
 Handles:
   Le triple cas de l'absence de module d'import : module introuvable → skip silencieux ;
@@ -304,32 +311,65 @@ Handles:
     les modules câblés qui l'exigent (`http`, `k8s`) ne sont justement pas câblés ici.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants : ./engine.rs porte déjà 23 `#[test]` inline
-    (tous par la face publique `new_bare` + `eval`, helper `make_script` ligne 462) qui
-    verrouillent yaml (11 dont le quirk des 5 caractères ligne 563), json (2), base64 (2
-    dont le padding `aGVsbG8=` ligne 612), semver (3), sha256/to_decimal/url_encode/sleep
-    (5) — mais JAMAIS exercés par aucun test : `assert`, `import_run`, `import_template`,
-    `add_code` direct, `set_dynamic`, `run_file`, `eval_truth`, `eval_map_string`,
-    `eval_map_json`, `get_env`, `json_encode_escape`, `basename`, `dirname`, les `log_*`,
-    `to_decimal` invalide, et TOUT le chemin feature-gate depuis la porte script (`file_*`,
-    bcrypt/argon/gen_private_key, `gen_password*`, `shell_*`, `Registry`) — les unités Rust
-    des modules existent, le trajet « script via `new_bare` » n'est testé pour aucune
-    feature.
+  [ ] Convertir les Scenario en tests passants : ./engine.rs porte 40 `#[test]` inline
+    (22 à HEAD + 18 de la tâche `add_code`/voies douces, face publique `new_bare` + `eval`,
+    capture `tracing` et fixture d'import dans le `mod tests`) qui verrouillent yaml (10,
+    quirk mort), json (2), base64 (2 dont le padding `aGVsbG8=`), semver (3),
+    sha256/to_decimal/url_encode/sleep (5), les sept shims et leurs arités fermées, `add_code`
+    en erreurs, `get_env` et `read_dir` aux trois faces. Scenarios devenus ENTIÈREMENT
+    couverts par ce round, à retirer de l'inventaire à la conversion : resolver vide,
+    `assert` jetant la VALEUR, `import_run`/`import_template` avec module présent, `add_code`
+    rendant ses erreurs. Reste JAMAIS VERROUILLÉ dans ./engine.rs par la porte script :
+    `set_dynamic`, `run_file`, `eval_truth`, `eval_map_string`, `eval_map_json`,
+    `json_encode_escape`, `basename`, `dirname`, les `log_*`, et le chemin feature-gate
+    (`file_*`, bcrypt/argon, `gen_password*`, `shell_*`, `Registry`) — les unités Rust des
+    modules existent, le trajet « script via `new_bare` » n'est verrouillé dans ./engine.rs
+    pour aucune feature. Trois exceptions hors ./engine.rs ou incidentes : `gen_private_key`
+    est verrouillé via `new_bare` par ./src/key.rs::scenario_new_bare_livre_les_deux_surcharges
+    (depuis HEAD, l'inventaire mentait avant ce round) ; `read_dir` via `new_bare` joue sous
+    `--all-features` (verrouillé ce round) ; `log_debug` est exécuté incidemment par le chemin
+    skip des shims sans verrou de sa face.
 
-  [ ] `add_code` rend un @crate::Result, libellés `Compiling`/`Evaluating` corrigés, test des
-    sept shims ; répercuter dans vynil (appelants de `add_code`) — décisions actées.
-  [ ] `to_decimal` en erreur pour toute chaîne non octale ; `get_env` en erreur sur
+  [x] `add_code` rend un @crate::Result, libellés `Compiling`/`Evaluating` corrigés, test des
+    sept shims — décisions actées. La part « répercuter dans vynil (appelants de
+    `add_code`) » est rendue au fait mesuré à l'exécution : AUCUN site d'appel n'existe dans
+    le consommateur `common` (son `rhaihandler.rs` réexporte sans appeler ; le seul hit est
+    du texte de son `rhaihandler.sdd`, l. 86) — rien à répercuter, le fait tient lieu de
+    clôture de ce pan.
+  [x] `to_decimal` en erreur pour toute chaîne non octale ; `get_env` en erreur sur
     NotUnicode (absente reste `""`) ; `read_dir` en erreur sur chemin non-UTF-8 (décisions
     actées : erreur explicite, UTF-8 strict comme `file_read`). Le helper Handlebars
     `to_decimal` de ./hbs.rs NE suit pas : arbitrage B du développeur principal, la voie douce y
-    est contractée (./hbs.sdd). Mesuré à l'occasion : le `to_decimal` Rhai visé par cette tâche
-    est doux aujourd'hui (`Ok(0)` après warn) — l'état d'avant l'exécution, pas un écart
-    nouveau ; le texte de la future erreur se tranche à l'exécution, les deux messages un temps
-    portés par ./hbs.sdd n'ont jamais été du code et ne lient pas ici.
-  [ ] Retirer de ./engine.rs le test qui verrouille le quirk yaml des cinq caractères (voir
-    ./yaml.sdd) et figer `new_bare(vec![])` fail-closed dans la rustdoc de `new_bare`.
-  [ ] Couvrir les branches gated de `new_bare` (`rhai,fs`, `rhai,shell`, `rhai,password`,
+    est contractée (./hbs.sdd). Rendu à l'exécution : les textes tranchés dans la lignée des
+    messages du module sont au `Raises` (`to_decimal received a non-valid parameter: {val:?}`,
+    `get_env received a non-UTF-8 value for variable {var:?}`, @variant-Error::UTF8 pour
+    `read_dir`) ; le `Ok(0)` après warn et les replis doux ont disparu du code et du `Must`
+    de harnais. Fait de staging consigné (validator : non bloquant, entérinement à
+    Sébastien) : le test `read_dir` non-UTF-8 n'a pas été vu échouer avant l'implémentation —
+    rouge par construction contre l'ancien `to_str().unwrap_or_default()`, découvert
+    compilable tard.
+  [x] Retirer de ./engine.rs le test qui verrouille le quirk yaml des cinq caractères (voir
+    ./yaml.sdd) et figer `new_bare(vec![])` fail-closed dans la rustdoc de `new_bare`. La
+    première part est morte à la clôture de ./yaml.sdd (`[x]` « Retirer le seuil » : « il
+    meurt ici et n'est pas déplacé », grep du nom à zéro dans ./engine.rs mesuré avant cette
+    reprise) ; la seconde est rendue ici — rustdoc `new_bare` : resolver REPLACÉ (l'ancien
+    « added to » était faux), collection vide = fail-closed (tout import échoue, shims
+    skipés en silence, `import` direct hors shim rate), doctest intact et jouable.
+  [x] Couvrir les branches gated de `new_bare` (`rhai,fs`, `rhai,shell`, `rhai,password`,
     `rhai,crypto`) par la matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
+    Mesure de couverture, rendue par le validator : la matrice `--each-feature` joue chaque
+    FEATURE seule et `fs`/`shell`/`password`/`crypto` n'impliquent pas `rhai` — le module
+    `engine` étant gate `rhai`, la matrice ne compile AUCUNE des quatre branches (zéro test
+    engine sous les features seules, mesuré). La couverture effective vient des quatre combos
+    compilés zéro warning à l'exécution et des portes durables qui jouent les
+    enregistrements : `crypto` par default, `shell` par `rhai,shell` (combo nommé de la
+    batterie), `fs` et `password` par `--all-features` — `fs` joue même en runtime sous cette
+    porte depuis les tests `read_dir` de ce round, ce qui n'existait pas avant.
+    # Question (consignée, à trancher) : l'instrument décidé (la matrice) ne joue pas les
+    # branches de ./engine.rs — une porte nommée `rhai,fs` (voire `rhai,password`) dans la
+    # batterie explicite serait un événement ./tooling.sdd en lockstep. L'écart
+    # d'instrument est rendu, la tâche close sur la couverture effective, le tranchage
+    # attendu.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   arités fermées des shims (`assert(cond, mess)`, `import_*`), snapshot `ctx.clone()` de
@@ -434,7 +474,7 @@ Scenario: add_code rend ses erreurs avec le bon libellé
     propage rien, masquerait une régression
 
 Scenario: les utilitaires verrouillent leurs valeurs
-  Given un Script de test (les verrous existants inline lignes 592-699)
+  Given un Script de test (les verrous existants inline l. 772-810)
   Then `sha256("hello")` est le digest hex 2cf24db...9824, `base64_encode("hello")` est
     `aGVsbG8=` et l'aller-retour base64 réussit, `url_encode("hello world")` rend
     `hello+world` (espace en `+`, JAMAIS `%20`), `to_decimal("755")` rend 493 en base 8
