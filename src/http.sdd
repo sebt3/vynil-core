@@ -420,6 +420,25 @@ Tasks:
     # de ./s3.rs, dernier porteur de la clause.
   [ ] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
     commune avec ./oci.sdd.
+    # Faisabilité mesurée (2026-10-10, tentative réversible jouée en grand) : la bascule
+    # TECHNIQUE est verte — `reqwest` `default-features = false` + `["rustls-tls",
+    # "charset", "http2", "system-proxy"]` (le code n'use ni de `.json()` ni d'aucune
+    # feature perdue), compilation sans geste hors manifest, `native-tls`/`hyper-tls` à
+    # zéro dans les graphes http/oci/s3/k8s, openssl confiné à `crypto` (par `dep:openssl`
+    # vérifié), comptes de tests stables. Elle est contractuellement MORTE en l'état :
+    # sous rustls seul, `Certificate::from_pem` range le brut sans le valider (mesure
+    # reqwest 0.12.28 tls.rs:167 — la validation n'existe que sous `default-tls`) ; un CA
+    # invalide est SILENCIEUSEMENT IGNORE, la requête part avec les racines webpki —
+    # contre ce `Must` (le PEM invalide ne rate qu'à la PREMIÈRE requête, à la
+    # construction du client) et le test `get_client_build_failure_warns_client_for_
+    # every_verb` bascule en conséquence (divergence réelle, pas un faux négatif ;
+    # l'identité mTLS en revanche reste validée à la construction sous rustls).
+    # Question (à trancher, bloque les deux faces de la tâche) : (a) amender le contrat —
+    # abandon de la validation à la construction, verrou réécrit « CA invalide = ignoré /
+    # erreur au handshake », risque sécurité : un CA privé cassé passe inaperçu ;
+    # (b) pré-valider le PEM dans ./http.rs avant `add_root_certificate` (geste hors
+    # manifest, dépendance `rustls-pki-types` ou pré-parse manuel à trancher). L'option
+    # partielle ne sauve rien : le test qui bascule est causée par le build reqwest seul.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   statut jamais erreur côté script, `json_delete` enrobant contre `json_*` stricts, mock
